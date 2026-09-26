@@ -55,7 +55,7 @@ P1 解释器 ──► P2 分层桥 ──► P3 Wasm 编译层 ──► P4 met
 - 函数级**热度计数**(loop back-edge 计数);
 - **inline cache 反馈记录**(类型 feedback,为编译层供料);
 - **静态可编译性分析器**:把 varargs / coroutine / debug 等形状标记「不升层」,永远走解释。
-- 策略:**try-compile-fallback-interpret**(LuaJ luajc 一样的),换来**零 deopt 机器**。
+- 策略:**try-compile-fallback-interpret**(同 LuaJ luajc),换来**零 deopt 机器**。
 - **验收**:文档未对 P2 给出独立量化验收(无倍率门槛,定位为基建)。
 
 ### P3:Wasm 编译层(6-12 人月,流水线图 4-8x)

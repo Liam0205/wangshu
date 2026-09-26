@@ -8,7 +8,7 @@ metadata:
 
 # P2 文档集扩展轮反思(P2 单文件 → 子目录 8 文件)
 
-> 范围:`docs/design/p2-bridge.md`(703 行单文件)扩展为 `docs/design/p2-bridge/`(子目录 8 文件 7453 行)。仿 P1 13 篇详细设计 + 00-overview 形式,补 PB0-PB7 里程碑、人月分解、实现级代码骨架、F1-F7 visitor 设计、跨文档回填请求收口表。驱动:用户 goal「针对 P2,仿照 P1 的做法,将 P2 设计稿扩展为详细的施工指南」。
+> 范围:`docs/design/p2-bridge.md`(703 行单文件)扩展为 `docs/design/p2-bridge/`(子目录 8 文件 7453 行)。仿 P1 13 篇详细设计 + 00-overview 形式,补 PB0-PB7 里程碑、人月分解、实现级代码骨架、F1-F7 visitor 设计、跨文档回填请求汇总表。驱动:用户 goal「针对 P2,仿照 P1 的做法,将 P2 设计稿扩展为详细的施工指南」。
 >
 > 工作流:multi-doc-drafting guide 第二次实战验证(P1 首次 = `2026-06-11-design-doc-completion`)。
 
@@ -19,7 +19,7 @@ metadata:
 P1 19 篇文档起草轮总结的「并行起草、单点汇总 / 回填请求节协议 / 指定唯一的验收口径汇总点」三条核心协议,本轮在 P2 8 篇扩展中**再次零失败兑现**:
 
 - **并行起草**:第一批 3 篇(01/02/03)+ 第二批 3 篇(04/05/06)分两批并行,主助理统一汇总。每篇独立子代理 prompt 含必读上游清单 + 风格基线 + 回填请求约定 + 章节大纲 + 不变式约束——子代理首次产出即合规率 ~95%,主助理只做头尾核验与决策研判。
-- **回填请求节**:子代理共提 30 余条回填请求(03 RB-1~8、05 RB-1~12、06 GAP-T 7 条等),主助理在汇总阶段统一审视:已兑现 4 条(RB-3/4/5/6)、PB 实施期兑现 8 条、跨阶段(P3/P4)兑现 12 条——全部记录在 `implementation-progress.md §2` 收口表。
+- **回填请求节**:子代理共提 30 余条回填请求(03 RB-1~8、05 RB-1~12、06 GAP-T 7 条等),主助理在汇总阶段统一审视:已兑现 4 条(RB-3/4/5/6)、PB 实施期兑现 8 条、跨阶段(P3/P4)兑现 12 条——全部记录在 `implementation-progress.md §2` 汇总表。
 - **唯一的验收口径汇总点**:06-testing-strategy 的 V1-V22 22 条对应 P1 12-testing-difftest §10 角色,00-overview §8 指向它;子代理们把各自的不变式翻成 V<n> 验收口径,无打架。
 
 **Why**:P1 首次验证时还有「子代理中断恢复」教训(原反思 §1),本轮更稳——同样的工作流第二次运行没有遇到阻塞,说明机制本身稳定,不是首轮巧合。
@@ -77,4 +77,4 @@ P2 单文件 `p2-bridge.md` 被 14 个外部文档引用(P1 04/02/05/architectur
 - [[design-doc-completion]](P1 19 篇起草轮反思,本轮的工作流先例)
 - [[design-review-round]](P1 设计评审轮反思,「主动盘点不确定决策」纪律的来源)
 - `docs/design/p2-bridge/00-overview.md`(本轮主助理亲写的 P2 纲领)
-- `docs/design/p2-bridge/implementation-progress.md`(P2 实施期对账表 + §2 回填收口表 + §3 决策盘点)
+- `docs/design/p2-bridge/implementation-progress.md`(P2 实施期对账表 + §2 回填汇总表 + §3 决策盘点)

@@ -50,7 +50,7 @@ metadata:
 本会话两次尝试写 ④-ii fast body 都因下列原因失败:
 
 - **local 寄存器复用冲突**:`localI32` / `localI32b` / `localSavedTop` 在 emit code 内被多个守卫/计算路径竞争,无法在同一段 codegen 内同时使用 callerBaseSlot + calleeFrameAddr + protoID + cl + 各种地址临时;
-- **段帧 4 word 打包**需要 `i64.or` / `i64.add` 多次组合,且每个 word 的写顺序对 GC 根扫可见性敏感(③b 一样的约束:先写段帧再 ciDepth++);此外 word2 含运行期 protoID(`i64ExtendUI32`)与编译期 `nresults<<32` / gibbous bit 的合并须严格控位;
+- **段帧 4 word 打包**需要 `i64.or` / `i64.add` 多次组合,且每个 word 的写顺序对 GC 根扫可见性敏感(与 ③b 相同的约束:先写段帧再 ciDepth++);此外 word2 含运行期 protoID(`i64ExtendUI32`)与编译期 `nresults<<32` / gibbous bit 的合并须严格控位;
 - **守卫间数据依赖**:G3(host flag)要读 closure word0、G4(slot)要读 word1、G5/6/7 要读 proto cache 字——每条都用 `localI64a/b/c` 但要保留前一条结果,冲突频发。
 
 **Why**:本质是「Wasm 字节级 codegen 无 SSA / 无寄存器分配器」+「emit 是一遍生成」+「local 数量编译期固定且少」三者叠加。复杂的 fast body 须**设计前置 local 编排**(谁存什么,何时复用),emit code 写起来像手写汇编。这是 wasm 包既有 `emitReturnFast` / `emitTableGuard` 没遇到的**复杂度峰值**——前者守卫 4 项 + body 简单(moveResults 展开 + transfer + `ciDepth--`),局部变量需求少;后者守卫 3 项 + body 中等。**④ fast body 守卫 9 项 + body 写段帧 4 word + nil-fill + `call_indirect` + 错误处理,约 ~200 行 wasm 字节级 codegen**,且每一条错就 UAF。

@@ -114,7 +114,7 @@ review 看到 `(M\d+)` / commit hash / 内部模块名等内部信息出现在�
 信息渗漏**,且未来真做了支持还得改一次错误措辞(消息与实现状态耦合)。改为
 稳定语义:「host closure cannot be called from Go end; invoke it from Lua side
 instead」——既自解释也跟实现状态解耦,实现演进时不影响消息。一并修了 `frame.go`
-不可达路径的一样的措辞。
+不可达路径上同样的措辞。
 
 **规律**:公共面错误消息用「行为语义」措辞,不带:① 内部里程碑编号(M\d+);
 ② 内部 commit hash;③ 内部模块/包名(除非该名本身是公共 API 一部分);

@@ -435,7 +435,7 @@ internal/value/value.go::Nil」,值却是 `0xFFFE<<48`(TagUserdata);`value.Nil` 
 
 **判据**:**「档与档之间是否有干净的输入/输出 ABI 边界」**——若有(本例 trampoline 输入是 Go funcval / 输出是 ABI 标准 BL),探针成本低、收益高;若各档 ABI 互相纠缠,退回穷举。
 
-**CI 形式盲区配套**(同会话第 8 实例新维度):多后端 / 多平台 CI 必须配真机 runner —— linux/arm64 QEMU + 字节级单测对比固定模板字节**不能替代真机 execute**(本会话:trampoline LR slot bug 实际 linux+darwin 一样的,但 linux/arm64 因 QEMU + 无 self-hosted runner 长期 latent,直到 darwin/arm64 macos-latest CI 真机 BL 跳段首次实测才触发)。「真机 execute 首次跑」是高风险事件,该 commit 应单独审查 —— 不是一次爆一个,而是一次爆一批(本会话:gate bug #1 修完开关 true 后,下游 #2/#3/#4 三个 emit bug 连环爆)。
+**CI 形式盲区配套**(同会话第 8 实例新维度):多后端 / 多平台 CI 必须配真机 runner —— linux/arm64 QEMU + 字节级单测对比固定模板字节**不能替代真机 execute**(本会话:trampoline LR slot bug 在 linux 和 darwin 上其实一样,但 linux/arm64 因 QEMU + 无 self-hosted runner 长期 latent,直到 darwin/arm64 macos-latest CI 真机 BL 跳段首次实测才触发)。「真机 execute 首次跑」是高风险事件,该 commit 应单独审查 —— 不是一次爆一个,而是一次爆一批(本会话:gate bug #1 修完开关 true 后,下游 #2/#3/#4 三个 emit bug 连环爆)。
 
 ## 7. 诊断侧对偶 — 退化归因前先证「被怪罪的路径」存在
 

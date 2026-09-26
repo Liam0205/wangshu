@@ -61,11 +61,11 @@ B 件的机制可抽象成一个小 pattern:
 2. **公共面用 opaque handle 包装**:`GlobalsSlot` struct 内部钉 GCRef + 关联 `*State`(防跨 State 误用),Release 把 GCRef 从 pin 表撤下。
 3. **lifecycle**:Init 期一次性 `state.GlobalsSlot(name)` 解析 + pin 接 GC 根,热路径 `SetBySlot/GetBySlot` 走零分配 by-ref 路径,Shutdown 期 `slot.Release()`。
 
-理论上一样的 pattern 还能套到 `Table.GetSlot(key) → tableSlot` 类(把 IC slot 暴露给宿主)、`Path.Resolve("foo.bar.baz") → pathSlot` 类(把 lookup 路径预解析)等等。
+理论上同样的 pattern 还能套到 `Table.GetSlot(key) → tableSlot` 类(把 IC slot 暴露给宿主)、`Path.Resolve("foo.bar.baz") → pathSlot` 类(把 lookup 路径预解析)等等。
 
 **首次样本暂留观察**——单实例没到立 pattern 的阈值;若 P2+/P3+ 接到「Table 反复读同一 key」「path lookup 反复」类 issue 再次套用,可促成 [[public-api-incremental-delivery]] 加一条 pattern 节或并入 [[design-claims-vs-codebase-physics]] 「成本归类」维度。
 
-### 4. consumer 的「评估了且自觉 deferred」反思是黄金一手证据,wangshu 应一样的维护
+### 4. consumer 的「评估了且自觉 deferred」反思是黄金一手证据,wangshu 也应同样维护
 
 **触发场景**:做长期项目里「已知备选方案 A 我们没采纳」的记录时(尤其当 A 已被实测有数字、有 deferred 原因)。
 
@@ -97,7 +97,7 @@ wangshu 端类似机制是 `memory/doc-gaps.md`「**已完成(留作审计)**」
 ## 关联
 
 [[issue8-boundary-cost-round]](实现浪费 vs 架构成本——本轮 parity-friendly 是消费侧对偶面)·
-[[issue1-api-gap-round]] / [[issue234-api-gap-round-2]] / [[issue56-api-gap-round-3]](一样的工作流前三轮)·
+[[issue1-api-gap-round]] / [[issue234-api-gap-round-2]] / [[issue56-api-gap-round-3]](同一套工作流的前三轮)·
 [[public-api-incremental-delivery]](本轮第 4 次机械复用,零新增纪律,稳定肌肉记忆)·
 [[embedding-contract]](`§不强制 arena 的简易 API` 已把 issue #13 段标注 parity-friendly)·
 pineapple#112(consumer 侧三条 unilateral 修复)+ wangshu#13(本轮 wangshu 侧 A+B 件 完成)

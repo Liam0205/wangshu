@@ -2,7 +2,7 @@
 
 - **日期**:2026-06-12
 - **任务类型**:issue 驱动的公共面 API 增量交付(pineapple wangshu backend 接入触发,
-  一样的工作流第二轮)
+  同一套工作流的第二轮)
 
 ## 任务
 
@@ -21,11 +21,11 @@ issue #2/#3/#4 来自 pineapple wangshu backend 接入,三件 gap:
 
 ## 预期 vs 实际
 
-- 预期:一样的工作流第二轮——issue #1 已经把「公共 API 增量交付」纪律走了一遍
+- 预期:同一套工作流的第二轮——issue #1 已经把「公共 API 增量交付」纪律走了一遍
   (设计承诺源回看 / GC 根机制 / 单域物理隔离 / 错误消息稳定语义),复用同一套
   模式完成三件即可。
 - 实际:四条核心纪律在本期重复触发并验证可复用(尤其 GC 根机制——issue #2 kTable
-  与 issue #1 kFunction 用一样的 pin 表,零额外接根工作,验证「公共 first-class
+  与 issue #1 kFunction 用同一个 pin 表,零额外接根工作,验证「公共 first-class
   GCRef-bearing value 必须接根」是稳定不变式而非一次性手法),**额外**长出四条
   新维度教训(下文展开):评审反馈跨域复用 / issue 范围扩张顺手补齐遗留缺口 / 对位测试
   断言先 grep oracle / internal 接口签名避免反向依赖标准库。
@@ -105,7 +105,7 @@ internal 接口设计成 **`SetCancelHook(fn func() error)`** 而不是 **`SetCo
 - 门面层承担与外部世界的接口形状(context / io / net / time / 用户自定义类型);
 - internal 只看抽象签名(`func() error` / `io.Reader` / `chan struct{}` 等)。
 
-收益:① P3+ JIT 一样的抢占机制可以**直接共用此 hook 无需引入 context 包**;
+收益:① P3+ JIT 的同类抢占机制可以**直接共用此 hook 无需引入 context 包**;
 ② internal 测试不需要造 ctx,直接 `SetCancelHook(func() error { return errSentinel })`
 即测;③ 未来若引入非 context 的取消源(信号、自定义 done chan),门面层加一种
 映射即可,internal 零改动。**反例**:直接给 internal 写 `SetContext(ctx
@@ -118,7 +118,7 @@ context.Context)` 则被绑死在 `context` 包语义,P3+ 引入新执行层时�
 
 ## 缺失的文档或信号
 
-- 公共 API 增量交付**仍然没有 guide**——issue #1 反思已建议立项,本期一样的工作流
+- 公共 API 增量交付**仍然没有 guide**——issue #1 反思已建议立项,本期同一套工作流
   走完第二轮验证可复用,样本充分(详见 Promotion 报告)。
 - `reference/embedding-contract.md` 已同步 per-item drop-in 子集状态,「宿主长持
   GCRef 必须接 GC 根」这条约定在 issue #1 反思建议回填(doc-gaps 既有清单),本期
@@ -134,7 +134,7 @@ context.Context)` 则被绑死在 `context` 包语义,P3+ 引入新执行层时�
 
 ### Q1:是否建议立项「公共 API 增量交付工作流」guide?
 
-**答:强烈建议立项**。本期是一样的工作流走完第二轮,样本充分。聚合教训清单
+**答:强烈建议立项**。本期是同一套工作流走完第二轮,样本充分。聚合教训清单
 (commit / reflection 锚点):
 
 | 维度 | commit / reflection 锚点 |
@@ -164,7 +164,7 @@ context.Context)` 则被绑死在 `context` 包语义,P3+ 引入新执行层时�
 **答:建议升级为 reference 接口约定条款**。
 
 **判断依据**:
-- **两次样本验证**:issue #1 kFunction 与 issue #2 kTable 均用一样的 `pinnedRefs +
+- **两次样本验证**:issue #1 kFunction 与 issue #2 kTable 均用同一套 `pinnedRefs +
   freePins + visitExtraRefs` 通道接根,**机制完全复用零额外成本**——证明这不是
   「kFunction 特殊路径」也不是「kTable 特殊路径」,而是**「公共面任何 first-class
   GCRef-bearing Value kind」的通用不变式**。

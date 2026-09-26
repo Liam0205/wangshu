@@ -118,7 +118,7 @@ PR #27 时点没切是因为「physical arm64 self-hosted runner 留 followup」
 - **PR #28 machine reviewer APPROVE**:全部 review comment 解决(包括 review #4 重复 sentinel 注释家族);
 - **macOS bash 3.2 兼容验证**:本机 M1 直接跑 `.githooks/pre-commit` + `scripts/go-fuzz.sh` 不报错(本会话 `git commit` 流程全程经 hook);
 - **fuzz fail artifact 通路验证**:`5afea11` 配 `if: failure() + actions/upload-artifact` 在本批未实际触发 fail(P4 fuzz 已被前序 commit 修),但配置 syntax 经 `actionlint` 静态检查 + 等待下次 fail 时实际检验;
-- **PR #28 ready-to-merge to `feat/p4-reworded`**:base 不是 master(承 F3-#3b 一样的 feature branch 工作流),merge 后 P4 method-JIT 集成开发主线推进一个里程碑。
+- **PR #28 ready-to-merge to `feat/p4-reworded`**:base 不是 master(承 F3-#3b 的同一套 feature branch 工作流),merge 后 P4 method-JIT 集成开发主线推进一个里程碑。
 
 ## promotion 候选
 
@@ -142,7 +142,7 @@ PR #27 时点没切是因为「physical arm64 self-hosted runner 留 followup」
 
 **推荐完成**:**暂留观察**,记录手法(`if: failure() + actions/upload-artifact testdata/fuzz/`)+ 触发场景(任何 fuzz CI / property-based CI / random-input CI)。若 P4 PJ9 双架构差分套 / P5 后端 fuzz 再遇到一样的情况,可升 [[prove-the-path-under-test]] §6 新章。
 
-### 候选 3:「跨平台等同」决策成本预算 → [[perf-optimization-workflow]] 或 [[public-api-incremental-delivery]] 一样的工作流纪律(中,首次样本暂留观察)
+### 候选 3:「跨平台等同」决策成本预算 → [[perf-optimization-workflow]] 或 [[public-api-incremental-delivery]] 这类工作流纪律(中,首次样本暂留观察)
 
 **新形式**:用户提的简单决策(「arm64 等同 amd64」)实施时冒出 5 个 macOS 兼容性 paper cut。这个**「概念决策 ≪ 实施成本」的 gap** 是任何「跨平台 / 跨 N 维度等同」类决策的常见特征——不是技术失误,是结构性必然(N 维笛卡尔积上的 latent 问题首次暴露)。
 

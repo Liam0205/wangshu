@@ -1,7 +1,7 @@
 # Guide:公共 API 增量交付工作流
 
 > 适用:接到「扩公共 API 表面」的 issue / 需求 / 反馈时——尤其是 issue 字面边界看起来很小、或目标是给 drop-in 候选(gopher-lua / PUC 5.1 / 其它实现)补齐与之对应的接口。
-> 来源:`memory/reflections/2026-06-12-issue1-api-gap-round.md`(per-item drop-in 子集 + Register/Module + 公共 HostFn + kFunction)与 `memory/reflections/2026-06-12-issue234-api-gap-round-2.md`(Table / HideFileLoaders / Context,一样的工作流第二轮),两轮共 8 条纪律全验证可复用。
+> 来源:`memory/reflections/2026-06-12-issue1-api-gap-round.md`(per-item drop-in 子集 + Register/Module + 公共 HostFn + kFunction)与 `memory/reflections/2026-06-12-issue234-api-gap-round-2.md`(Table / HideFileLoaders / Context,同一套工作流的第二轮),两轮共 8 条纪律全验证可复用。
 
 ## 1. 设计承诺源回看——三角验证
 
@@ -13,7 +13,7 @@
 
 机制级硬规则,已升为 [[embedding-contract]] 不变式条款。本节作为工作流完成的 checklist 指针:接到「让宿主长期持有某 GCRef 对象」类 issue(function / table / userdata / coroutine 等)时,**回头核对该 reference 条款**——pin 表(`pinnedRefs` + `freePins` + `visitExtraRefs`)是否覆盖该 kind,Release 是否配对,globals 覆盖 + GC 压力模式下能否复读。本 guide 不重复接口约定细节。
 
-锚点:`87031c2`(kFunction)/ `2b55e11`(kTable 复用一样的 pin 表零额外接根)。
+锚点:`87031c2`(kFunction)/ `2b55e11`(kTable 复用同一个 pin 表零额外接根)。
 
 ## 3. 单域物理隔离手法——按文件抽取,不靠 `git add -p`
 
@@ -53,7 +53,7 @@
 
 internal 包要接受「外部世界」对象(context / io / timer / net 等)时——尤其是当 internal 当前包依赖图不包含该标准库或第三方包——用**抽象签名**(`func() error` / `io.Reader` / `chan struct{}`)而非具体类型。把具体类型依赖留在门面层注入。
 
-收益:① P3+ 新执行层(wazero / JIT)一样的机制可直接共用,无需引入额外包;② internal 测试零外部世界对象,直接造 sentinel 即测;③ 未来若引入非同源取消源(信号 / 自定义 done chan)只改门面映射,internal 零改动。
+收益:① P3+ 新执行层(wazero / JIT)可直接共用同一套机制,无需引入额外包;② internal 测试零外部世界对象,直接造 sentinel 即测;③ 未来若引入非同源取消源(信号 / 自定义 done chan)只改门面映射,internal 零改动。
 
 反例:`27b4f2e` 用 `SetCancelHook(fn func() error)` 而非 `SetContext(ctx context.Context)`,`context` 依赖只在 `wangshu.go` 注入(`st.core.SetCancelHook(ctx.Err)`),`internal/crescent` 保持零标准库非基础包依赖。
 

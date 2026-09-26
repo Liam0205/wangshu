@@ -44,8 +44,8 @@ inline(纯算术或 issue #77 引入的 math intrinsic)后,段内不再有任何
 - **数据结构**:`jitCtx.loopFuel` 独立计数器(不复用 `segCallFuel`);`RefreshJitCtxAddrs` 在从解释器进段的
   「armed 转变」时刻负责初始化,LoopPreempt 是唯一的重灌来源。
 - **emit 侧**:amd64 FORLOOP condTrue 分支内联 `sub dword [r15+loopFuelOff], 1; jnz continue;` +
-  exit-reason `HelperLoopFuel` 出段;arm64 一样的语义走 `ldr-sub-str-cbnz`;负 sBx JMP(loop-forming back
-  edge,如 while/repeat 生成的下跳汇编)一样的 dec+分支模板。
+  exit-reason `HelperLoopFuel` 出段;arm64 按同样的语义走 `ldr-sub-str-cbnz`;负 sBx JMP(loop-forming back
+  edge,如 while/repeat 生成的下跳汇编)也用同样的 dec+分支模板。
 - **host 侧**:`host.LoopPreempt` 计入已消耗的燃料到 `stepUsed`,跑等价于 `st.preempt()` 的预算检查(该抛
   就抛 "instruction budget exceeded"),抛不掉则重灌并让段继续。
 - **PerOpCode 回放**:`runForLoop` / `runTForLoop` 通过新增的 `LoopFuelTick` 递减同一计数器,回放路径与
