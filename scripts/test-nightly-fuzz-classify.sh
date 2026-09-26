@@ -131,7 +131,7 @@ with tempfile.TemporaryDirectory() as tmp:
     crash_title = 'go-fuzz crash (p4): aadaecf9807d9dc9 (2026-09-07)'
     repo_path = 'test/fuzz/' + crash_path
     run('issue-255-tiered-only', {'tieredfuzz.log': incident}, 'bug', crash_title,
-        contains=(f'**crash corpus 路径**:`{repo_path}`', 'corpus 已写入靶点所在包\n(`./test/fuzz`)的 `testdata/fuzz/` 下',
+        contains=(f'**crash corpus 路径**:`{repo_path}`', 'corpus 已写入 fuzz 目标所在包\n(`./test/fuzz`)的 `testdata/fuzz/` 下',
                   f'cp nightly-fuzz-p4-34103646451/{repo_path} {repo_path}',
                   '-run="^FuzzOracleDiffTiered/aadaecf9807d9dc9$"',
                   'go test -tags \'wangshu_oracle_cgo wangshu_p4 wangshu_profile\' ./test/fuzz'),

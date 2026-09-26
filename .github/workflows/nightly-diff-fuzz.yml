@@ -381,7 +381,7 @@ jobs:
             TITLE="difftest divergence (${{ matrix.variant }}): seed ${FIRST_SEED:-unknown} kind ${FIRST_KIND:-unknown} ($(date -u +%F))"
             LABEL="bug"
             BODY=$(cat <<EOF
-          nightly 差分 fuzz 撞出与官方 Lua 5.1.5 的输出分歧(或 GC 透明性破坏)。
+          nightly 差分 fuzz 发现了与官方 Lua 5.1.5 不一致的输出(或 GC 透明性被破坏)。
 
           **本地复现**:
           \`\`\`bash
@@ -393,7 +393,7 @@ jobs:
             go test ./test/difftest/ -run TestDiff_RandomScripts
           \`\`\`
 
-          **后续**(12 §3.6):最小化分歧脚本后回流为 conformance 用例,回归不依赖再次随机撞中。
+          **后续**(12 §3.6):把分歧脚本最小化后加入 conformance 用例,这样回归检查不必依赖随机再次命中。
           日志与 crash corpus 见 run artifacts:${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           EOF
           )
@@ -441,7 +441,7 @@ jobs:
             TITLE="go-fuzz crash (${{ matrix.variant }}): ${CRASH_NAME:-unknown} ($(date -u +%F))"
             LABEL="bug"
             BODY=$(cat <<EOF
-          nightly go-fuzz 长跑撞出 crash(子进程异常退出/死循环/panic)。corpus 已写入靶点所在包
+          nightly go-fuzz 长时间运行时发现 crash(子进程异常退出/死循环/panic)。corpus 已写入 fuzz 目标所在包
           (\`$CRASH_PKG\`)的 \`testdata/fuzz/\` 下,可本地精确重放定位根因。
 
           **crash corpus 路径**:\`$CRASH_REPO_PATH\`
@@ -459,8 +459,8 @@ jobs:
 
           **后续**(12 §4.9 嵌入式 hardening 阈值纪律):定位触发 crash 的 stdlib/VM 路径,加 fail-fast 阈值;
           补回归用例;corpus 入库位置按 llmdoc/guides/unreproducible-crasher-triage.md 的判据选
-          (轻量 budget-bounded 形状 → 靶点所在包的 \`testdata/fuzz/\` 常驻回归;重 workload → 显式回归测试,防
-          fuzz coordinator 并行重放压垮 worker)。
+          (轻量 budget-bounded 形状 → fuzz 目标所在包的 \`testdata/fuzz/\` 常驻回归;重 workload → 显式回归测试,避免
+          fuzz coordinator 并行重放时压垮 worker)。
           日志与 crash corpus 见 run artifacts:${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           EOF
           )
