@@ -1,13 +1,13 @@
 # Guide:设计稿主张须对本码库 physics 重新验证
 
-> 适用:把设计稿热路径上的抽象记号(`(call $x)`)、固定 token(base/指针/句柄/视图)、或成本主张照搬到实现之前——尤其每指令必经的快路径、跨层/跨调用存活的值。**或处理「设计稿/task 描述/stub 注释承诺/外部依赖现状」类前序快照在事实变更后失效**(§5「时间维度」),**或主动去核一次外部依赖现状 / 判断某个上游修复是否随某版本发布**(§5.1)。**或脚本/工具链/包依赖在跨 OS / shell / runtime 版本物理环境间静默挂**(§6「空间维度」)。**或给一个新对象类型写分配路径时**(§4.1,同族分配器共有的每一步都是契约,漏一步的症状离原因很远)。P3 翻译全程复发,P2 编译层同理,P4 method-JIT 检查翻面期同理,CI 矩阵扩平台时同理。
+> 适用:把设计稿热路径上的抽象记号(`(call $x)`)、固定 token(base/指针/句柄/视图)、或成本主张照搬到实现之前——尤其每指令必经的快路径、跨层/跨调用存活的值。**或处理「设计稿/task 描述/stub 注释承诺/外部依赖现状」类前序快照在事实变更后失效**(§5「时间维度」),**或主动去核一次外部依赖现状 / 判断某个上游修复是否随某版本发布**(§5.1)。**或脚本/工具链/包依赖在跨 OS / shell / runtime 版本物理环境间静默失败**(§6「空间维度」)。**或给一个新对象类型写分配路径时**(§4.1,同族分配器共有的每一步都是必须遵守的约定,漏一步的症状离原因很远)。P3 翻译全程复发,P2 编译层同理,P4 method-JIT 检查状态切换时同理,CI 矩阵扩平台时同理。
 > 来源:`memory/reflections/2026-06-13-issue8-boundary-cost-round.md`(成本归类)+ `memory/reflections/2026-06-14-p3-pw5-table-ic-round.md`(边界成本预算)+ `memory/reflections/2026-06-14-p3-pw6-crosslayer-call-round.md`(段重定位 UAF,§2 第一实例)+ `2026-06-14-p3-pw7-pw4b-closure-tforloop-round.md`(难点过期)+ `2026-06-16-vs0e-varargs-stack-underflow-round.md`(调研先于实现)+ `2026-06-24-p4-doc-review-round.md`(外部依赖现状过期)+ `2026-06-30-pr27-f3-3b-darwin-arm64-execute-roundup.md`(sentinel 注释承诺与检查状态解耦)+ `2026-06-30-pr28-f3-3c-tri-platform-matrix-ci.md`(bash 3.2 vs 4+ / actions/cache symlink / homebrew 包政策 跨 OS 物理环境差异)+ `2026-07-08-pr83-forprep-stackgrow-fallout-round.md`(§2 第二实例:P4 native `base` 悬垂跨子系统复现)+ `2026-07-29-issue205-206-208-io-userdata-debug.md`(§4.1:file-handle userdata 漏 `LinkSweep`,收集器看不见对象,一次 `collectgarbage` 就以 arena 索引越界 panic)+ `2026-08-28-go127-upgrade-verification.md`(§5.1:确认 Go 1.27 是否含 golang/go#75804 修复,判据取工具链源码而非发布说明,并与 `go1.26.2` 对照区分「存在」与「引入」)——独立实例聚合为一个判断框架。
 
 设计稿表达的是**语义意图**,用抽象记号写在纸上;它**不携带本码库的物理不变式**。三次了:把设计稿热路径上的一条主张/记号忠实誊写到加速层,本会产出一个 bug 或一处死优化——因为设计稿对某条 wangshu 专属的物理事实是盲的(边界成本、arena 段重定位、GC 根可达性……)。**热路径上的抽象记号在实现前,必须逐条对照本码库 physics 重新推导,而不是照抄伪码。** 这条横跨**性能**(誊写出死优化)与**正确性**(誊写出 UAF)两面,故单独成 guide,不并入 [[perf-optimization-workflow]]。
 
 ## 1. 边界成本预算——热路径上的 `(call $x)` 能否塌成 inline
 
-设计稿 WAT 伪码里写成 `(call $helper ...)` 的快路径节点,是**记法不是承诺**:`$helper` 只表达「这里要做 X 语义」,不等于「这里要发一次真实跨层调用」。**PW0 spike 实测一次 gibbous→host imported 调用约 ~143ns**——若快路径上(尤其每指令必经的 IC 快路径)真调一次助手,「跳过哈希」省下的几个 ns 立刻被边界成本吞光,整个 inline 加速立项归零。
+设计稿 WAT 伪码里写成 `(call $helper ...)` 的快路径节点,是**记法不是承诺**:`$helper` 只表达「这里要做 X 语义」,不等于「这里要发一次真实跨层调用」。**PW0 spike 实测一次 gibbous→host imported 调用约 ~143ns**——若快路径上(尤其每指令必经的 IC 快路径)真的调用一次助手,「跳过哈希」省下的几个 ns 立刻被边界成本吞光,整个 inline 加速立项归零。
 
 **实例(PW5)**:`02-translation.md` §3.4 把 `$ic_slot_load`/`$ic_key_match` 写成助手调用形式。正解是全 inline `i64.load`——table 活在 arena = wazero linear memory,`value.GCRefOf(v)`(低 48 位)**就是**字节偏移,`SNAP_INDEX` 是编译期立即数 ⟹ 所有槽 offset 都是常量,助手退化成几条 load。
 
@@ -19,13 +19,13 @@
 
 **实例(PW6)**:`04-trampoline.md` §2.2 把 `$base`(linear memory 字节偏移)画成 gibbous wasm 函数入口锁定、全程不变。但 gibbous 帧经 `h_call` 调更深 Lua 帧时,嵌套 `growStack`(`internal/crescent/state.go`)把值栈段在 arena 重定位、改写 `th.stackBaseW`,返回后陈旧 `$base` 指向已 Free 旧段 = **UAF**。解法:`h_call`/`h_tailcall` 返回**重算后的新 base**(i64,负哨兵表错),CALL 翻译 `local.tee`→负则 `return 1` 冒泡/否则 `local.set $base` 刷新。
 
-**判据**:这个 token 在它存活的窗口内,底层存储会不会被搬动/失效?谁有能力刷新它、在什么时机?「入口锁定、中途不能自刷新」的载体(wazero local)碰到任何「跨层调用后恢复」的点,都是潜在失效点,必须由被调侧返回时回传刷新后的值。⚠️ **解释器恰好因「每次访问经 `th.slot(i)` 现算地址」碰巧免疫,反而掩盖危险——照搬解释器「能跑」不等于加速层「能跑」**(见下「如何用」)。这是 `feedback_arena_view_aliasing`「形式 Y 别名」雷区的 gibbous 帧对偶。
+**判据**:这个 token 在它存活的窗口内,底层存储会不会被搬动/失效?谁有能力刷新它、在什么时机?「入口锁定、中途不能自刷新」的载体(wazero local)碰到任何「跨层调用后恢复」的点,都是潜在失效点,必须由被调侧返回时回传刷新后的值。⚠️ **解释器恰好因「每次访问经 `th.slot(i)` 现算地址」碰巧免疫,反而掩盖危险——照搬解释器「能跑」不等于加速层「能跑」**(见下「如何用」)。这是 `feedback_arena_view_aliasing`「形式 Y 别名」隐患的 gibbous 帧对偶。
 
-**第二实例(PR #83,P4 native 层,跨子系统复现同一物理事实)**:`nativeCode.Run`(`internal/crescent/gibbous_host_p4.go`)在入口捕获 `base`(arena 绝对字节偏移),把它当固定 token 传给每次 `RefreshJitCtxAddrs`;但一次会 grow 值栈的 host 调用(`enterLuaFrame` → `growStack`)同样把值栈段在 arena 重定位并释放旧段,入口 `base` 变悬垂(issue #80)。**与 PW6 是同一条物理事实(arena 段可被 grow 重定位)在两个独立加速层(P3 wasm trampoline / P4 native codegen dispatcher)里各自被撞中**——判据「谁有能力刷新它、在什么时机」在新子系统里必须重新逐条核对,不能假设「P3 已经修过,P4 就自动免疫」。解法同构:`RefreshJitCtxAddrs` 改为从活的线程状态重算 `vsBase`(`(stackBaseW + cur.base)*8`),不再信任入口捕获的参数。
+**第二实例(PR #83,P4 native 层,跨子系统复现同一物理事实)**:`nativeCode.Run`(`internal/crescent/gibbous_host_p4.go`)在入口捕获 `base`(arena 绝对字节偏移),把它当固定 token 传给每次 `RefreshJitCtxAddrs`;但一次会 grow 值栈的 host 调用(`enterLuaFrame` → `growStack`)同样把值栈段在 arena 重定位并释放旧段,入口 `base` 变悬垂(issue #80)。**与 PW6 是同一条物理事实(arena 段可被 grow 重定位)在两个独立加速层(P3 wasm trampoline / P4 native codegen dispatcher)里各自被触发**——判据「谁有能力刷新它、在什么时机」在新子系统里必须重新逐条核对,不能假设「P3 已经修过,P4 就自动免疫」。解法同构:`RefreshJitCtxAddrs` 改为从活的线程状态重算 `vsBase`(`(stackBaseW + cur.base)*8`),不再信任入口捕获的参数。
 
 ### 2.1 table gen 约定——写下 invariant 的同时盘点全部 producer,不能只修 fuzz 撞到的那一格(2026-09-13,#260)
 
-与 §2 同一类物理事实:一个被加速层烧成编译期立即数的量(这里是 IC 快照里的 **node slot index**),它的
+与 §2 同一类物理事实:一个被加速层固化成编译期立即数的量(这里是 IC 快照里的 **node slot index**),它的
 有效性靠另一个字(`gen`)担保;解释器 `icGetTable` 每次命中都复验 `NodeKey`,gen 只是快速否决,而 P3 wasm
 `emitGetGlobal` 与 P4 native GETGLOBAL/SETGLOBAL NodeHit 是 **gen-only**——**invariant 强度由最严 consumer
 定义**,所以任何改变「哪个 key 占哪个 slot」的 producer 都必须 BumpGen。
@@ -42,12 +42,12 @@
 | `nodeSetVal` 改值 / `SetTableArrayAt` | 否 | 不需要 | IC「改值不 bump」正是靠它 |
 | P3 wasm `emitSetGlobal` 命中时写 Nil(不像 P4 那样检查新值 != Nil) | 否:键保留、值为 Nil,是 5.1 意义上的 dead key | 不需要 | `findFreeNode`/`insertNewKey` 不把它当空槽,`rehash` 会丢弃它;与 P4 的守卫不对称,范围外,见 [[2026-09-13-issue260-nil-immediate-and-delete-gen]] 审查记录 |
 
-**为什么两个月才收口**:2026-07-02 修第一实例时反思已经写「已修一处不代表全表安全」、doc-gaps 记了
+**为什么两个月才解决**:2026-07-02 修第一实例时反思已经写「已修一处不代表全表安全」、doc-gaps 记了
 「producer 清单未落」,但排到了「P4 arm64 port / P5 前」这种里程碑之后,而实际工作量是一格 grep 加三处
-判断。fuzz 撞到的正是清单上下一格。
+判断。fuzz 碰到的正是清单上下一格。
 
 **代价与备选**:删键 bump 让该表所有 IC 一起失效——解释器侧同表每个 pc 重新回填并累加 `Refill`
-(会影响 P2 megamorphic 判定),native 侧烧进机器码的 gen 一旦落后就永久退回 helper(本轮没有重快照
+(会影响 P2 megamorphic 判定),native 侧写死在机器码里的 gen 一旦落后就永久退回 helper(本轮没有重快照
 机制)。审查时的 P1 微基准(`t.a=nil t.a=i` 交替 20 万次,`-cpu=1`)慢约 5%~6%。另一条同样满足约定
 的路线是给**所有** gen-only 消费者补 NodeKey 比对(键是常量,一条 `cmp`)之后再让删键与 Brent 重定位
 不 bump——注意「所有」:不只是 P4 GETGLOBAL/SETGLOBAL NodeHit,还有 P3 wasm GETGLOBAL/SETGLOBAL
@@ -94,7 +94,7 @@ SETGLOBAL / SETTABLE NodeHit 和 P3 wasm 常量键 SETTABLE NodeHit 还会检查
 
 **实例(nightly step timeout 与 budget 轮,2026-08-19)**:某 CI job 的预算里有五个步骤,直觉认为
 「上限最大的那个」是压缩收益最大的目标,于是连续五轮建议把一个 150 分钟上限的步骤压到 90 分钟——
-实测那个步骤只跑 2 分钟,那个 150 分钟上限是从没接近过的挂死防线,压缩它省不下任何时间。真正占
+实测那个步骤只跑 2 分钟,那个 150 分钟上限是从没接近过的防卡死上限,压缩它省不下任何时间。真正占
 job 87% 时长的是另一个从没被怀疑过的步骤,因为它的表面参数(每个目标 45 分钟)看起来「合理」,
 直到乘上目标数量才现出原形——`per X` 类配置的真实成本永远是「显示值 × X 的实际数量」,而 X 的
 实际数量是最容易被读错或读旧的那个因子(§5「时间维度」的又一形式:配置描述里的计数会过期)。
@@ -103,21 +103,21 @@ job 87% 时长的是另一个从没被怀疑过的步骤,因为它的表面参�
 占比明显小的项,压缩它只会降低一个从未触达的上限,不会改变实际时长;真正的目标永远是占比最大的
 那一项,而「占比最大」只能靠量,不能靠「哪个上限数字看起来最大」去猜。与 §3 主体的关系:那条讲
 「先分类再判优化提案是否成立」,本条讲「先量分布再判优化目标选对了没有」,两者都拒绝在没有 profile
-/ 实测数据时下判断,只是前者管**判否**,本条管**选址**。
+/ 实测数据时下判断,只是前者管**判否**,本条管**选目标**。
 
 ## 4. GC 根可达性——复用栈/共享 arena 返回的值,根还在不在
 
 把内部缓冲区切片直接返回省分配、或让加速层持有指向共享 arena 的值时,**根可达性不能靠推理下结论,必须 stress 实测**。本码库的物理事实:值切片指向复用栈/arena,持有者复位后,只要存在一条常驻根链(如 `Call` 返回后 `runningThread` 复位 nil 但 `mainTh` 仍是同级常驻根),槽位值在 GC 下仍可达。
 
-**实例(issue8 教训 2)**:`CallInto` 零分配直切 `th.stack[:nret]`,用 `SetGCStressMode(true)`(每分配点触发 GC)+ 复用 dst 循环 + string 返回值(经 arena)500 轮读出仍正确 = 无 UAF;配套覆写契约(返回值下次进 VM 前被覆写,godoc ⚠️ 标注)。
+**实例(issue8 教训 2)**:`CallInto` 零分配直切 `th.stack[:nret]`,用 `SetGCStressMode(true)`(每分配点触发 GC)+ 复用 dst 循环 + string 返回值(经 arena)500 轮读出仍正确 = 无 UAF;配套覆写约定(返回值下次进 VM 前被覆写,godoc ⚠️ 标注)。
 
-**判据**:任何「返回内部缓冲区切片以省分配」或「加速层持有共享 arena 值」的优化,GC stress 实测 + 覆写契约测试是上线前置,不是可选。与 `feedback_arena_view_aliasing` 同物理基础。
+**判据**:任何「返回内部缓冲区切片以省分配」或「加速层持有共享 arena 值」的优化,GC stress 实测 + 覆写约定测试是上线前必做项,不是可选。与 `feedback_arena_view_aliasing` 同物理基础。
 
 ### 4.1 新对象类型的分配路径必须照抄同族分配器的每一步
 
 §4 讲「已有对象在优化之后还可不可达」,本节讲**另一侧**:一个**新**对象类型有没有进入收集器的视野。
 
-**核心断言**:在本码库,一个对象类型的「分配」不是一个函数调用,是一组**必须一起做完**的登记动作——写头(颜色)、挂 sweep 链、记账。`internal/crescent/alloc.go` 里三个现成分配器(`allocLuaClosure` / `allocOpenUpvalue` / `allocTable`)每一个都写着 `AllocX` + `LinkSweep` + `AllocCharge` 这三步,**同族分配器里出现 N 次的动作就是契约,不是那几个函数各自的选择**。
+**核心断言**:在本码库,一个对象类型的「分配」不是一个函数调用,是一组**必须一起做完**的登记动作——写头(颜色)、挂 sweep 链、记账。`internal/crescent/alloc.go` 里三个现成分配器(`allocLuaClosure` / `allocOpenUpvalue` / `allocTable`)每一个都写着 `AllocX` + `LinkSweep` + `AllocCharge` 这三步,**同族分配器里出现 N 次的动作就是必须遵守的约定,不是那几个函数各自的选择**。
 
 **实例(2026-07-29,#205)**:io 三个标准流做成 file-handle userdata 时,原型直接调 `object.AllocUserdata`、跳过了 `LinkSweep`,于是对象 header 里既没有颜色也没有 sweep 链,收集器根本看不见它;创建句柄之后一个 `collectgarbage()` 就以 arena 索引越界 panic,而那些句柄仍然从 `io` 表可达。上一轮为此整段撤回并开 #205(见 [[prove-the-path-under-test]] §4.3b),这一轮加 `State.NewUserdata` 把三件套固定成唯一入口,`TestIOHandles_SurviveGC` 在反复收集与分配压力下防住它。
 
@@ -125,7 +125,7 @@ job 87% 时长的是另一个从没被怀疑过的步骤,因为它的表面参�
 
 **判据**:给一个新对象类型加分配路径时,先读同一文件里已有的分配器,把它们**共有的每一步**都照做,并把新入口做成**唯一入口**,让下一个人无法再跳过。反思实例 [[2026-07-29-issue205-206-208-io-userdata-debug]] 教训 1。
 
-**恢复侧对偶(2026-08-04,#229)**:同一条元纪律——**同族里重复出现的动作是契约,不是那几个函数各自的
+**恢复侧对偶(2026-08-04,#229)**:同一条元纪律——**同族里重复出现的动作是必须遵守的约定,不是那几个函数各自的
 选择**——在**返回 / 退出路径**上的形式记在 [[cross-backend-semantic-fix-sweep]]「共享层恢复动作的兄弟
 路径不对称」节:`doReturn` 的终止分支漏了「把 top 恢复成 caller 逻辑帧顶」这一步,而同一条调用约定
 (PUC `lvm.c` `OP_RETURN` 的 `if (b) L->top = L->ci->top`)在另外三处兄弟路径上早就在做。两条的症状
@@ -133,17 +133,17 @@ job 87% 时长的是另一个从没被怀疑过的步骤,因为它的表面参�
 
 ## 5. 时间维度——设计稿/task/stub 注释承诺/外部依赖现状的前序快照在事实变更后失效
 
-前 §1-§4 是**空间不变式**(边界成本/段重定位/成本归类/根可达性)——同一时间点对码库 physics 的判断。**时间维度**是不同时间点的快照失效:设计稿/task 描述/stub 注释承诺/外部依赖现状,在写下当时为真,但**后续事实变更(前序里程碑完成 / 检查翻面 / 外部依赖升级)使快照过期**,照搬过期快照导致死优化或潜伏 bug。
+前 §1-§4 是**空间不变式**(边界成本/段重定位/成本归类/根可达性)——同一时间点对码库 physics 的判断。**时间维度**是不同时间点的快照失效:设计稿/task 描述/stub 注释承诺/外部依赖现状,在写下当时为真,但**后续事实变更(前序里程碑完成 / 检查状态切换 / 外部依赖升级)使快照过期**,照搬过期快照导致死优化或潜伏 bug。
 
 **六个独立形式**(前四个在「前序事实变更」时间轴上——前序里程碑 / 前序调研 / 外部依赖 / 注释承诺;第五个在「运行期对象跨 Run 重建」这条更快、更贴近热路径的时间轴上;第六个不在时间轴上,而是「配置描述的计数」这个量本身从不自我核验):
 
 | 形式 | 实例 | 快照内容 | 失效触发 |
 |---|---|---|---|
-| **难点过期** | PW7 CLOSURE/CLOSE 设计稿 §3.7 标核心难点是「open upvalue 存储协议」,实际 VS0-c 已解 | 设计稿对里程碑难点的判断 | 前序里程碑(VS0-c)追溯性溶解后续难点 |
-| **task 描述失实** | VS0-e task #6 三项里两项已被 VS0-c + PW10 R2 隐性收口 | task 描述对工作量/范围的快照 | 延后 ≥6 个月的 task,中间隐性交付 |
+| **难点过期** | PW7 CLOSURE/CLOSE 设计稿 §3.7 标核心难点是「open upvalue 存储协议」,实际 VS0-c 已解 | 设计稿对里程碑难点的判断 | 前序里程碑(VS0-c)回头消解了后续难点 |
+| **task 描述失实** | VS0-e task #6 三项里两项已被 VS0-c + PW10 R2 隐性完成 | task 描述对工作量/范围的快照 | 延后 ≥6 个月的 task,中间隐性交付 |
 | **外部依赖现状过期** | P4 doc-review:wazero internal/engine/compiler 已切 wazevo / darwin/arm64 MAP_JIT 实现不存在 / Go 1.22 已过保 | 设计文档对外部依赖现状的引用 | wazero / Go / 平台 API 升级 |
-| **sentinel 注释承诺与检查状态解耦** | `arch_arm64.go::archSseOpForArith` stub 注释「当前 archSupportsSpec 返 false,本函数不会被调用——sentinel 返 (0, false) 保底」,但检查翻 true 时本函数被真调,stub 静默返 (0, false) 让所有 PJ2 spec 测试 0 命中 | stub 默契承诺(「信本函数不会被调用」) | 检查/配置/上下文状态翻面 |
-| **promotion 烤死快照 vs 运行期跨 Run 重建** | issue #67 / PR #82:GETTABLE/SETTABLE NodeHit inline 把编译期 IC 记录的表指针作身份 guard 烤进段,但 n-body `bodies[i]` 这类局部表每个 Run 都在新 arena 偏移重建,身份 guard 跨 Run 100% 落空、inline 从没真生效 | 段里烤死的运行期对象身份指针 | 运行期对象**跨 Run**在新 arena 偏移重建(不用等跨里程碑,下一个 Run 就失效) |
+| **sentinel 注释承诺与检查状态解耦** | `arch_arm64.go::archSseOpForArith` stub 注释「当前 archSupportsSpec 返 false,本函数不会被调用——sentinel 返 (0, false) 保底」,但检查变为 true 时本函数真的被调用,stub 静默返 (0, false) 让所有 PJ2 spec 测试 0 命中 | stub 隐含承诺(「信本函数不会被调用」) | 检查/配置/上下文状态切换 |
+| **promotion 写死快照 vs 运行期跨 Run 重建** | issue #67 / PR #82:GETTABLE/SETTABLE NodeHit inline 把编译期 IC 记录的表指针作身份 guard 写死进段,但 n-body `bodies[i]` 这类局部表每个 Run 都在新 arena 偏移重建,身份 guard 跨 Run 100% 落空、inline 从没真正生效 | 段里写死的运行期对象身份指针 | 运行期对象**跨 Run**在新 arena 偏移重建(不用等跨里程碑,下一个 Run 就失效) |
 | **陈旧计数** | nightly workflow 的 `gofuzztime` description 写「per target(4 targets)」,实际源码可见的无 tag 目标是 6 个;`6 × 45m = 270 分钟` 与实测吻合,而这个「4」把这一步的预算低估了三分之一,长期没人怀疑 | 「per X」类配置描述里 X 的计数 | 目标数量随代码演进增减,而描述文本不会自动跟着改 |
 
 **陈旧计数形式特征**:任何写成「per X」的配置项(超时、预算、并发度……),它的真实成本永远是
@@ -151,20 +151,20 @@ job 87% 时长的是另一个从没被怀疑过的步骤,因为它的表面参�
 新 fuzz target、加一个新并发 worker,这类计数配置的 description 完全可以继续写着旧数字,不会报错、
 不会变红,直到有人拿实测耗时反推才发现「per X」乘出来的数远大于直觉预期。这是 §5 时间维度里**最难
 被 §5 现有判据覆盖**的一格——它不依赖「前序里程碑」「外部依赖升级」这类明显的事件触发,纯粹靠时间
-流逝(代码演进)让描述与事实之间的距离越拉越大,而没有任何显式的「翻面」时刻可以挂审计动作。
+流逝(代码演进)让描述与事实之间的距离越拉越大,而没有任何显式的「切换」时刻可以安排审计动作。
 
 **判据**:凡是「per X」的配置项,写下或读到它时都要核一遍 X 的**实际数量**(源码扫描出来的,不是
 文档描述里写的);这类数字本身不会因为数量变化而报错,唯一能抓住它的动作是主动去数一遍。反思实例
 [[2026-08-19-nightly-step-timeouts-and-budget]] 教训 4。
 
-**sentinel 注释承诺形式特征**:「**当前 X 为 Y,所以本函数 Z**」——X 是检查/配置/上下文状态,Y 是当前值,Z 是基于 Y 的安全行为(stub / sentinel / no-op)。注释当时为真,X 翻面时若未同步审计本函数,Z 行为变成**静默 bug**——没有 panic、没有 error、没有日志,只是性能数据上「投机路径 0 命中」或正确性上「fallback 永远走到」。
+**sentinel 注释承诺形式特征**:「**当前 X 为 Y,所以本函数 Z**」——X 是检查/配置/上下文状态,Y 是当前值,Z 是基于 Y 的安全行为(stub / sentinel / no-op)。注释当时为真,X 切换时若未同步审计本函数,Z 行为变成**静默 bug**——没有 panic、没有 error、没有日志,只是性能数据上「投机路径 0 命中」或正确性上「fallback 永远走到」。
 
 **判据**:
-- **写 stub / sentinel 时,若注释含「当前 X 为 Y,所以本函数 Z」,在 X 翻面的同一 commit 必须同步审计本函数**——`grep -rn "当前.*返 false\|当前.*不会被调用\|sentinel.*保底" <pkg>` 是检查翻 true 同 commit 的标准动作;
-- **stub 默认应 panic 而非保底**——「保底」是默契承诺(信本函数不会被调用所以静默),panic 是显式契约(若被调用立刻爆);panic 让检查翻 true 时此类 bug 立刻可见,sentinel 让其潜伏;
+- **写 stub / sentinel 时,若注释含「当前 X 为 Y,所以本函数 Z」,在 X 切换的同一 commit 必须同步审计本函数**——`grep -rn "当前.*返 false\|当前.*不会被调用\|sentinel.*保底" <pkg>` 是检查变为 true 的同一 commit 里的标准动作;
+- **stub 默认应 panic 而非保底**——「保底」是隐含承诺(信本函数不会被调用所以静默),panic 是显式约定(若被调用立刻报错);panic 让检查变为 true 时此类 bug 立刻可见,sentinel 让其潜伏;
 - **「sentinel 静默」+「测试断言命中率」是配对纪律**——若性能敏感不能 panic 必须用 sentinel,配套测试必须断言「该路径被走到」(本会话 PJ2 spec 测试断言命中率 > 0 抓到了 bug),否则就是结构盲区;
 - **接延后 ≥6 个月的 task 前必先重核每一项现状**(task 描述可能失实);**大文档发布/审查前对外部依赖现状做事实层 checklist**(外部依赖现状过期);**开始任何标注「难点」的里程碑前先核实难点是否仍在**(前序里程碑可能已解);
-- **给 IC / inline 快路径写「把编译期运行期对象身份快照烤进段」的 guard 前,先问「这个身份会不会被跨 Run 重建打穿」**——若被测对象每 Run 在新 arena 偏移重建(promotion 只烤一次快照),身份 guard 会跨 Run 100% 落空、快路径从没真生效,优先换成与对象地址无关的 key/shape 内容 guard(issue #67 换 hmask 边界 + `nodeRef != 0`);这条的度量侧对偶见 [[prove-the-path-under-test]] §8(读收益要按跨 Run 稳态 dispatch,别信单 Run 命中数)。
+- **给 IC / inline 快路径写「把编译期运行期对象身份快照写死进段」的 guard 前,先问「这个身份会不会因跨 Run 重建而失效」**——若被测对象每 Run 在新 arena 偏移重建(promotion 只记录一次快照),身份 guard 会跨 Run 100% 落空、快路径从没真正生效,优先换成与对象地址无关的 key/shape 内容 guard(issue #67 换 hmask 边界 + `nodeRef != 0`);这条的度量侧对偶见 [[prove-the-path-under-test]] §8(读收益要按跨 Run 稳态 dispatch,别信单 Run 命中数)。
 - **凡是「per X」的配置项,写下或读到它时都要核一遍 X 的实际数量**——这类数字不会因数量变化而报错,唯一能抓住它的动作是主动去数一遍(nightly `gofuzztime` description 的「4 targets」实际是 6 个,3 分之 1 的预算低估长期无人发觉)。
 - **主动核一次外部依赖现状时,判据取那份源码而不是关于它的陈述,并且「存在」要配一次旧版本「不存在」的观察**——详见 §5.1(#180 确认 Go 1.27 是否含 golang/go#75804 修复:读 `$GOROOT` 里的 `internal/fuzz/fuzz.go` 看表达式变化 + 注释引用的 issue 号,再拿 `go1.26.2` 对照得 0 次 vs 1 次)。
 
@@ -207,7 +207,7 @@ job 87% 时长的是另一个从没被怀疑过的步骤,因为它的表面参�
   可以撤掉一个兜底机制」)。
 - 任何「X 在版本 N 里存在」的观察,都要配一次「X 在版本 N-1 里不存在」的观察,否则证明的是
   「存在」而不是「引入」。对照项优先选**自己原来在用的那个版本**;计数式对照(同一字符串在两个
-  tag 里各出现几次)比读 diff 便宜,作为第一刀足够。
+  tag 里各出现几次)比读 diff 便宜,作为第一步足够。
 
 反思实例 [[2026-08-28-go127-upgrade-verification]] 教训 1 与教训 2。
 
@@ -225,7 +225,7 @@ job 87% 时长的是另一个从没被怀疑过的步骤,因为它的表面参�
 字段名(`expDesc.opLine`)、注释和测试。真规则是 `luaK_codeABC`/`luaK_codeABx` **不接收行号参数**、一律
 用发射那一刻的 `fs->ls->lastline`,「运算符行」只是它在「索引写完就地被消费」时的近似。判别输入
 `local v = A.x<nl><nl>+1` 完全没有括号、运算符在第 1 行而 luac 报第 3 行——这个反例在 #248 那一轮**同样
-可以构造出来**,缺的不是信息而是那一问。代价是同一个缺陷在四个语法位置各躺了一次。
+可以构造出来**,缺的不是信息而是那一问。代价是同一个缺陷在四个语法位置各出现了一次。
 
 **判据**:从参照实现的若干次输出里归纳出一条口径时,先问「参照实现**内部**是怎么算这个量的,我的口径与
 它是同一个式子,还是只在我采的样本上恰好相等」。能读到源码就去读(本例 `luaK_codeABC` 五行就给出了
@@ -236,7 +236,7 @@ job 87% 时长的是另一个从没被怀疑过的步骤,因为它的表面参�
 
 ## 6. 空间维度——跨 OS / shell / runtime 版本物理环境差异
 
-前 §1-§4 是**码库内部 physics**(边界成本/段重定位/成本归类/根可达性),§5 是**时间维度的事实漂移**(前序快照失效)。**空间维度**是同一时刻、不同部署/开发环境之间的**物理差异**——同一份脚本/工具链/依赖,在 OS A / shell 版本 X / runtime W 下跑得通,换到 OS B / shell 版本 Y / runtime Z 下静默挂或行为不同。设计稿写「Linux/bash 4+」假设,跑到 macOS/bash 3.2 上**没有 panic、没有 error**,只是 `mapfile` not found / `${arr[@]}` 在 `set -u` 下 unbound exit / `declare -A` 报错——dev 环境与 CI runner 的「单平台 / 单维度」掩护一旦撤掉(矩阵 CI 扩平台、新 OS 接入),笛卡尔积上的 latent 问题一次性翻面。
+前 §1-§4 是**码库内部 physics**(边界成本/段重定位/成本归类/根可达性),§5 是**时间维度的事实漂移**(前序快照失效)。**空间维度**是同一时刻、不同部署/开发环境之间的**物理差异**——同一份脚本/工具链/依赖,在 OS A / shell 版本 X / runtime W 下跑得通,换到 OS B / shell 版本 Y / runtime Z 下静默失败或行为不同。设计稿写「Linux/bash 4+」假设,跑到 macOS/bash 3.2 上**没有 panic、没有 error**,只是 `mapfile` not found / `${arr[@]}` 在 `set -u` 下 unbound exit / `declare -A` 报错——dev 环境与 CI runner 的「单平台 / 单维度」掩护一旦撤掉(矩阵 CI 扩平台、新 OS 接入),笛卡尔积上的 latent 问题一次性暴露。
 
 **触发场景**:写 shell 脚本要跨 OS 跑(`.githooks/pre-commit`、`scripts/*.sh`)、CI 矩阵加 `ubuntu-24.04-arm` / `macos-latest` 维度、加 `actions/cache` 缓特殊文件类型(symlink / 嵌套 dir)、brew/apt 包政策更迭(homebrew 2024 后撤 `lua@5.1`)、cross-arch / cross-OS 真机 runner 首次接入。
 
@@ -257,15 +257,15 @@ job 87% 时长的是另一个从没被怀疑过的步骤,因为它的表面参�
 | **`mapfile`(数组从命令读)** | 不支持(bash 4.0+ 内建) | `mapfile -t arr < <(cmd)` 一行从 stdin 装数组 | `while IFS= read -r line; do arr+=("$line"); done < <(cmd)` 显式循环 push |
 | **`declare -A`(关联数组)** | 不支持(bash 4.0+ 引入) | `declare -A m; m[key]=val` | `pairs+=("$key"$'\t'"$val")` 把 key/val 用 `\t` 拼成元组数组,然后 `printf '%s\n' "${pairs[@]}" \| sort -u \| while IFS=$'\t' read -r key val; do ...` 分组循环 |
 
-**实例(PR #28 三连)**:本仓库 `.githooks/pre-commit` + `scripts/go-fuzz.sh` 写 Linux 默认 bash 4+ 风格,接 macOS dev 环境 + macos-latest CI runner 时三处独立踩雷,同 commit `61dadde` 改三处跨版本兼容惯用法。**`mapfile` not found / `declare -A` 报错** 是显式失败易抓;**`${arr[@]}` + `set -u`** 是隐式失败——空数组场景未到时静默,触发时直接 exit,**默契承诺式 bug**(与 §5 sentinel 注释承诺同源:都是「当前 X 为 Y 所以本路径 Z」家族,X=bash 版本 / shell 平台)。
+**实例(PR #28 三处问题)**:本仓库 `.githooks/pre-commit` + `scripts/go-fuzz.sh` 写 Linux 默认 bash 4+ 风格,接 macOS dev 环境 + macos-latest CI runner 时三处各自出错,同 commit `61dadde` 改三处跨版本兼容惯用法。**`mapfile` not found / `declare -A` 报错** 是显式失败易抓;**`${arr[@]}` + `set -u`** 是隐式失败——空数组场景未到时静默,触发时直接 exit,**隐含承诺式 bug**(与 §5 sentinel 注释承诺同源:都是「当前 X 为 Y 所以本路径 Z」家族,X=bash 版本 / shell 平台)。
 
 ### 6.3 actions/cache 对 symlink 的物理语义
 
 `actions/cache` 底层用 `tar` 打包路径,**默认 `tar` 把 symlink 当 symlink 存(只存指向字符串),不递归 symlink 目标**——cache hit restore 后 symlink 还在,目标不在(目标在另一个未缓的路径) ⟹ symlink broken。
 
-**实例(PR #28 paper cut #2)**:macOS lua5.1 源码编译装到 `/usr/local/lib/lua-5.1.5/lua` + 在 `/usr/local/bin/lua5.1` 创 symlink,缓 `/usr/local/bin/lua5.1` 单点 → restore 后 symlink 指向已不存在的真二进制。**正确做法**:缓**编译产物源目录**(`lua-5.1.5/`,已 `make` 出 `src/lua`/`src/luac`),restore 后必跑 `make install` 重新装+创 symlink(~1s restore + ~0.1s install,比从头编译 ~10s 快 10 倍且 symlink 一定正确)。
+**实例(PR #28 paper cut #2)**:macOS lua5.1 源码编译装到 `/usr/local/lib/lua-5.1.5/lua` + 在 `/usr/local/bin/lua5.1` 创 symlink,缓 `/usr/local/bin/lua5.1` 单点 → restore 后 symlink 指向已不存在的实际二进制。**正确做法**:缓**编译产物源目录**(`lua-5.1.5/`,已 `make` 出 `src/lua`/`src/luac`),restore 后必跑 `make install` 重新装+创 symlink(~1s restore + ~0.1s install,比从头编译 ~10s 快 10 倍且 symlink 一定正确)。
 
-**判据**:任何 cache 路径在 cache save 前 `ls -la` 看是否 symlink,是则切「缓源目录 + restore 后重 install」模式。这是 POSIX `tar` 默认语义不是 `actions/cache` bug,但效果上等价于 cache 半残。
+**判据**:任何 cache 路径在 cache save 前 `ls -la` 看是否 symlink,是则切「缓源目录 + restore 后重 install」模式。这是 POSIX `tar` 默认语义不是 `actions/cache` bug,但效果上等价于 cache 只恢复了一半。
 
 ### 6.4 判据与 grep checklist
 
@@ -325,11 +325,11 @@ job 87% 时长的是另一个从没被怀疑过的步骤,因为它的表面参�
 
 ## 如何用
 
-- **设计稿记号是语义契约,不是物理承诺**:`(call $x)`、`$base`、「成本=架构给定」都只声明「这里要什么语义」,从不声明本码库 physics(边界成本/段重定位/根可达性)。实现前逐条过 §1-§4。
-- **快照不会自更新,事实变更须显式审计**(§5):设计稿/task 描述/stub 注释承诺/外部依赖现状在写下当时为真,前序事实变更后必须显式重核——尤其检查翻 true 的同一 commit、延后 ≥6 个月的 task 接续前、大文档发布前。
+- **设计稿记号是语义约定,不是物理承诺**:`(call $x)`、`$base`、「成本=架构给定」都只声明「这里要什么语义」,从不声明本码库 physics(边界成本/段重定位/根可达性)。实现前逐条过 §1-§4。
+- **快照不会自更新,事实变更须显式审计**(§5):设计稿/task 描述/stub 注释承诺/外部依赖现状在写下当时为真,前序事实变更后必须显式重核——尤其检查变为 true 的同一 commit、延后 ≥6 个月的 task 接续前、大文档发布前。
 - **核外部依赖现状时判据是源码,不是关于它的陈述**(§5.1):发布说明 / issue 状态 / CL merge 状态各自以不同粒度滞后,只有被安装的那份源码能回答「我这份里有没有」;而且「在新版本里看到」只证明存在,要证明「这一版引入」必须配一次旧版本不存在的观察。
-- **跨部署环境差异不会自暴露,矩阵扩面前须预审**(§6):同一份脚本/工具链/依赖在不同 OS / shell 版本 / runtime / runner 之间静默挂。CI 矩阵扩平台、加 `actions/cache` 缓特殊文件、cross-arch 真机 runner 首次接入前,逐维度过 §6.1-§6.3。
-- **解释器「能跑」≠ 加速层「能跑」**:二者刷新地址/管理生命周期的能力不同——解释器每访问经 `th.slot()` 现算,gibbous 的 `$base` 入口锁定中途无法自刷新。设计稿往往因解释器碰巧免疫而对危险盲视,加速层照搬就触雷。先问「谁有能力刷新、在什么时机」。
+- **跨部署环境差异不会自己暴露,矩阵扩大范围前须预审**(§6):同一份脚本/工具链/依赖在不同 OS / shell 版本 / runtime / runner 之间静默失败。CI 矩阵扩平台、加 `actions/cache` 缓特殊文件、cross-arch 真机 runner 首次接入前,逐维度过 §6.1-§6.3。
+- **解释器「能跑」≠ 加速层「能跑」**:二者刷新地址/管理生命周期的能力不同——解释器每访问经 `th.slot()` 现算,gibbous 的 `$base` 入口锁定中途无法自刷新。设计稿往往因解释器碰巧免疫而对危险盲视,加速层照搬就出错。先问「谁有能力刷新、在什么时机」。
 - **引用外部权威套件时同时给覆盖率,并且检查那个覆盖率量的是什么**(§7):「官方套件通过」不带数就是在暗示全跑了;而按行号算的量(占比 / 已跑行数)不携带执行信息,要选一个执行侧的计数,自查靠构造一个「数字变好而什么都没多测」的输入。
 - **逐条对照,而非整体信任**:边界成本预算(§1)、段重定位(§2)、成本归类(§3)、根可达性(§4)、时间维度(§5)、空间维度(§6)、信心维度(§7)是七个独立维度;一条主张可能同时踩多个。
 
