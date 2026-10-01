@@ -500,9 +500,15 @@
   | 顺带查出 VM 的 `<` / `<=` 规则偏差 | `internal/crescent/execute.go::doCompare` | 按 `lvm.c`:类型不同**先报错、不查元方法**;只取左操作数的处理函数,且右操作数的必须与之 `rawequal`(`call_orderTM`);处理函数不要求是 function。原实现「先查左、没有再查右」且不比类型,一侧有 `__lt` 时 `A < {}`、`A < 1` 都返回处理函数的结果。P3/P4 的比较慢路径都经 `doCompare`,一处修好三层 |
   | 错误措辞的第三个字母规则 | `execute.go::orderError` | `luaG_ordererror` 只比较类型名的第三个字母,`"string"` 与 `"thread"` 相同,所以 `"s" < co` 报 `two string values`。照抄,不按类型名相等判断 |
   | 计费补一道后备 | `tableFnSort` / `tableSorter.less` | 旧的稳定归并排序在任何输入上都是 O(n log n);快排在 McIlroy 对抗排列上是平方级(3000 个元素约 225 万次比较,正常排列约 3.5 万次),只预付 `n*log2(n)` 会让这类输入几乎不计费。比较次数超过预付额四倍后每次比较再计一个字节当量 |
+  | 平方级排序还要能被取消 | `tableSorter.less` / `crescent.State.CheckCancel` | 排数字时不运行 Lua 代码,没有指令边界查 `SetContext`;独立审查实测 20000 个元素的对抗排列在 500ms 超时下跑满 1.55s。每 4096 次比较查一次取消状态 |
+  | 跨比较持有的元素没有 GC 根(存量) | `tableSorter.hold` | 独立审查发现:比较器清空表、把参数置 nil 再 `collectgarbage()`,Go 局部持有的 pivot 等元素被回收,下一次比较读到已释放的对象,VM 内部 panic(master 上同样复现)。5.1 把它们放在 `sort` 自己的栈上。改为逐个 `PinRef`;设计稿 10 §7.4「比较时元素都在表槽里,无需 Pin」的定稿一并订正 |
+  | 默认比较器报错多了位置前缀(存量) | `tableSorter.less` | `lua_lessthan` 在 C 函数里抛错,5.1 不带位置;望舒的宿主调用边界补上了 Lua 调用方的行号。对这类错误 `MarkAnnotated` |
 
-  验证:新增 `test/regression/issue271_sort_order_test.go`(排序 14 条 + 比较规则 14 条,期望值逐条用 `lua5.1` 跑出;
-  另一条对抗排列计费测试,去掉后备时失败);三组在修复前全部失败。#271 语料入 `test/fuzz/testdata/fuzz/FuzzOracleDiff/`。
+  验证:新增 `test/regression/issue271_sort_order_test.go`(排序 18 条 + 比较规则 14 条,期望值逐条用 `lua5.1` 跑出;
+  另一条对抗排列测试同时断言步数预算与取消都会触发);三组在修复前全部失败,后补的 GC、位置前缀、取消三处
+  各自去掉修复后也会失败。改完先由独立子代理逐行对照 `ltablib.c` / `lvm.c` 审查并做差分测试,上面最后三行来自这次审查。
+  比较器里 yield、`__lt` 处理函数里 `error(m, 2)` 的位置前缀与 traceback 少一行 `[C]: in function 'sort'` 三处差异在 master
+  上就有,与本轮无关,另行登记。#271 语料入 `test/fuzz/testdata/fuzz/FuzzOracleDiff/`。
   `make test-all` / `conformance-all` / `difftest-all` 与 oracle 语料重放全绿。代价:排序密集的循环慢约 14%
   (每次访问走 `RawGet`/`RawSet`,不再在 Go 切片上排序)。设计稿 07 §9.2-§9.4、10 §7.3 已按实际规则改写。
 
