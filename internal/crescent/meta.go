@@ -308,8 +308,8 @@ func (st *State) callLuaFromHostNamed(th *thread, fn value.Value, args []value.V
 	// host→Lua reentry depth cap (05 §7.4): guards against "Lua calls host calls Lua …"
 	// alternation actually blowing the Go stack (a Go maxstacksize fatal is unrecoverable, so
 	// it must be intercepted first with a recoverable error).
-	if st.nCcalls >= maxCCallDepth {
-		return nil, errf("C stack overflow")
+	if e := st.cCallCheck(); e != nil {
+		return nil, e
 	}
 	st.nCcalls++
 	// One more host frame stands between the caller and the Lua function about to
@@ -432,9 +432,46 @@ func (st *State) ProtectedCall(fn value.Value, args []value.Value) ([]value.Valu
 		return nil, errf("pcall: no running thread")
 	}
 	st.protectDepth++
+	st.catchDepth++
 	outerErrFunc := st.errFunc
 	st.errFunc = value.Nil // lua_pcall(..., 0): no message handler inside
-	defer func() { st.protectDepth--; st.errFunc = outerErrFunc }()
+	defer func() { st.protectDepth--; st.catchDepth--; st.errFunc = outerErrFunc }()
+	return st.callLuaFromHost(th, fn, args)
+}
+
+// RaiseCaughtInHost is a luaL_error raised by the running host function and caught by that same
+// function without changing the message handler (lua_load's reader errors): it gets
+// luaL_where(L, 1)'s position -- the caller's line when the caller is Lua -- and its raise-point
+// processing, then comes back to the host function instead of propagating.
+func (st *State) RaiseCaughtInHost(e *LuaError) *LuaError {
+	th := st.runningThread
+	if th == nil || th.ciDepth == 0 {
+		return e
+	}
+	if st.pendingHostFrames == 0 {
+		e = st.annotateError(e, currentCI(th), th)
+	} else {
+		e.MarkAnnotated()
+	}
+	markHostRaise(e, int(st.pendingHostFrames)+1)
+	st.catchDepth++
+	st.atRaisePoint(th, e, 0)
+	st.catchDepth--
+	return e
+}
+
+// ProtectedCallKeepingHandler catches like ProtectedCall but leaves the message handler alone, as
+// luaD_protectedparser does for load's reader: an error the reader raises still runs the
+// enclosing xpcall's handler (whose result becomes the caught value), and at top level still gets
+// the uncaught-error traceback lua.c's handler would add. Only the coroutine-death bookkeeping
+// sees it as caught.
+func (st *State) ProtectedCallKeepingHandler(fn value.Value, args []value.Value) ([]value.Value, *LuaError) {
+	th := st.runningThread
+	if th == nil {
+		return nil, errf("pcall: no running thread")
+	}
+	st.catchDepth++
+	defer func() { st.catchDepth-- }()
 	return st.callLuaFromHost(th, fn, args)
 }
 
@@ -447,9 +484,10 @@ func (st *State) ProtectedCallWithHandler(fn value.Value, args []value.Value, ha
 		return nil, errf("pcall: no running thread")
 	}
 	st.protectDepth++
+	st.catchDepth++
 	outerErrFunc := st.errFunc
 	st.errFunc = handler
-	defer func() { st.protectDepth--; st.errFunc = outerErrFunc }()
+	defer func() { st.protectDepth--; st.catchDepth--; st.errFunc = outerErrFunc }()
 	results, e := st.callLuaFromHost(th, fn, args)
 	if e != nil && e != errYieldSentinel && !e.handled {
 		// An error that never reached a raise point with the handler installed (one raised while

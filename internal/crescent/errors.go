@@ -296,7 +296,7 @@ func (st *State) atRaisePoint(th *thread, e *LuaError, extraHost int) {
 		}
 		return
 	}
-	if st.coDeathDepth > 0 && st.protectDepth == st.coDeathDepth && !e.coSnap {
+	if st.coDeathDepth > 0 && st.catchDepth == st.coDeathDepth && !e.coSnap {
 		// Only the resume boundary stands between this error and the running coroutine, which it
 		// kills. lua5.1 leaves a dead coroutine's stack as the error left it, so debug.traceback(co)
 		// still shows where it died; here the frames unwind, so their lines are kept now.
@@ -309,7 +309,7 @@ func (st *State) atRaisePoint(th *thread, e *LuaError, extraHost int) {
 			}
 		}
 	}
-	if st.errFunc != value.Nil && !e.handled {
+	if st.errFunc != value.Nil && !e.handled && !e.errErr {
 		st.runErrFunc(th, e, extraHost)
 	}
 }
@@ -360,11 +360,24 @@ func (st *State) runErrFunc(th *thread, e *LuaError, extraHost int) {
 			th.setTop(ceil)
 		}
 	}
-	outer, outerRoom := st.pendingHostFrames, st.errFuncDepthRoom
+	outer, outerRoom, outerC := st.pendingHostFrames, st.errFuncDepthRoom, st.nCcalls
 	st.pendingHostFrames = uint8(extraHost)
 	st.errFuncDepthRoom = maxLuaCallDepth
+	if e.cOverflow {
+		st.nCcalls++ // the failed luaD_call's increment, still in place when lua5.1 calls the handler
+	}
 	res, he := st.callLuaFromHostNoLevel(th, h, []value.Value{errVal})
-	st.pendingHostFrames, st.errFuncDepthRoom = outer, outerRoom
+	if he != nil && he != errYieldSentinel && he.cOverflow && !he.handled {
+		// Calling the handler itself hit the C-depth limit: in lua5.1 that luaD_call raises "C stack
+		// overflow" right there, and that error runs the handler once more, a level deeper.
+		if extraHost == 0 {
+			he = st.annotateError(he, currentCI(th), th)
+		} else {
+			he.MarkAnnotated()
+		}
+		st.runErrFunc(th, he, extraHost)
+	}
+	st.pendingHostFrames, st.errFuncDepthRoom, st.nCcalls = outer, outerRoom, outerC
 	switch {
 	case he == nil && len(res) > 0:
 		e.handlerVal = res[0]

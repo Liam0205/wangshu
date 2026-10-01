@@ -67,6 +67,11 @@ type LuaError struct {
 	handlerVal value.Value
 	// coSnap: the dying coroutine's frames were already kept for this error (atRaisePoint).
 	coSnap bool
+	// cOverflow: the C-call depth check raised this ("C stack overflow"), leaving luaD_call's
+	// increment in place in lua5.1 -- so a handler run for it is one C level deeper.
+	cOverflow bool
+	// errErr: LUA_ERRERR, thrown past every handler straight to the xpcall that is handling.
+	errErr bool
 }
 
 func (e *LuaError) Error() string {
@@ -127,6 +132,10 @@ type State struct {
 	// raised while protectDepth is still at it has nothing but that resume to catch it, so it kills
 	// the coroutine.
 	coDeathDepth int
+	// catchDepth counts every boundary that catches an error: the protectDepth ones plus load's
+	// reader call (luaD_protectedparser), which catches without changing the handler. An error is
+	// going to kill the running coroutine only when catchDepth is still at coDeathDepth.
+	catchDepth int
 	// errFuncDepthRoom is extra CallInfo depth allowed while an xpcall handler runs. luaD_growCI
 	// raises "stack overflow" on the way to doubling the CallInfo array, so a handler called for
 	// that very error still has room to run; overflowing again is LUA_ERRERR.
@@ -506,7 +515,7 @@ func NewWithOptions(arenaOpts arena.Options) *State {
 		}
 		udv := value.MakeGC(value.TagUserdata, ud)
 		// a finalizer error is swallowed (5.1: the error does not propagate, the GC process continues)
-		_, _ = st.callLuaFromHost(st.runningThread, h, []value.Value{udv})
+		_, _ = st.ProtectedCall(h, []value.Value{udv})
 	})
 	return st
 }
