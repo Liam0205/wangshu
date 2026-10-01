@@ -238,7 +238,7 @@ TAILCALL 分支的「尾调用 gibbous 分发」看见 `GibbousCodeOf(proto)` �
   `luasuite_test.go` 的 `stopAt` 表在某一行截断(截断理由都有登记,是刻意不实现的功能),
   按行号算约一半,只有少数文件从头跑到尾,`events.lua` 只跑 3 行。**更要紧的是「在套件里」不等于「在跑」** ——
   有文件开头就 `if T == nil then ... return end`(官方 testC 调试库,本仓不提供),整文件零断言。
-  引用它作覆盖度证据前先读一遍 `stopAt` 表,并且用**执行侧**的量核一次(把 `assert` 换成自增转发的版本
+  引用它作覆盖度证据前先读一遍 `stopAt` 表和 `resumeAt` 表,并且用**执行侧**的量核一次(把 `assert` 换成自增转发的版本
   数实际执行次数),别用行号算出来的占比,判据见 [[design-claims-vs-codebase-physics]] §7。
 - 加新 e2e 语料前先 `grep -l <feature> test/luasuite/testdata/`——**命中之后还要确认那一处在 `stopAt` 之前，或在
   `resumeAt` 登记的区间里**;
