@@ -254,8 +254,11 @@ func (st *State) RunningCoID() (uint64, bool) {
 // call" into CALL's target registers, then continue the main loop from pc (which
 // already points to the instruction after CALL).
 //
-// The recovery information saved at yield lives on co.th's pendingResume (recorded
-// by doCall when yield bubbles through callHost).
+// The recovery information saved at yield lives on co.th's pendingResume, recorded
+// when yield bubbles through callHost: by doCall for an ordinary CALL, and by
+// doTailCall for a host tail call (`return coroutine.yield(x)`), which asks for
+// multret results at the callee slot so the RETURN A 0 right after the TAILCALL
+// returns them.
 func (st *State) executeResume(th *thread) *LuaError {
 	pr := th.pendingResume
 	th.pendingResume = nil
@@ -301,6 +304,6 @@ func (st *State) executeResume(th *thread) *LuaError {
 type pendingResumeInfo struct {
 	ciIndex    int // ci index when yield occurred
 	dst        int // result register of the yield CALL (absolute stack slot)
-	nresults   int // expected number of results of the yield CALL
+	nresults   int // expected number of results of the yield CALL (-1 = multret, always so for a tail call)
 	entryDepth int // execute's entry depth (the bubble boundary is unchanged after resume)
 }
