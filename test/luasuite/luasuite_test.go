@@ -9,13 +9,15 @@
 // depend on exempted features: setfenv/getfenv, debug.*, io.tmpfile,
 // os.setlocale, string.dump, require -- all recorded in the exemption registry
 // in corners_test.go); execution is truncated before the exemption line, and
-// the prefix must pass entirely.
+// the prefix must pass entirely. Ranges after a cut that do not depend on the exempt feature are listed
+// in resumeAt and run as their own subtests.
 //
 // Files not listed in stopAt must pass in full. Exemption lines may only move
 // forward (as more features are implemented), never backward.
 package luasuite
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -75,6 +77,18 @@ var stopAt = map[string]int{
 	"db.lua": 40,
 }
 
+// resumeAt: file -> line ranges after its stopAt cut that do not depend on the exempted feature, run on
+// their own (1-based, inclusive). The cut ends the prefix at the first exempt line, but everything after it
+// goes unrun with it: closure.lua's whole coroutine section sat behind the setfenv cut, and the "yields in
+// tail calls" case there (closure.lua:220) failed for as long as nobody ran it (#272). A range is preceded
+// by blank lines so error positions keep the file's own line numbers.
+var resumeAt = map[string][][2]int{
+	// Coroutine section: multi-value yield/resume, yields in tail calls, generators, recursive
+	// coroutines, a pending coroutine left open. It ends before "coroutine environments" (closure.lua:409),
+	// which uses setfenv/getfenv again.
+	"closure.lua": {{178, 407}},
+}
+
 func TestOfficialSuite(t *testing.T) {
 	files, err := filepath.Glob("testdata/*.lua")
 	if err != nil || len(files) == 0 {
@@ -101,6 +115,21 @@ func TestOfficialSuite(t *testing.T) {
 			}
 			runWithTimeout(t, name, body)
 		})
+		for _, r := range resumeAt[name] {
+			label := fmt.Sprintf("%s:%d-%d", name, r[0], r[1])
+			t.Run(label, func(t *testing.T) {
+				src, err := os.ReadFile(f)
+				if err != nil {
+					t.Fatal(err)
+				}
+				lines := strings.Split(string(src), "\n")
+				if r[0] <= stopAt[name] || r[1] > len(lines) || r[0] > r[1] {
+					t.Fatalf("%s: range must lie after the stopAt cut (%d) and inside the file (%d lines)", label, stopAt[name], len(lines))
+				}
+				body := strings.Repeat("\n", r[0]-1) + strings.Join(lines[r[0]-1:r[1]], "\n")
+				runWithTimeout(t, name, body)
+			})
+		}
 	}
 }
 
