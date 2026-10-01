@@ -10,7 +10,10 @@
   比较 `nCcalls` 与协程基线);② ~~比较器里 `coroutine.yield()` 的报错多了 `x:N:` 位置~~——**#272 已修**,同一处检查,不带位置;
   ③ `__lt` 处理函数(及可调用表的 `__call`)里 `error(m, 2)` / `error(m, 3)` 的层级差一层;④ `next({}, {})`
   在 Lua 函数里调用时望舒多了位置前缀(lua5.1 是 `invalid key to 'next'`);⑤ 未捕获错误的 traceback 少一行
-  `[C]: in function 'sort'`。③④ 都是「宿主函数内部抛出的错误被宿主调用边界补上 Lua 调用方位置」或层级计数的同一类,
+  `[C]: in function 'sort'`;⑥(#272 轮最终审查发现，master `0a5cc3d` 上同样存在)`coroutine.wrap` 返回的函数
+  在 Lua 代码里直接调用、协程以字符串错误结束时,lua5.1 的 `auxwrap` 用 `luaL_where(L, 1)` 在前面再加一层调用方
+  位置(`f()` 在第 3 行 → `x:3: x:1: boom`),望舒只给 `x:1: boom`;经 `pcall(f)` 调用时两边一致(那一层是 C 函数，
+  不加位置)。③④⑥ 都是「宿主函数内部抛出的错误被宿主调用边界补上 Lua 调用方位置」或层级计数的同一类,
   可能不止这几处,修之前先扫一遍会回调 Lua 或会抛 `luaL_error` 以外错误的宿主函数。
   详见 [[2026-10-01-issue271-sort-auxsort-and-order-tm]]、[[2026-10-01-issue272-273-yield-base-and-promotion-replay]]。
 
