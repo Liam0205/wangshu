@@ -1478,14 +1478,22 @@ func hostTableSort(vm *VM, th *Thread) int {
 }
 ```
 
-- **算法 = 快排(quicksort),对齐 5.1 `ltablib.c`**:Lua 5.1 用快排(带中位数取 pivot + 小区间插入排序优化)。
+- **算法 = 快排(quicksort),对齐 5.1 `ltablib.c`**:Lua 5.1 用快排(三数取中选 pivot,两三个元素的区间直接比较收尾,没有插入排序)。
   **非稳定排序**(相等元素相对顺序不保证)。**P1 移植 5.1 `auxsort` 的快排结构**——这关系到「相等元素的最终
   顺序」是否与 5.1 一致(差分敏感,§7.6)。
 - **默认比较用 `lessThan`**(07 §9.2):`a < b`,可触发 `__lt` 元方法(对象排序)。number 走 IEEE `<`,string 走
   字典序(05 §4.4)。
-- **比较器 `comp` 的约定**:`comp(a, b)` 返回真 = 「a 在 b 前」。**comp 必须定义严格弱序**(5.1 不检查,若 comp
-  不一致 Lua 5.1 可能报 `"invalid order function for sorting"` 或行为未定义)。**待 12 核对**:5.1 对无效比较器的
-  检测(`auxsort` 有「partition 越界」检查报错)。
+- **比较器 `comp` 的约定**:`comp(a, b)` 返回真 = 「a 在 b 前」。**comp 应当定义严格弱序**,但 5.1 不检查;
+  不一致时(比较器恒真、`<=`、含 NaN 的数组)结果取决于 `auxsort` 的具体步骤,还可能在分区扫描越界时报
+  `"invalid order function for sorting"`(`i > u` 或 `j < l`),或在越界读到 `nil` 时先报
+  `"attempt to compare nil with number"`。
+- **实现(2026-10-01 订正,#271 一轮)**:`internal/stdlib/tablelib.go` 的 `tableSorter` 逐步移植 `auxsort`,
+  直接读写表本身,读写顺序、比较的元素对和操作数顺序都与 5.1 相同。此前的实现把数组拷出来跑 `sort.SliceStable`
+  再写回,只在严格弱序下与 5.1 一致:`{0, 0, 0%0, 0}` 排出 `0 0 nan 0`(5.1 是 `0 nan 0 0`),比较器看不到排序
+  中途的表,比较器报错时表保持原样(5.1 留下排到一半的顺序),也永远不会报 `invalid order function for sorting`。
+- **步数计费**:进入时预付 `n*log2(n)`(按比较次数,每次一个字节当量)。快排在 McIlroy 构造的对抗排列上是
+  平方级的(3000 个元素约 225 万次比较,正常排列约 3.5 万次),所以比较次数超过预付额的四倍之后,每次比较
+  再计一个字节当量,防止这类输入绕过步数预算。
 
 ### 7.4 `table.sort` 比较器重入 + shadow stack 纪律(任务点名)
 

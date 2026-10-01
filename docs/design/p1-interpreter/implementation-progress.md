@@ -487,6 +487,25 @@
   [04](./04-frontend-parser-codegen.md) §5.2.2、[09](./09-errors-pcall.md) §3.5.2 订正块。过程反思见
   `llmdoc/memory/reflections/2026-09-03-issue252-discharge-line-is-lastline.md`。
 
+- **issue #271 —— `table.sort` 改为逐步移植 `auxsort`,顺带修正 `<` / `<=` 的元方法规则(2026-10-01,
+  分支 `fix/271-table-sort-auxsort`)**。nightly 开出的 p1 `FuzzOracleDiff` 分歧(标题写「crash」,其实是输出不同):
+  seed `t={0,0,0%0,0X0}table.sort(t)print(unpack(t))`,oracle 输出 `0 nan 0 0`,望舒输出 `0 0 nan 0`。
+  失败 run 的 headSha 就是当前 master,本地重放立刻复现。
+
+  | 项 | 落点 | 结论与要点 |
+  |---|---|---|
+  | 根因:排序算法不同 | `internal/stdlib/tablelib.go::tableFnSort` | 设计稿 10 §7.3 早就写了「移植 5.1 `auxsort`」,实现却是把数组拷出来跑 `sort.SliceStable` 再写回。两种算法只在严格弱序下给出相同结果;NaN 与任何数比较都为假,不是严格弱序,于是元素落在不同位置 |
+  | 拷贝还藏住了三类可观察行为 | 同上 | 比较器看不到排序中途的表;比较器报错时表保持原样(5.1 留下排到一半的顺序);永远不会报 `invalid order function for sorting`。改为 `tableSorter` 直接读写表,读写顺序、比较哪两个元素、操作数先后都与 `ltablib.c` 一致 |
+  | 共用的 `LessThan` 错误措辞也错 | `internal/crescent/meta.go::LessThan` | 不论类型是否相同一律报 `two <type> values`,`table.sort({1, "a"})` 报 `two string values`,5.1 是 `string with number` |
+  | 顺带查出 VM 的 `<` / `<=` 规则偏差 | `internal/crescent/execute.go::doCompare` | 按 `lvm.c`:类型不同**先报错、不查元方法**;只取左操作数的处理函数,且右操作数的必须与之 `rawequal`(`call_orderTM`);处理函数不要求是 function。原实现「先查左、没有再查右」且不比类型,一侧有 `__lt` 时 `A < {}`、`A < 1` 都返回处理函数的结果。P3/P4 的比较慢路径都经 `doCompare`,一处修好三层 |
+  | 错误措辞的第三个字母规则 | `execute.go::orderError` | `luaG_ordererror` 只比较类型名的第三个字母,`"string"` 与 `"thread"` 相同,所以 `"s" < co` 报 `two string values`。照抄,不按类型名相等判断 |
+  | 计费补一道后备 | `tableFnSort` / `tableSorter.less` | 旧的稳定归并排序在任何输入上都是 O(n log n);快排在 McIlroy 对抗排列上是平方级(3000 个元素约 225 万次比较,正常排列约 3.5 万次),只预付 `n*log2(n)` 会让这类输入几乎不计费。比较次数超过预付额四倍后每次比较再计一个字节当量 |
+
+  验证:新增 `test/regression/issue271_sort_order_test.go`(排序 14 条 + 比较规则 14 条,期望值逐条用 `lua5.1` 跑出;
+  另一条对抗排列计费测试,去掉后备时失败);三组在修复前全部失败。#271 语料入 `test/fuzz/testdata/fuzz/FuzzOracleDiff/`。
+  `make test-all` / `conformance-all` / `difftest-all` 与 oracle 语料重放全绿。代价:排序密集的循环慢约 14%
+  (每次访问走 `RawGet`/`RawSet`,不再在 Go 切片上排序)。设计稿 07 §9.2-§9.4、10 §7.3 已按实际规则改写。
+
 ## 相关
 
 [00-overview](./00-overview.md) · [../engineering](../engineering.md) ·
