@@ -511,9 +511,12 @@ type heldPin struct {
 
 // hold roots v in slot, releasing whatever the slot held before. Only values that can be
 // collected while a comparison runs need it: with a comparator any value can, while the default
-// `<` runs Lua code only through __lt, which numbers and strings never reach -- and every
-// comparison that succeeded did so between values of one type, so a held string or number never
-// sits beside a running handler.
+// `<` runs Lua code only through __lt, which numbers and strings never reach. Leaving strings
+// unpinned there is safe because an unpinned string is never READ after a handler has run, not
+// because none is ever held while one runs: within one recursion level every comparison is
+// between values of the pivot's type (any other type raises before a handler is called), and a
+// string an inner level leaves behind in a slot is never reused -- the outer level re-reads every
+// value from the table and re-holds it before comparing.
 func (s *tableSorter) hold(slot int, v value.Value) {
 	p := &s.pins[slot]
 	if p.ok {
