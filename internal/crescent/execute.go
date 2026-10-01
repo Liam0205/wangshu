@@ -325,7 +325,15 @@ func (st *State) executeLoop(th *thread, entryDepth int) *LuaError {
 			// proper tail recursion — legal in PUC 5.1 — would trip
 			// maxCCallDepth. Past the watermark, keep interpreting: the
 			// interp TAILCALL is O(1) depth with zero Go re-entry.
-			if profileEnabled && th == st.mainTh && !ci.Gibbous() &&
+			//
+			// Only after a LUA tail call (next != nil), which entered a fresh frame at pc 0.
+			// A host tail call leaves ci on the caller's own half-executed frame, and if
+			// that frame's proto was promoted when this very frame was entered (the
+			// threshold call), running its code here restarted the function from pc 0:
+			// every side effect before the TAILCALL ran twice (#273: `n = n + 1 return
+			// f({k = 1})` counted the promotion call twice) and the re-run could index a
+			// table the first pass had already dropped.
+			if profileEnabled && next != nil && th == st.mainTh && !ci.Gibbous() &&
 				st.nCcalls < gibbousReentryCCallCap {
 				if gcode := st.bridge.GibbousCodeOf(proto); gcode != nil && isPJ10NativeCode(gcode) {
 					ci.SetGibbous(true)
