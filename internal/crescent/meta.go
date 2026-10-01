@@ -254,7 +254,7 @@ func (st *State) callMetaHandler(th *thread, fn value.Value, args []value.Value,
 // handler still get theirs from callLuaFromHost.
 func (st *State) callLuaFromHostNoLevel(th *thread, fn value.Value, args []value.Value) ([]value.Value, *LuaError) {
 	out, e := st.callLuaFromHostNamed(th, fn, args)
-	if e != nil {
+	if e != nil && e != errYieldSentinel { // the sentinel is shared by every State: never write it
 		e.argNarg = 0
 	}
 	return out, e
@@ -278,7 +278,7 @@ func (st *State) callLuaFromHost(th *thread, fn value.Value, args []value.Value)
 	defer func() { st.pendingHostFrames = outer }()
 	st.pendingHostFrames++
 	out, e := st.callLuaFromHostNamed(th, fn, args)
-	if e != nil {
+	if e != nil && e != errYieldSentinel { // the sentinel is shared by every State: never write it
 		e.argNarg = 0
 	}
 	return out, e

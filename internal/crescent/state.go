@@ -1009,7 +1009,17 @@ func NewErrorVal(v value.Value, msg string) *LuaError {
 }
 
 // MarkAnnotated blocks the position-prefix annotation (error(v, 0) / non-string error value).
-func (e *LuaError) MarkAnnotated() { e.annotated = true }
+//
+// The yield sentinel is left alone: it is one package-level object shared by every State, so
+// writing it from two goroutines is a data race (table.sort with __lt = coroutine.yield reached
+// it), and annotation already skips it anyway. callLuaFromHost's argNarg reset skips it for the
+// same reason.
+func (e *LuaError) MarkAnnotated() {
+	if e == errYieldSentinel {
+		return
+	}
+	e.annotated = true
+}
 
 // TypeNameOf exposes the internal typeName for stdlib to implement the type() builtin.
 // stdinMu guards stdinShared, the one buffered reader over os.Stdin.
