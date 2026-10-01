@@ -1,0 +1,67 @@
+---
+name: 2026-10-02-issue276-279-host-boundary-positions-and-traceback
+description: >
+  #271、#272 两轮登记在 doc-gaps 的存量差异转成 issue 后一起修(分支 `fix/276-279-host-boundary-error-positions`)。
+  四个问题都出在宿主函数参与的调用链上:`coroutine.wrap` 少一层调用方位置(#276)、宿主函数触发的元方法处理函数里
+  `error(m, 2)` 差一层(#277)、C 函数内部抛出的错误多了位置前缀(#278)、traceback 格式与生成时机(#279)。教训:
+  **位置和层级取决于调用方是 Lua 帧还是 C 帧，判断「与 lua5.1 一致」必须两种调用方都测**(#202 把 wrap 一项判为不成立，
+  只测了经 pcall 的写法);**延迟消费「当前栈」的状态会被中途的截栈改掉，traceback 要在出错点取**(R3c-fix 之后第二个样本);
+  **force-all 用例不等于升层路径被测到，要确认被测的帧真的升了层**。
+metadata:
+  type: reflection
+  date: 2026-10-02
+---
+
+# 宿主调用边界上的错误位置、层级与 traceback(2026-10-02,issue #276 / #277 / #278 / #279)
+
+> 范围：分支 `fix/276-279-host-boundary-error-positions`。改动在 `internal/crescent/meta.go`、`errors.go`、
+> `objname.go`、`call.go`、`execute.go`、`coroutine.go`、`state.go`、`gibbous_host.go` 与
+> `internal/stdlib/coroutinelib.go`;新测试 `test/regression/issue27{6,7,8,9}_*_test.go` 与
+> `internal/crescent/residual_test.go::TestTraceback_NotBuiltForCaughtErrors`;设计稿 08 / 09、P1 与 P3
+> implementation-progress。对账表在 P1 implementation-progress 的 #276-#279 条目，这里只记过程和教训。
+
+## 过程
+
+1. **来源**。这几项是 #271 独立审查在 master 上复现、与那一轮无关的差异，当时决定登记 doc-gaps、本轮不修。
+   用户随后要求把只记在文档里的差异都开成 issue,于是有了 #277-#279(#276 先开)。
+2. **先扫再修**。doc-gaps 原条目提示「可能不止这几处」。用探针把会回调 Lua 的宿主函数(sort、gsub、foreach、
+   pcall、wrap、for-in)和会在 C 函数内部抛错的入口(next、rawset、表索引)两两组合跑 lua5.1 对照，范围比 issue 原文大:
+   #278 还包括 `gsub("a", "a", error)`、`sort` 的比较器是 `rawset` 这类宿主调宿主;#277 还包括 gsub 表替换值的 `__index`。
+3. **#279 牵出两处顺带的问题**。traceback 从调用方当前指令推断函数名后，P3 的 `TestPW10R3_IndirectErrorByteEqual`
+   失败：gibbous 的三个调用 helper 把 `ci.pc` 存成 CALL 本身，比解释器约定少一条(R3c-fix 当时只改了算术族)。
+   另一处是 `pcall(coroutine.resume, co)` 留下的 `pendingHostFrames` 被协程第一帧吸收，协程栈底多出一行 `[C]: ?`。
+4. **变异检查**。每项修复去掉后对应用例都失败，只有 gibbous `pc + 1` 例外：去掉它，新加的 #279 用例在 force-all 下
+   仍然全过，是已有的 P3/P4 测试抓到的。没有逐个确认 #279 用例里哪些帧真的升了层。
+
+## 教训
+
+### 1. 「与 lua5.1 一致」要按调用方种类分开测
+
+5.1 加位置的规则只有两条:`luaG_runerror` 在当前帧是 Lua 函数时加;`luaL_where(L, 1)` 取调用方，调用方是 C 函数时给空串。
+所以同一个错误，在 Lua 代码里直接触发和经 `pcall`、比较器、`gsub` 触发，位置可以不同。#202 把「`coroutine.wrap` 缺前缀」
+判为不成立，用的探针是 `pcall(f)`,调用方正好是 C 函数，两边都只有一层；直接调用 `f()` 才看得出差别。
+
+**检查方法**:判断位置、层级、函数名相关的差异是否成立时，至少跑两种写法——调用方是 Lua 帧(直接调用、尾调用、元方法)
+和调用方是 C 帧(pcall、sort 比较器、gsub 替换函数)。只测一种得出的「一致」不能用来关 issue。
+
+### 2. traceback 要在出错点取，不能等错误冒到顶层
+
+原来未捕获错误的 traceback 在 `execute` 返回之后才生成，这时错误穿过的每个宿主边界都已经 `truncateCI`,比较器和
+`sort` 都不在栈上了。这与 P3 R3c-fix 的教训 3 是同一种问题：一个机制延迟读取「当前栈」,另一个机制在这期间改了栈。
+修法也一样，在出错点、栈还完整时取，用 `protectDepth` 判断有没有会捕获它的边界，避免给被 pcall 接住的错误白白生成。
+
+这是第二个样本，可以考虑把它写进 [[design-claims-vs-codebase-physics]] §2:**延迟消费上下文相关的状态，要先列出
+从产生到消费之间有谁会改这个上下文**。
+
+### 3. force-all 用例要确认被测帧真的升了层
+
+#279 的用例在 P3/P4 下各跑 force-all 和不升层两遍，但 gibbous 调用 helper 的 pc 改动去掉后它们照样通过。force-all
+只是打开升层开关，函数能不能升层还要过可编译性检查;traceback 用例的帧大多调用 `debug.traceback` 等宿主函数，
+没有确认它们是否升层。以后给编译层加的用例，要么断言升层计数，要么做一次变异确认用例对编译层的改动敏感。这属于 [[prove-the-path-under-test]] 说的「绿色不等于在测你以为在测的路径」。
+
+## 触发场景
+
+- 判断错误位置、层级、traceback 函数名的差异是否成立，或者写「已与 lua5.1 核对」之前。
+- 修改宿主调用边界(`callLuaFromHost`、`ProtectedCall*`、`Resume`、元方法入口)上的错误标注或层级计数时。
+- 一个机制在事后读取栈、帧或 pc,而中间可能经过截栈、弹帧时。
+- 给 P3/P4 写 force-all 用例并据此声称编译层也覆盖到了时。
