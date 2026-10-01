@@ -783,93 +783,57 @@ func (vm *VM) equalMeta(f *frame, a, b value.Value) (bool, *LuaError) {
 
 ### 9.2 `__lt`:小于
 
+按 `lvm.c` 的 `luaV_lessthan` + `call_orderTM`(实现见 `internal/crescent/execute.go::lessThan` / `callOrderTM`):
+
 ```
 lessThan(a, b):
-  if a 是 number and b 是 number: return a < b   // 快路径(05 §4.4),IEEE(NaN 全 false)
-  if a 是 string and b 是 string: return a <字典序 b
-  // 混合类型:**不 coerce**(与算术不同!),直接查 __lt
+  if type(a) != type(b): 报错 (见 §9.4)          // 类型不同:**不查元方法**,直接报错
+  if a 是 number: return a < b                    // 快路径(05 §4.4),IEEE(NaN 全 false)
+  if a 是 string: return a <字典序 b
+  // 同类型的其他值:call_orderTM
   mm := getMetamethod(a, __lt)
-  if mm == nil:
-    mm = getMetamethod(b, __lt)
-  if mm == nil:
-    报错 (见 §9.4 比较错误)
-  return truthy(call mm(a, b))
+  if mm == nil: 报错                              // 只看左操作数;右操作数有 __lt 也不用
+  if not rawequal(mm, getMetamethod(b, __lt)): 报错  // 两边必须是同一个处理函数
+  return truthy(call mm(a, b))                    // mm 不要求是 function:可调用的 table 走 __call
 ```
 
 ```go
-// 承 05 §4.4:LT 快路径失败的慢路径(lessThan 是 05 点名的函数)。
-func (vm *VM) lessThan(f *frame, a, b value.Value) (bool, *LuaError) {
-    // 快路径(双 number / 双 string)由 05 §4.4 内联;此处是慢路径
-    mm := vm.getMetamethod(a, vm.eventKey(EvLt))
-    if mm == value.Nil {
-        mm = vm.getMetamethod(b, vm.eventKey(EvLt))
+// call_orderTM: ok=false 表示左操作数没有处理函数,或右操作数的处理函数与之不同。
+func (st *State) callOrderTM(th *thread, p1, p2 value.Value, event string) (res, ok bool, e *LuaError) {
+    tm1 := st.metaFieldOfValue(p1, event)
+    if tm1 == value.Nil {
+        return false, false, nil
     }
-    if mm == value.Nil {
-        return false, vm.compareError(f, a, b)  // §9.4
+    if !st.rawEqual(tm1, st.metaFieldOfValue(p2, event)) {
+        return false, false, nil
     }
-    var out value.Value
-    if e := vm.callMMInto(f, mm, []value.Value{a, b}, &out, 1); e != nil {
-        return false, e
-    }
-    return value.Truthy(out), nil
+    v, e := st.callMetaHandler(th, tm1, []value.Value{p1, p2}, 1)
+    ...
 }
 ```
+
+这三条规则与 `__eq`(§9.1)的「两边处理函数必须相同」是同一套 5.1 约束,只是 `__lt`/`__le` 在类型不同时**报错**,
+`__eq` 则直接给 false。**曾经的实现偏差(2026-10-01 订正,#271 一轮)**:最初按「先查 a、没有再查 b」取处理函数且不比较
+类型,于是一侧有 `__lt` 时 `A < {}`、甚至 `A < 1` 都返回处理函数的结果,而 lua5.1 报
+`attempt to compare two table values` / `attempt to compare table with number`。
 
 **`a > b` 已被 codegen 转成 `b < a`**(04 codegen / 02 §4 记号):`LT` 指令只表达「小于」,源码的 `>` 在编译期交换操作数变成 `<`。所以解释器只需 `lessThan`,无需 `greaterThan`。
 
 ### 9.3 `__le`:小于等于 —— **Lua 5.1 的 `__le→__lt` 回退(关键!)**
 
-**这是 5.1 与 5.4 的核心差异之一,必须写明**:
+**这是 5.1 与 5.4 的核心差异之一,必须写明**。按 `lvm.c` 的 `lessequal`(实现见 `execute.go::lessEqual`):
 
 ```
 lessEqual(a, b):                              // Lua 5.1 语义
-  if a 是 number and b 是 number: return a <= b
-  if a 是 string and b 是 string: return a <=字典序 b
-  // 混合:不 coerce,先查 __le
-  mm := getMetamethod(a, __le)
-  if mm == nil:
-    mm = getMetamethod(b, __le)
-  if mm != nil:
-    return truthy(call mm(a, b))              // 有 __le:直接用
-  // **5.1 特殊回退**:无 __le 但有 __lt ⇒ 用 not (b < a) 模拟 a <= b
-  mm = getMetamethod(a, __lt)
-  if mm == nil:
-    mm = getMetamethod(b, __lt)
-  if mm != nil:
-    return not truthy(call mm(b, a))          // 注意:调 __lt(b, a),取反!
+  if type(a) != type(b): 报错 (见 §9.4)
+  if a 是 number: return a <= b
+  if a 是 string: return a <=字典序 b
+  if call_orderTM(a, b, __le) 成立:           // a 有 __le 且 b 的 __le 与之相同
+    return truthy(call __le(a, b))
+  // **5.1 特殊回退**:a <= b 用 not (b < a) 模拟
+  if call_orderTM(b, a, __lt) 成立:           // 注意:以 b 为左操作数查 __lt,且 a 的 __lt 必须相同
+    return not truthy(call __lt(b, a))        // 调 __lt(b, a),取反!
   报错 (见 §9.4)
-```
-
-```go
-// 承 05 §4.4:LE 快路径失败的慢路径。**实现 5.1 的 __le→__lt 回退**。
-func (vm *VM) lessEqual(f *frame, a, b value.Value) (bool, *LuaError) {
-    // 1. 先找 __le
-    mm := vm.getMetamethod(a, vm.eventKey(EvLe))
-    if mm == value.Nil {
-        mm = vm.getMetamethod(b, vm.eventKey(EvLe))
-    }
-    if mm != value.Nil {
-        var out value.Value
-        if e := vm.callMMInto(f, mm, []value.Value{a, b}, &out, 1); e != nil {
-            return false, e
-        }
-        return value.Truthy(out), nil
-    }
-    // 2. **5.1 回退**:无 __le 但有 __lt ⇒ a<=b 等价 not(b<a),调 __lt(b, a) 取反
-    mm = vm.getMetamethod(a, vm.eventKey(EvLt))
-    if mm == value.Nil {
-        mm = vm.getMetamethod(b, vm.eventKey(EvLt))
-    }
-    if mm != value.Nil {
-        var out value.Value
-        if e := vm.callMMInto(f, mm, []value.Value{b, a}, &out, 1); e != nil { // 注意 (b, a) 反序!
-            return false, e
-        }
-        return !value.Truthy(out), nil          // 取反
-    }
-    // 3. 都没有 ⇒ 报错
-    return false, vm.compareError(f, a, b)
-}
 ```
 
 **为什么这个回退必须写明且必须实现**:
@@ -878,23 +842,26 @@ func (vm *VM) lessEqual(f *frame, a, b value.Value) (bool, *LuaError) {
 - **回退细节易错两处**:① 调的是 `__lt(b, a)`(**操作数反序**),不是 `__lt(a, b)`;② 结果**取反**(`a<=b ⟺ not(b<a)`)。这两个一起才是 `a<=b` 的正确模拟。
 - **`a >= b` 转 `b <= a`**(codegen,类似 `>`→`<`):`LE` 只表达「小于等于」,源码 `>=` 交换操作数。所以解释器只需 `lessEqual`。
 
-> **doc-gap / 待 12 差分核对**:5.1 `__le` 回退时 `__lt` 的查找顺序(回退里再次「先 a 后 b」找 `__lt`)与官方 `lvm.c` `lessequal` 的精确实现对齐,由 [12](./12-testing-difftest.md) 核对。本文按「先 a 后 b 找 `__lt`,调 `__lt(b,a)` 取反」实现。
+### 9.4 比较错误措辞(类型不同,或没有可用的元方法)
 
-### 9.4 比较错误措辞(混合类型且无元方法)
-
-承 [05](./05-interpreter-loop.md) §4.4:**number vs string 比较不 coerce**(与算术不同),直接查元方法,没有则报错。错误措辞分两种(Lua 5.1):
+承 [05](./05-interpreter-loop.md) §4.4:**number vs string 比较不 coerce**(与算术不同),类型不同直接报错。措辞按
+`ldebug.c` 的 `luaG_ordererror`(实现见 `execute.go::orderError`):
 
 ```
-compareError(a, b):
-  if type(a) == type(b):
-    报 "attempt to compare two <type> values"     // 同类型(如两个 table 都无 __lt)
+orderError(a, b):
+  t1, t2 := typename(a), typename(b)
+  if t1[2] == t2[2]:                              // 只比较类型名的第三个字母!
+    报 "attempt to compare two <t1> values"
   else:
-    报 "attempt to compare <type-a> with <type-b>" // 不同类型(如 number 与 string)
+    报 "attempt to compare <t1> with <t2>"
 ```
 
-- `1 < "2"` ⇒ number 与 string 不同类型且都无 `__lt` ⇒ `"attempt to compare number with string"`。
-- `{} < {}`(都无 `__lt`)⇒ 同类型 ⇒ `"attempt to compare two table values"`。
-- **此处是高频差分易错点**(05 §4.4 已标「易错,差分测试重点覆盖」):number/string 混合**绝不自动转**,与算术的 coercion 形成鲜明对比。**待 12 差分核对**两种措辞的精确格式。
+- `1 < "2"` ⇒ `"attempt to compare number with string"`。
+- `{} < {}`(都无 `__lt`)⇒ `"attempt to compare two table values"`。
+- **第三个字母的怪癖**:`"string"` 与 `"thread"` 的第三个字母都是 `r`,所以 `"s" < co` 报
+  `"attempt to compare two string values"`,`co < "s"` 报 `"two thread values"`。望舒照抄这条规则,不按类型名是否相等判断。
+- **此处是高频差分易错点**(05 §4.4 已标「易错,差分测试重点覆盖」):number/string 混合**绝不自动转**,与算术的 coercion 形成鲜明对比。
+- `table.sort` 的默认比较器走同一个 `lessThan`(10 §7.3),报错措辞相同,只是不带位置前缀(出错点在 C 函数 `sort` 里)。
 
 ---
 
