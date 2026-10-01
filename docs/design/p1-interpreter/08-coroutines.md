@@ -48,7 +48,7 @@ resume/yield 机制、Thread 状态机、跨 Thread 值搬运在 `internal/cresc
    `execute` 带信号 `return` 出来(类似 05 §9 的 `*LuaError` 冒泡,但冒泡的是 yield 而非 error)。
 
 2. **必须严格 Lua 5.1**(`docs/design/roadmap.md` (§6))。协程是 5.1 与 5.2+ 差异密集区:5.1 **不允许跨 C-call
-   边界 yield**(`attempt to yield across C-call boundary`),也**不允许在 pcall/metamethod 内 yield**(5.2+ 才用
+   边界 yield**(`attempt to yield across metamethod/C-call boundary`),也**不允许在 pcall/metamethod 内 yield**(5.2+ 才用
    可恢复的 `lua_pcallk`/`lua_callk` 放宽)。本文**每一处 5.2+ 放宽都显式标注以 5.1 为准**——否则差分基准
    ([12](./12-testing-difftest.md))会因"行为偏移一个版本"与官方 5.1 分叉。
 
@@ -256,7 +256,7 @@ yield(args):                           // host function(coroutine.yield)
   信号像错误一样**一路冒泡 return**(§3.3),实现比 A 的"channel 阻塞"复杂(但与 05 §9 的 `*LuaError` 冒泡
   同构,复杂度可控)。② **yield 不能跨 host call 边界**(§5)——因为 host 是真 Go 栈帧,yield 的信号冒泡无法
   穿过它(Go 函数无法"从中间 return 一个信号让调用它的 Lua 帧继续")。这恰好是 Lua 5.1 的硬限制
-  (`attempt to yield across C-call boundary`),B **天然吻合** 5.1 语义(A 反而要额外检测才能模拟这个限制)。
+  (`attempt to yield across metamethod/C-call boundary`),B **天然吻合** 5.1 语义(A 反而要额外检测才能模拟这个限制)。
 
 ### 3.2 P1 选定:路线 (B),论证
 
@@ -274,7 +274,7 @@ yield(args):                           // host function(coroutine.yield)
 2. **yield-across-C-boundary 的 5.1 限制,(B) 天然吻合,(A) 反而别扭**。Lua 5.1 **禁止**跨 C-call 边界 yield
    (§5)。路线 (B) 下这是**免费的正确性**——yield 信号靠 `return` 冒泡,遇到 host(真 Go 帧)自然穿不过去
    (Go 函数不能从中间 return 一个 yield 信号让上层 Lua 帧续跑),检测一下 `nCcalls`/host 帧标记就能给出
-   `attempt to yield across C-call boundary`(§5.2)。路线 (A) 下 goroutine 可以阻塞在任意深度(包括 host 调
+   `attempt to yield across metamethod/C-call boundary`(§5.2)。路线 (A) 下 goroutine 可以阻塞在任意深度(包括 host 调
    Lua 的深处),反而要**额外逻辑**去模拟"5.1 不许在这 yield"的限制——否则会实现出 5.2+ 才有的"跨 C 边界
    yield",与 5.1 差分失败。**(B) 让 5.1 限制成为机制的自然结果,(A) 让它成为额外负担**。
 
@@ -391,7 +391,7 @@ execute 在它下面,05 §7.3)。这与 05 §9.4 `error` 经 `raise` 触发错�
 func hostCoroutineYield(vm *VM, th *Thread) int {
     // ① 检查:当前是否可 yield(不在主线程、不跨 C 边界,§5)
     if !vm.canYield(th) {
-        vm.raise(vm.internString("attempt to yield across C-call boundary"))  // 或主线程措辞,§5.2
+        vm.raise(vm.internString("attempt to yield across metamethod/C-call boundary"))  // 主线程同一措辞,§8.2
         return 0   // 不可达(raise 走 callError 路径)
     }
     // ② yield 的参数(arg(1..nargs))已在 th 值栈上;标记"待 yield 的值"区间(§4.3)
@@ -638,7 +638,7 @@ func (vm *VM) assembleErrorResult(resumer, co *Thread, lerr *LuaError) int {
 ### 5.1 限制陈述(5.1 口径,显式标注)
 
 **Lua 5.1 禁止跨 C-call(host call)边界 yield**。具体地,以下情况 yield 报错
-`attempt to yield across C-call boundary`:
+`attempt to yield across metamethod/C-call boundary`:
 
 - 在 host function 内部(host 调 Lua、Lua 又 yield)——yield 信号要穿过那个 host 的真 Go 栈帧,**穿不过**。
 - 经典触发:`table.sort(t, comp)` 的比较器 `comp` 里 yield;`pcall(f)` 的 `f` 里 yield;`string.gsub(s, p, repl)`
@@ -674,7 +674,7 @@ yield 时(`hostCoroutineYield`,§3.4 step①的 `canYield`)检测"当前 co 是�
 func (vm *VM) canYield(th *Thread) bool {
     // ① 主线程不能 yield(§8):主线程没有 resumer,yield 无处可去
     if th == vm.mainThread {                 // 06 §5.1 R3:主线程也是一个 Thread
-        return false                          // → "attempt to yield from outside a coroutine"
+        return false                          // → 与②同一措辞,见 §8.2 订正
     }
     // ② 跨 C-call 边界检测(本节核心):
     //    co 从【它自己的】entryCi(本次 resume 起的 execute)到当前帧之间,若【夹着 host 帧】,
@@ -693,7 +693,16 @@ func (vm *VM) canYield(th *Thread) bool {
 | **host 帧扫描(可选,更精确)** | 从 co 的 entryCi 到当前 ciTop,扫 CallInfo 链有无 host 帧(`protoID==哨兵`,05 §1.2 word2) | 直接看 co 本次 resume 的调用链里有没有 host 帧夹在 yield 点之前 |
 
 P1 用 **nCcalls 基线比对**(O(1),简单):resume 时存基线(§3.5 step③ 的 `nCcalls++` 之后或之前的值,精确点
-在 §5.3),yield 时一次比较。若需更精确的错误定位(指出是哪个 host 函数挡了 yield),P2+ 可加 host 帧扫描
+在 §5.3),yield 时一次比较。
+
+> **实现现状(2026-10-01 订正,#272)**:这一节的基线比对在 P1 里长期**没有实现**。实际的拦截只有一处:
+> `callLuaFromHost` 发现 yield 哨兵从一个 **Lua 函数**里冒出来时,改报 `attempt to yield across
+> metamethod/C-call boundary`。宿主函数被直接当作元方法或比较器调用(`__lt = coroutine.yield`、
+> `table.sort(t, coroutine.yield)`、`__index = coroutine.yield`)时,哨兵经 `callMetaHandler` /
+> `ProtectedCall` 原样返回,绕过了这道检查,协程就在比较中途挂起,下一次 resume 报
+> `cannot resume: no pending yield point`。现在按本节设计实现:`coroutine.baseCcalls` 在 resume 的 `nCcalls++`
+> **之后**记录(对应 `ldo.c` `lua_resume` 里 `L->baseCcalls = ++L->nCcalls`),`State.Yield` 在
+> `nCcalls > baseCcalls` 时直接报错,不产生哨兵。`callLuaFromHost` 里原有的哨兵转换保留,作为纵深防御。若需更精确的错误定位(指出是哪个 host 函数挡了 yield),P2+ 可加 host 帧扫描
 (记缺口 §11)。
 
 > **nCcalls 的双重职责(对应 05 §7.4)**:05 §7.4 用 `nCcalls` 防"host↔Lua 无限交替重入打爆 Go 栈"
@@ -879,7 +888,7 @@ Thread 的唯一区别:
 
 ### 8.2 主线程不能 yield
 
-主线程 yield 报错 `attempt to yield from outside a coroutine`(§5.2 `canYield` 的第①检查):
+主线程 yield 报错 `attempt to yield across metamethod/C-call boundary`(§5.2 `canYield` 的第①检查;措辞见下方订正):
 
 ```
 主线程 yield 为什么非法:
@@ -887,13 +896,15 @@ Thread 的唯一区别:
   yield 无处可去。物理上(路线 B):主线程的 execute 是 Program.Call 直接起的(11 §embedding),
   不是某个 resume host 起的。yield 信号若从主线程的 execute 冒泡出去,会撞到 Program.Call 的 Go
   栈(宿主的 Go 代码),那里没有"接住 yield 并恢复"的逻辑 → 等价跨 C 边界(§5)。所以主线程 yield
-  统一报 "attempt to yield from outside a coroutine"(5.1 措辞,待 12 核对)。
+  统一报跨边界错误(措辞见下方订正)。
 ```
 
-> **措辞区分(待 12 核对)**:主线程 yield → `attempt to yield from outside a coroutine`;协程内跨 C 边界
-> yield → `attempt to yield across C-call boundary`。两者都是"yield 非法",但措辞不同(前者"不在协程里",
-> 后者"在协程里但隔着 C 帧")。`canYield`(§5.2)先查主线程(给前者措辞),再查 nCcalls 基线(给后者)。
-> 精确措辞由 [12](./12-testing-difftest.md) 最终确定(09 §9.3 措辞纪律)。
+> ~~**措辞区分(待 12 核对)**:主线程 yield → `attempt to yield from outside a coroutine`;协程内跨 C 边界
+> yield → `attempt to yield across C-call boundary`。~~
+> **已核对(2026-10-01,#272)**:5.1 只有一种措辞。`lua_yield` 只做 `L->nCcalls > L->baseCcalls` 这一个检查,
+> 主线程的 `nCcalls` 本来就大于 `baseCcalls`,所以主线程 yield 与协程内跨边界 yield 都报
+> `attempt to yield across metamethod/C-call boundary`;`attempt to yield from outside a coroutine` 是 5.2+
+> 的措辞。这条错误由 C 函数 `yield` 内部的 `luaG_runerror` 抛出,当前 ci 不是 Lua 帧,所以不带位置前缀。
 
 ### 8.3 `coroutine.running()` 在主线程
 
@@ -1065,9 +1076,9 @@ coroutine.wrap(f):
 5. **yield 保留 CallInfo 链,RETURN 弹 CallInfo**(§3.3):yield 是挂起(整条链冻结在 arena),RETURN 是结束
    (弹帧)。yield 的 host 帧也保留(§5.3),使恢复时返回值落点不丢。
 6. **yield 不跨 C-call 边界**(§5,Lua 5.1 硬限制):host 内/元方法内/pcall 内 yield → `attempt to yield
-   across C-call boundary`。检测靠 nCcalls 基线比对(§5.2,复用 05 §7.4 nCcalls)。**5.1 不做 5.2+ 的 *k
+   across metamethod/C-call boundary`。检测靠 nCcalls 基线比对(§5.2,复用 05 §7.4 nCcalls)。**5.1 不做 5.2+ 的 *k
    continuation**(§5.1)。
-7. **主线程不能 yield**(§8.2):→ `attempt to yield from outside a coroutine`。主线程是 Thread(R3)但无
+7. **主线程不能 yield**(§8.2):→ `attempt to yield across metamethod/C-call boundary`(5.1 只有这一种措辞)。主线程是 Thread(R3)但无
    resumer(resumeFrom=0)。
 8. **resume 状态检查**(§2.3):仅 suspended 可 resume;dead → `cannot resume dead coroutine`;running/normal →
    `cannot resume non-suspended coroutine`。
@@ -1109,9 +1120,9 @@ coroutine.wrap(f):
   (含值栈/CallInfo 初始分配)的 GC 压力**无数据,需实现后压测(对齐 06 §12 的 GC 缺口)。是否需要 Thread
   对象池(复用 dead Thread 的值栈/CallInfo 容量)待评估,记缺口。
 - **错误措辞精确格式**(§2.3/§5.2/§8.2):`cannot resume dead coroutine`、`cannot resume non-suspended
-  coroutine`、`attempt to yield across C-call boundary`、`attempt to yield from outside a coroutine` 的精确
-  冠词/标点,**待 [12](./12-testing-difftest.md) 差分核对**与官方 Lua 5.1 逐字节对齐(呼应 09 §9.3 措辞纪律,
-  本文给骨架不编造)。
+  coroutine` 的精确冠词/标点,**待 [12](./12-testing-difftest.md) 差分核对**与官方 Lua 5.1 逐字节对齐(呼应 09 §9.3
+  措辞纪律,本文给骨架不编造)。yield 越界的措辞**已核对(2026-10-01,#272)**:只有
+  `attempt to yield across metamethod/C-call boundary` 一种,主线程也是它,不带位置前缀。
 - **5.2+ 可恢复性(*k continuation)是否提供**(§5.1):P1 锁 5.1,跨 C 边界 yield 一律报错。若宿主生态需要
   5.2 的"pcall 内 yield / 协程式迭代器穿 host"能力(如 `coroutine.wrap` 包装的 stdlib 迭代器需 yield),是否
   提供开关待定,**默认 5.1**(roadmap §6)。这影响 stdlib 哪些迭代器能在协程里用(§5.1 注),记缺口。

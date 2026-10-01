@@ -956,7 +956,7 @@ gibbous 帧的 pc 物化(traceback 用,[02-translation] §4):
 由此:
 
 - 协程内代码永不升层(在 crescent 跑,可正常 yield)。
-- 主线程 yield 本就非法(`attempt to yield from outside a coroutine`,[../p1-interpreter/08](../p1-interpreter/08-coroutines.md))——故主线程上的 gibbous 帧**永远不会**被 yield 穿越。规则自洽。
+- 主线程 yield 本就非法(`attempt to yield across metamethod/C-call boundary`(5.1 主线程与协程内跨边界同一措辞),[../p1-interpreter/08](../p1-interpreter/08-coroutines.md))——故主线程上的 gibbous 帧**永远不会**被 yield 穿越。规则自洽。
 
 **完整论证(物理限制详解 + 线程级 tier 规则的代价/备选/回填请求)全部归 [07-coroutine-thread-rule](./07-coroutine-thread-rule.md)**——本文只承诺「gibbous 帧不可穿越 yield,且该情形不会发生」,不展开。本文 §2.2 / §3.2 的 `th == mainThread` 守卫是该规则在 trampoline 代码层的兑现点。
 

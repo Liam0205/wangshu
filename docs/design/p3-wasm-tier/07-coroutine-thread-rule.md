@@ -148,7 +148,7 @@ runtime 用的是 wazero 内部表示,Go 代码无法读取。**根本写不出"
 [P1 08 §5.1](../p1-interpreter/08-coroutines.md) 的 5.1 限制陈述:
 
 > Lua 5.1 禁止跨 C-call(host call)边界 yield。具体地,以下情况 yield 报错
-> `attempt to yield across C-call boundary`:在 host function 内部、pcall 内、`__index`/`__add` 等元方法内、
+> `attempt to yield across metamethod/C-call boundary`:在 host function 内部、pcall 内、`__index`/`__add` 等元方法内、
 > `string.gsub` repl 函数内 ……
 
 **P1 08 §5.1 给出的根本原因**:
@@ -300,7 +300,7 @@ func (vm *VM) doCall(f *frame, i bytecode.Instr) callResult {
 
 [P1 08 §8.2](../p1-interpreter/08-coroutines.md):
 
-> 主线程 yield 报错 `attempt to yield from outside a coroutine`(`canYield` 的第①检查)。
+> 主线程 yield 报错 `attempt to yield across metamethod/C-call boundary`(5.1 主线程与协程内跨边界同一措辞)(`canYield` 的第①检查)。
 > 主线程没有 resumer,yield 无处可去——物理上,主线程的 execute 是 `Program.Call` 直接起的,不是某个
 > resume host 起的。yield 信号若从主线程的 execute 冒泡出去,会撞到 `Program.Call` 的 Go 栈。
 
