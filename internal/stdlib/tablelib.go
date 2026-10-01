@@ -439,8 +439,10 @@ func tableFnSort(st *crescent.State, args []value.Value) ([]value.Value, *cresce
 	// Sorting compares about n*log2(n) times, all of it inside one call billed as a single step on
 	// the caller's back edge: a loop sorting a 999-element reversed table projected to 56 seconds
 	// against the 10-second watchdog. Charged by the comparison count, approximating log2(n) with
-	// n's bit length. The oracle prelude already charged this shape, so leaving the engine free was
-	// also an asymmetry between the two differential sides.
+	// floor(log2(n)). The oracle prelude charges the same prepayment, so leaving the engine free was
+	// also an asymmetry between the two differential sides. (The overrun charge below is the
+	// engine's alone; it only fires on adversarial input, and the differential harness skips a
+	// resource-limit error on either side.)
 	lg := 0
 	for m := n; m > 1; m >>= 1 {
 		lg++
@@ -464,8 +466,10 @@ func tableFnSort(st *crescent.State, args []value.Value) ([]value.Value, *cresce
 	// The prepayment covers any honest run, but quicksort is quadratic on an adversarial
 	// permutation (the stable merge sort this replaced was not), so comparisons beyond four times
 	// it are billed one by one rather than running unmetered.
-	s.free = 4 * n * (lg + 1)
-	return nil, s.auxsort(1, n)
+	s.free = 4 * n * lg
+	e = s.auxsort(1, n)
+	s.release()
+	return nil, e
 }
 
 // tableSorter is ltablib.c's auxsort, ported step for step.
@@ -483,6 +487,52 @@ type tableSorter struct {
 	t    arena.GCRef
 	comp value.Value // value.Nil: compare with `<`
 	free int         // comparisons still covered by the prepaid charge
+	pins [nHeld]heldPin
+}
+
+// Elements auxsort holds across a comparison. lua5.1 keeps them on the sort function's own stack,
+// where the collector sees them; here they live in Go locals, which it does not. A comparator (or
+// an __lt handler) may clear the table, drop its own arguments and collect, and the next
+// comparison or set2 then used a freed object -- an internal VM panic, reachable from plain Lua.
+// Each held element is therefore pinned until the slot is reused.
+const (
+	heldPivot = iota
+	heldI
+	heldJ
+	heldL
+	heldU
+	nHeld
+)
+
+type heldPin struct {
+	idx uint32
+	ok  bool
+}
+
+// hold roots v in slot, releasing whatever the slot held before. Only values that can be
+// collected while a comparison runs need it: with a comparator any value can, while the default
+// `<` runs Lua code only through __lt, which numbers and strings never reach -- and every
+// comparison that succeeded did so between values of one type, so a held string or number never
+// sits beside a running handler.
+func (s *tableSorter) hold(slot int, v value.Value) {
+	p := &s.pins[slot]
+	if p.ok {
+		s.st.UnpinRef(p.idx)
+		p.ok = false
+	}
+	if !value.IsCollectable(v) || (s.comp == value.Nil && value.Tag(v) == value.TagString) {
+		return
+	}
+	p.idx, p.ok = s.st.PinRef(value.GCRefOf(v)), true
+}
+
+func (s *tableSorter) release() {
+	for i := range s.pins {
+		if s.pins[i].ok {
+			s.st.UnpinRef(s.pins[i].idx)
+			s.pins[i].ok = false
+		}
+	}
 }
 
 func (s *tableSorter) get(i int) value.Value {
@@ -507,6 +557,13 @@ func (s *tableSorter) less(a, b value.Value) (bool, *crescent.LuaError) {
 			return false, e
 		}
 	}
+	// A sort of numbers or strings runs no Lua code, so no instruction boundary polls the context;
+	// on an adversarial permutation that is seconds of work SetContext could not interrupt.
+	if s.free&4095 == 0 {
+		if e := s.st.CheckCancel(); e != nil {
+			return false, e
+		}
+	}
 	if s.comp != value.Nil {
 		rs, e := s.st.ProtectedCallDirect(s.comp, []value.Value{a, b})
 		if e != nil {
@@ -514,13 +571,21 @@ func (s *tableSorter) less(a, b value.Value) (bool, *crescent.LuaError) {
 		}
 		return len(rs) > 0 && value.Truthy(rs[0]), nil
 	}
-	return s.st.LessThan(a, b)
+	r, e := s.st.LessThan(a, b)
+	if e != nil {
+		// lua_lessthan raises from inside sort, a C function, so luaG_runerror adds no position;
+		// left unmarked, the host-call boundary would prefix the Lua caller's line.
+		e.MarkAnnotated()
+	}
+	return r, e
 }
 
 func (s *tableSorter) auxsort(l, u int) *crescent.LuaError {
 	for l < u { // for tail recursion
 		// sort elements a[l], a[(l+u)/2] and a[u]
 		al, au := s.get(l), s.get(u)
+		s.hold(heldL, al)
+		s.hold(heldU, au)
 		lt, e := s.less(au, al) // a[u] < a[l]?
 		if e != nil {
 			return e
@@ -535,6 +600,8 @@ func (s *tableSorter) auxsort(l, u int) *crescent.LuaError {
 		}
 		i := (l + u) / 2
 		ai, al := s.get(i), s.get(l)
+		s.hold(heldI, ai)
+		s.hold(heldL, al)
 		if lt, e = s.less(ai, al); e != nil { // a[i] < a[l]?
 			return e
 		}
@@ -544,6 +611,7 @@ func (s *tableSorter) auxsort(l, u int) *crescent.LuaError {
 			}
 		} else {
 			au := s.get(u)
+			s.hold(heldU, au)
 			if lt, e = s.less(au, ai); e != nil { // a[u] < a[i]?
 				return e
 			}
@@ -557,6 +625,7 @@ func (s *tableSorter) auxsort(l, u int) *crescent.LuaError {
 			break
 		}
 		p := s.get(i) // pivot
+		s.hold(heldPivot, p)
 		if e := s.set2(i, s.get(u-1), u-1, p); e != nil {
 			return e
 		}
@@ -567,6 +636,7 @@ func (s *tableSorter) auxsort(l, u int) *crescent.LuaError {
 			for { // repeat ++i until a[i] >= P
 				i++
 				ai = s.get(i)
+				s.hold(heldI, ai)
 				if lt, e = s.less(ai, p); e != nil {
 					return e
 				}
@@ -580,6 +650,7 @@ func (s *tableSorter) auxsort(l, u int) *crescent.LuaError {
 			for { // repeat --j until a[j] <= P
 				j--
 				aj = s.get(j)
+				s.hold(heldJ, aj)
 				if lt, e = s.less(p, aj); e != nil {
 					return e
 				}

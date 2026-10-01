@@ -808,6 +808,18 @@ func (st *State) preempt() *LuaError {
 	return nil
 }
 
+// CheckCancel is preempt's cancellation half without the step charge, for host functions whose
+// own loop can run long without reaching an instruction boundary (table.sort on an adversarial
+// permutation). Same error as preempt.
+func (st *State) CheckCancel() *LuaError {
+	if h := st.ctx.Load(); h != nil {
+		if err := h.err(); err != nil {
+			return errf("context canceled: %s", err.Error())
+		}
+	}
+	return nil
+}
+
 // chargeBulkWork bills the byte volume of a bulk operation to the instruction
 // budget. preempt() counts one step per instruction boundary (loop back edge /
 // frame entry / TFORLOOP), but a single CONCAT can copy and intern megabytes
