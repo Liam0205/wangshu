@@ -503,12 +503,14 @@
   | 平方级排序还要能被取消 | `tableSorter.less` / `crescent.State.CheckCancel` | 排数字时不运行 Lua 代码,没有指令边界查 `SetContext`;独立审查实测 20000 个元素的对抗排列在 500ms 超时下跑满 1.55s。每 4096 次比较查一次取消状态 |
   | 跨比较持有的元素没有 GC 根(存量) | `tableSorter.hold` | 独立审查发现:比较器清空表、把参数置 nil 再 `collectgarbage()`,Go 局部持有的 pivot 等元素被回收,下一次比较读到已释放的对象,VM 内部 panic(master 上同样复现)。5.1 把它们放在 `sort` 自己的栈上。改为逐个 `PinRef`;设计稿 10 §7.4「比较时元素都在表槽里,无需 Pin」的定稿一并订正 |
   | 默认比较器报错多了位置前缀(存量) | `tableSorter.less` | `lua_lessthan` 在 C 函数里抛错,5.1 不带位置;望舒的宿主调用边界补上了 Lua 调用方的行号。对这类错误 `MarkAnnotated` |
+  | 全局 yield 哨兵被并发写(存量 + 本轮一处) | `crescent.LuaError.MarkAnnotated` / `meta.go::callLuaFromHost*` | 第二轮复核发现:`__lt = coroutine.yield` 时处理函数返回包级共享的 `errYieldSentinel`,上一行加的 `MarkAnnotated` 会写它;master 上元方法调用边界的 `e.argNarg = 0` 也写它,普通 `A < B` 就能让两个 State 在 `-race` 下报竞争。两处都跳过哨兵。同一处的语义问题(协程越过元方法边界挂起,lua5.1 报错)开了 #272 |
 
   验证:新增 `test/regression/issue271_sort_order_test.go`(排序 18 条 + 比较规则 14 条,期望值逐条用 `lua5.1` 跑出;
-  另一条对抗排列测试同时断言步数预算与取消都会触发);三组在修复前全部失败,后补的 GC、位置前缀、取消三处
+  另一条对抗排列测试同时断言步数预算与取消都会触发)与 `issue271_sentinel_race_test.go`(两个 State 并发,`-race` 下
+  去掉修复即报竞争);三组在修复前全部失败,后补的 GC、位置前缀、取消三处
   各自去掉修复后也会失败。改完先由独立子代理逐行对照 `ltablib.c` / `lvm.c` 审查并做差分测试,上面最后三行来自这次审查。
-  比较器里 yield、`__lt` 处理函数里 `error(m, 2)` 的位置前缀与 traceback 少一行 `[C]: in function 'sort'` 三处差异在 master
-  上就有,与本轮无关,另行登记。#271 语料入 `test/fuzz/testdata/fuzz/FuzzOracleDiff/`。
+  比较器里 yield 的位置前缀、`__lt` 处理函数里 `error(m, 2)` 的层级、`next({}, {})` 的位置前缀、traceback 少一行
+  `[C]: in function 'sort'` 几处差异在 master 上就有,与本轮无关,登记在 `llmdoc/memory/doc-gaps.md`。#271 语料入 `test/fuzz/testdata/fuzz/FuzzOracleDiff/`。
   `make test-all` / `conformance-all` / `difftest-all` 与 oracle 语料重放全绿。代价:排序密集的循环慢约 14%
   (每次访问走 `RawGet`/`RawSet`,不再在 Go 切片上排序)。设计稿 07 §9.2-§9.4、10 §7.3 已按实际规则改写。
 
