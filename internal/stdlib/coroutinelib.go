@@ -79,7 +79,7 @@ func coFnWrap(st *crescent.State, args []value.Value) ([]value.Value, *crescent.
 		results, ok, e := ist.Resume(id, wargs)
 		if !ok {
 			if e != nil {
-				return nil, e
+				return nil, wrapError(ist, e)
 			}
 			return nil, crescent.NewError("cannot resume coroutine")
 		}
@@ -88,6 +88,26 @@ func coFnWrap(st *crescent.State, args []value.Value) ([]value.Value, *crescent.
 	fid := st.RegisterHostFn(wrapped)
 	cl := st.MakeHostClosure(fid)
 	return []value.Value{value.MakeGC(value.TagFunction, cl)}, nil
+}
+
+// wrapError rethrows a coroutine's error out of a coroutine.wrap function the way lbaselib.c's
+// auxwrap does: a string error gets luaL_where(L, 1) prepended -- the position of whoever called
+// the wrap function -- and anything else propagates untouched.
+//
+// The coroutine's own error is already final (it carries the position inside the coroutine), so
+// returning it as-is dropped that outer prefix (#276). A fresh level-1 error with the same string
+// gets it from the same machinery that prefixes a luaL_error: the interpreter's CALL site adds the
+// caller's line, and a host caller such as pcall freezes it bare, which is what luaL_where gives
+// for a C frame.
+func wrapError(st *crescent.State, e *crescent.LuaError) *crescent.LuaError {
+	if e.HasValue && value.Tag(e.Value) != value.TagString && !value.IsNumber(e.Value) {
+		return e
+	}
+	msg := e.Msg
+	if e.HasValue {
+		msg = valueToString(st, e.Value)
+	}
+	return crescent.NewErrorVal(intern(st, msg), msg)
 }
 
 // coFnRunning: coroutine.running() → co | nil (main thread returns nil, 5.1 semantics).
