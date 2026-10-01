@@ -92,4 +92,5 @@ TAILCALL 分支的注释写的是「run it on the tail-call frame we just entere
 
 - 教训 1、2 → [[prove-the-path-under-test]] §2.2b:「在刚进入的帧上做 X」要直接检查进入了新帧;tier 切换测试要在
   升层那一次调用里放可计数的副作用(没有副作用的写法开 GC stress),并在去掉修复的代码上确认断言变红。
-- 教训 3 → [[test-layout]]「新增测试往哪放」第 6 条：官方套件截断豁免之后的无关用例要单独补进 regression。
+- 教训 3 → [[test-layout]]「新增测试往哪放」第 6 条：官方套件截断点之后与豁免原因无关的行区间登记进
+  `luasuite_test.go` 的 `resumeAt` 单独运行(只针对某个 issue 的最小复现另写进 `test/regression/`)。
