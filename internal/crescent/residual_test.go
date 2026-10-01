@@ -133,3 +133,55 @@ func TestFinalizer_GCRunsUserDataGC(t *testing.T) {
 		t.Errorf("__gc finalizer was not invoked after collect")
 	}
 }
+
+// TestTraceback_NotBuiltForCaughtErrors pins 09 §7.3's cost rule after #279 moved the uncaught-error
+// traceback to the raise point: an error that a pcall or coroutine.resume will catch must not pay for
+// one. protectDepth is what tells the raise point which case it is in; without it every error raised
+// under pcall would walk and render the whole stack only for the string to be dropped.
+func TestTraceback_NotBuiltForCaughtErrors(t *testing.T) {
+	st := New()
+	var seen []*LuaError
+	reg := func(name string, fn HostFn) {
+		st.SetGlobal(name, value.MakeGC(value.TagFunction, st.MakeHostClosure(st.RegisterHostFn(fn))))
+	}
+	reg("probe", func(st *State, args []value.Value) ([]value.Value, *LuaError) {
+		e := errf("probe")
+		seen = append(seen, e)
+		return nil, e
+	})
+	// The two catching boundaries, reduced to what pcall and coroutine.resume do (crescent's own tests
+	// run without the stdlib).
+	reg("mypcall", func(st *State, args []value.Value) ([]value.Value, *LuaError) {
+		_, e := st.ProtectedCall(args[0], nil)
+		return []value.Value{value.BoolValue(e == nil)}, nil
+	})
+	reg("myresume", func(st *State, args []value.Value) ([]value.Value, *LuaError) {
+		id, e := st.NewCoroutine(args[0])
+		if e != nil {
+			return nil, e
+		}
+		_, ok, _ := st.Resume(id, nil)
+		return []value.Value{value.BoolValue(ok)}, nil
+	})
+	prog := mustCompile(t, []byte(`
+local function f() probe() end
+mypcall(f)
+myresume(f)
+myresume(function() mypcall(f) end)
+f()`))
+	cl := st.LoadProgram(prog.mainID, prog.protos)
+	if _, err := st.Call(cl, nil, 0); err == nil {
+		t.Fatalf("expected the last, uncaught call to fail")
+	}
+	if len(seen) != 4 {
+		t.Fatalf("probe ran %d times, want 4", len(seen))
+	}
+	for i, e := range seen[:3] {
+		if e.Traceback != "" {
+			t.Errorf("caught error %d carries a traceback: %q", i, e.Traceback)
+		}
+	}
+	if !strings.HasPrefix(seen[3].Traceback, "stack traceback:\n\t[C]: in function 'probe'") {
+		t.Errorf("uncaught error traceback = %q", seen[3].Traceback)
+	}
+}

@@ -143,6 +143,17 @@ func (st *State) Resume(id uint64, args []value.Value) ([]value.Value, bool, *Lu
 		st.threadChain = append(st.threadChain, resumerTh)
 		defer func() { st.threadChain = st.threadChain[:len(st.threadChain)-1] }()
 	}
+	// resume catches the coroutine's errors (they come back as (false, msg)), so nothing raised
+	// inside needs an uncaught-error traceback.
+	st.protectDepth++
+	defer func() { st.protectDepth-- }()
+	// A coroutine's stack starts at its own body; PUC has no C frames below it. Host frames pending
+	// on the RESUMER (pcall(coroutine.resume, co) leaves one) belong to the resumer's thread, so
+	// the coroutine's first frame must not absorb them -- they would show up as a spurious "[C]"
+	// at the bottom of a traceback taken inside, and as a phantom level for error().
+	savedHostFrames := st.pendingHostFrames
+	st.pendingHostFrames = 0
+	defer func() { st.pendingHostFrames = savedHostFrames }()
 
 	var sig *LuaError
 	if !co.started {

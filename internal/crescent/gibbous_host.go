@@ -400,9 +400,7 @@ func (st *State) raiseGibbous(e *LuaError) int32 {
 	th := st.runningThread
 	if th.ciDepth > 0 {
 		e = st.annotateError(e, currentCI(th), th)
-		if e != nil && e.Traceback == "" {
-			e.Traceback = st.buildTraceback(th)
-		}
+		st.captureTraceback(th, e, 0)
 	}
 	st.gibbousPendingErr = e
 	return 1
@@ -1314,7 +1312,10 @@ func (st *State) tryIndirectCallee(th *thread, ci *callInfo, a, b, c int32) (int
 func (st *State) DoCall(base, pc, a, b, c int32) int64 {
 	th := st.runningThread
 	ci := st.gibCI(th)
-	ci.pc = pc
+	// Just past the call, as the interpreter leaves it (R3c-fix convention): doCall names an arg
+	// error from ci.pc-1, and a traceback reads the caller's current instruction there to name
+	// the callee (#279). Storing the CALL's own pc pointed both at the instruction before it.
+	ci.pc = pc + 1
 	// R3 fast path: callee is gibbous-with-slot ==> push the frame + return the indirect sentinel (caller call_indirect).
 	if ret, handled := st.tryIndirectCallee(th, ci, a, b, c); handled {
 		return ret
@@ -1374,7 +1375,10 @@ func (st *State) DoCall(base, pc, a, b, c int32) int64 {
 func (st *State) CallBaseline(base, pc, a, b, c int32) int32 {
 	th := st.runningThread
 	ci := st.gibCI(th)
-	ci.pc = pc
+	// Just past the call, as the interpreter leaves it (R3c-fix convention): doCall names an arg
+	// error from ci.pc-1, and a traceback reads the caller's current instruction there to name
+	// the callee (#279). Storing the CALL's own pc pointed both at the instruction before it.
+	ci.pc = pc + 1
 	ins := bytecode.EncodeABC(bytecode.CALL, int(a), int(b), int(c))
 	next, e := st.doCall(th, ci, ins)
 	if e != nil {
@@ -1423,7 +1427,10 @@ func (st *State) CallBaseline(base, pc, a, b, c int32) int32 {
 func (st *State) TailCall(base, pc, a, b, c int32) int32 {
 	th := st.runningThread
 	ci := st.gibCI(th)
-	ci.pc = pc
+	// Just past the call, as the interpreter leaves it (R3c-fix convention): doCall names an arg
+	// error from ci.pc-1, and a traceback reads the caller's current instruction there to name
+	// the callee (#279). Storing the CALL's own pc pointed both at the instruction before it.
+	ci.pc = pc + 1
 	ins := bytecode.EncodeABC(bytecode.TAILCALL, int(a), int(b), int(c))
 	next, e := st.doTailCall(th, ci, ins)
 	if e != nil {

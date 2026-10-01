@@ -1,7 +1,6 @@
 package api_test
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/Liam0205/wangshu/test/testutil"
@@ -277,15 +276,12 @@ local out
 table.foreach({1}, function() out = inner() end)
 return out`
 	got := testutil.RunOne(t, src).Str()
-	for _, want := range []string{"stack traceback:", "[C]: in ?", "in main chunk"} {
-		if !strings.Contains(got, want) {
-			t.Errorf("traceback missing %q; got %q", want, got)
-		}
-	}
-	// The C frame must sit BETWEEN the Lua frames and the main chunk, as PUC has it.
-	ci, mi := strings.Index(got, "[C]: in ?"), strings.Index(got, "in main chunk")
-	if ci < 0 || mi < 0 || ci > mi {
-		t.Errorf("C frame is not above the main chunk: %q", got)
+	// The whole traceback, as lua5.1 prints it for this chunk: the C frame is named from foreach's
+	// call site, the callback it called has no name (a C caller), and the host that ran the chunk
+	// closes the list (#279).
+	const want = `M | stack traceback: | 	[string "test"]:1: in function 'inner' | 	[string "test"]:3: in function <[string "test"]:3> | 	[C]: in function 'foreach' | 	[string "test"]:3: in main chunk | 	[C]: ?`
+	if got != want {
+		t.Errorf("traceback\n got %q\nwant %q", got, want)
 	}
 	// A non-number level is IGNORED, matching lua_isnumber rather than luaL_optint.
 	if r := testutil.RunOne(t, `local ok = pcall(debug.traceback, "m", {}) return tostring(ok)`).Str(); r != "true" {
