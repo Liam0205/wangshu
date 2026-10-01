@@ -5,6 +5,15 @@
 
 ## 当前缺口
 
+- **【宿主调用边界的错误位置与 yield 存量差异,2026-10-01 #271 轮记】** — 独立审查在 master 上就复现、与 #271 无关,本轮没修:
+  ① `__lt` / `__index` 等处理函数直接是 `coroutine.yield` 时,望舒让协程越过元方法边界挂起,lua5.1 报
+  `attempt to yield across metamethod/C-call boundary`——**已开 #272**;② 比较器里 `coroutine.yield()`,lua5.1 的报错不带位置,
+  望舒带 `x:N:`;③ `__lt` 处理函数(及可调用表的 `__call`)里 `error(m, 2)` / `error(m, 3)` 的层级差一层;④ `next({}, {})`
+  在 Lua 函数里调用时望舒多了位置前缀(lua5.1 是 `invalid key to 'next'`);⑤ 未捕获错误的 traceback 少一行
+  `[C]: in function 'sort'`。②③④ 都是「宿主函数内部抛出的错误被宿主调用边界补上 Lua 调用方位置」或层级计数的同一类,
+  可能不止这几处,修之前先扫一遍会回调 Lua 或会抛 `luaL_error` 以外错误的宿主函数。
+  详见 [[2026-10-01-issue271-sort-auxsort-and-order-tm]]。
+
 
 - **【已完成 2026-09-13,#260】table gen 不变量约定** — 原缺口(2026-07-02 记)要求 (a) 约定成文 (b) producer 全表审计 (c) 设计稿 consumer 分类条款。(a)(b) 已由 #260 轮完成:约定写进 `internal/crescent/rawtable.go` 头注,producer 表见 [[design-claims-vs-codebase-physics]] §2.1,`rawSet` 删键与 weak sweep 清项两处补 BumpGen,`TestRawTable_*BumpsGen`(rawSet 删键 / 重插换槽)与 `TestWeak_SweepClearBumpsGen`(weak 清项)分别直接断言约定。(c) `docs/design/p1-interpreter/05-interpreter-loop.md` §6.3 的 consumer 分类条款仍未回填,保留为设计稿回填项。反思 [[2026-09-13-issue260-nil-immediate-and-delete-gen]]。
 - **设计文档回填待办(P2 开工前,recorder 执行,十项合一轮)** — 六轮反思的 promotion 候选合并清单,均为 `docs/design/` 回填(非 llmdoc):
