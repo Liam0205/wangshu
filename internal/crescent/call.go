@@ -149,7 +149,23 @@ func (st *State) doTailCall(th *thread, ci *callInfo, i bytecode.Instruction) (*
 		// results from the live top, which callHost's multret branch sets
 		// to funcIdx + n exactly. A fixed nresults resets top and drops
 		// trailing results (issue #52 P4 acceptance; shared by P1/P3/P4).
-		return nil, st.resolveArgError(st.callHost(th, funcIdx, nargs, -1), ci, ci.pc-1, a)
+		e := st.callHost(th, funcIdx, nargs, -1)
+		if e == errYieldSentinel {
+			// A yielding host tail callee (`return coroutine.yield(x)`): record the resume
+			// point exactly as doCall does, with multret results at funcIdx. ldo.c resume
+			// finishes such a call with luaD_poscall(LUA_MULTRET) and continues at the
+			// instruction after TAILCALL -- the RETURN A 0 that returns them from top.
+			// Without this the yield went through with no resume point and the next
+			// resume failed with "cannot resume: no pending yield point".
+			th.pendingResume = &pendingResumeInfo{
+				ciIndex:    th.ciDepth - 1,
+				dst:        funcIdx,
+				nresults:   -1,
+				entryDepth: st.entryDepthOf(th),
+			}
+			return nil, e
+		}
+		return nil, st.resolveArgError(e, ci, ci.pc-1, a)
 	}
 	st.closeUpvals(th, ci.base)
 	dst := ci.FuncIdx()
