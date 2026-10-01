@@ -622,6 +622,11 @@ func hostPrint(vm *VM, th *Thread) int {
 
 - **`tostring` 机制全在 07 §11**(查 `__tostring`、默认格式表)。本文不重复;`print` 与显式 `tostring(v)` 共用
   同一个 `vm.tostring(th, v)`。
+  **订正(2026-10-02 与 `lua5.1` 核对,#277 / #279 本地审查补修)**:5.1 的 `luaB_print` 不是共用一个内部转换函数，
+  而是取**全局** `tostring`(`lua_getglobal`)逐个 `lua_call`。所以脚本重定义 `tostring` 后 print 用的是新的;
+  全局 `tostring` 为 nil 时 print 报 `attempt to call a nil value`;返回值不是字符串或数字时报
+  `'tostring' must return a string to 'print'`;`__tostring` 处理函数运行在 `tostring`、`print` 两层 C 帧之上，
+  这决定了处理函数里 `error(m, level)` 的层级和 traceback 的行。`internal/stdlib/stdlib.go::baseFnPrint` 照此实现。
 - **`__tostring` 重入**:若某参数有 `__tostring`,`vm.tostring` 内部 `callLuaFromHost`(07 §11 / §1.4)→ 重入 +
   可能 GC。`print` 用 Go 缓冲 `buf` 累积(脱离 arena,§3.3),已写入 buf 的内容安全;每个参数的 `tostring` 结果
   立即 `buf.Write`,不跨下一次重入持有 arena 串。**安全,无需 Pin**。
