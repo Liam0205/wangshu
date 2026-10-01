@@ -1,6 +1,7 @@
 package regression
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -56,6 +57,34 @@ func TestTableSortFollowsAuxsort(t *testing.T) {
 			table.sort(t, function(a, b) return a.k < b.k end)
 			local o = {} for i = 1, 12 do o[i] = t[i].id end return table.concat(o, " ")`,
 			"12 9 3 6 1 4 7 10 2 8 11 5"},
+		{"comparator clears the table and collects",
+			`local N = 40 local t = {} for i = 1, N do t[i] = {v = (i * 37) % N} end
+			local calls, sum = 0, 0
+			local ok = pcall(table.sort, t, function(a, b)
+			  calls = calls + 1
+			  if a then sum = sum + a.v end
+			  if b then sum = sum + b.v end
+			  local r = (a and b) and a.v < b.v or false
+			  if calls == 6 then
+			    for i = 1, N do t[i] = nil end
+			    a, b = nil, nil
+			    collectgarbage("collect")
+			    local junk = {} for j = 1, 2000 do junk[j] = {v = j} end
+			  end
+			  return r
+			end)
+			local live = 0 for i = 1, N do if t[i] then live = live + 1 sum = sum + t[i].v end end
+			return tostring(ok) .. "," .. calls .. "," .. live .. "," .. sum`,
+			"true,198,1,1202"},
+		{"compare error from a Lua caller has no position",
+			`return select(2, pcall(function() table.sort({1, "x"}) end))`, "attempt to compare string with number"},
+		{"non-callable __lt from a Lua caller has no position",
+			`local m = {__lt = 5} return select(2, pcall(function() table.sort({setmetatable({}, m), setmetatable({}, m)}) end))`,
+			"attempt to call a number value"},
+		{"invalid order from a Lua caller keeps the caller's position",
+			`local e = select(2, pcall(function() table.sort({3, 1, 4, 1, 5, 9, 2, 6}, function() return true end) end))
+			return (string.gsub(e, "^.-:%d+: ", "POS: "))`,
+			"POS: invalid order function for sorting"},
 		{"string with number", `return select(2, pcall(table.sort, {1, "a", 2}))`, "attempt to compare string with number"},
 		{"nil hole", `return select(2, pcall(table.sort, {1, 2, nil, 3}))`, "attempt to compare nil with number"},
 		{"boolean with number", `return select(2, pcall(table.sort, {1, 2, 3, 4, true}))`, "attempt to compare boolean with number"},
@@ -160,4 +189,35 @@ R = {} for i = 1, 3000 do R[i] = (i * 7919) % 3000 end
 	if err := run(`table.sort(K)`); err == nil || !strings.Contains(err.Error(), "instruction budget exceeded") {
 		t.Fatalf("adversarial permutation should trip the budget, got %v", err)
 	}
+
+	// Without a budget the same sort must still answer SetContext. Sorting numbers runs no Lua code,
+	// so no instruction boundary polls the context; the sort has to poll it itself. The context
+	// reports cancellation from its 100th poll on: the honest sort polls far fewer times, the
+	// killer about 550 times.
+	st.SetStepBudget(0)
+	if err := run(setup); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	st.SetContext(&pollCountingCtx{Context: context.Background(), after: 100})
+	if err := run(`table.sort(R)`); err != nil {
+		t.Fatalf("honest permutation should finish before the context reports cancellation: %v", err)
+	}
+	st.SetContext(&pollCountingCtx{Context: context.Background(), after: 100})
+	if err := run(`table.sort(K)`); err == nil || !strings.Contains(err.Error(), "context canceled") {
+		t.Fatalf("adversarial permutation should observe the cancellation, got %v", err)
+	}
+}
+
+// pollCountingCtx reports context.Canceled from its after-th Err call on, which makes "the sort
+// polled the context" observable without depending on wall-clock time.
+type pollCountingCtx struct {
+	context.Context
+	polls, after int
+}
+
+func (c *pollCountingCtx) Err() error {
+	if c.polls++; c.polls >= c.after {
+		return context.Canceled
+	}
+	return nil
 }
