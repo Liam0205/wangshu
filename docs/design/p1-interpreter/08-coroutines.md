@@ -693,7 +693,8 @@ func (vm *VM) canYield(th *Thread) bool {
 | **host 帧扫描(可选,更精确)** | 从 co 的 entryCi 到当前 ciTop,扫 CallInfo 链有无 host 帧(`protoID==哨兵`,05 §1.2 word2) | 直接看 co 本次 resume 的调用链里有没有 host 帧夹在 yield 点之前 |
 
 P1 用 **nCcalls 基线比对**(O(1),简单):resume 时存基线(§3.5 step③ 的 `nCcalls++` 之后或之前的值,精确点
-在 §5.3),yield 时一次比较。
+在 §5.3),yield 时一次比较。若需更精确的错误定位(指出是哪个 host 函数挡了 yield),P2+ 可加 host 帧扫描
+(记缺口 §11)。
 
 > **实现现状(2026-10-01 订正,#272)**:这一节的基线比对在 P1 里长期**没有实现**。实际的拦截只有一处:
 > `callLuaFromHost` 发现 yield 哨兵从一个 **Lua 函数**里冒出来时,改报 `attempt to yield across
@@ -702,8 +703,7 @@ P1 用 **nCcalls 基线比对**(O(1),简单):resume 时存基线(§3.5 step③ �
 > `ProtectedCall` 原样返回,绕过了这道检查,协程就在比较中途挂起,下一次 resume 报
 > `cannot resume: no pending yield point`。现在按本节设计实现:`coroutine.baseCcalls` 在 resume 的 `nCcalls++`
 > **之后**记录(对应 `ldo.c` `lua_resume` 里 `L->baseCcalls = ++L->nCcalls`),`State.Yield` 在
-> `nCcalls > baseCcalls` 时直接报错,不产生哨兵。`callLuaFromHost` 里原有的哨兵转换保留,作为纵深防御。若需更精确的错误定位(指出是哪个 host 函数挡了 yield),P2+ 可加 host 帧扫描
-(记缺口 §11)。
+> `nCcalls > baseCcalls` 时直接报错,不产生哨兵。`callLuaFromHost` 里原有的哨兵转换保留,作为纵深防御。
 
 > **nCcalls 的双重职责(对应 05 §7.4)**:05 §7.4 用 `nCcalls` 防"host↔Lua 无限交替重入打爆 Go 栈"
 > (`C stack overflow`,上限 200)。本文**复用同一个 nCcalls** 做 yield-across-C-boundary 检测——因为两件事
