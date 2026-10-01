@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"sort"
 	"strings"
 	"time"
 
@@ -442,11 +441,11 @@ func tableFnSort(st *crescent.State, args []value.Value) ([]value.Value, *cresce
 	// against the 10-second watchdog. Charged by the comparison count, approximating log2(n) with
 	// n's bit length. The oracle prelude already charged this shape, so leaving the engine free was
 	// also an asymmetry between the two differential sides.
+	lg := 0
+	for m := n; m > 1; m >>= 1 {
+		lg++
+	}
 	if n > 1 {
-		lg := 0
-		for m := n; m > 1; m >>= 1 {
-			lg++
-		}
 		// n*log2(n) COMPARISONS, charged at one byte-equivalent each rather than eight.
 		//
 		// The first version multiplied by 8, as if every comparison copied a machine word. That
@@ -458,43 +457,162 @@ func tableFnSort(st *crescent.State, args []value.Value) ([]value.Value, *cresce
 			return nil, ce
 		}
 	}
-	vals := make([]value.Value, n)
-	for i := 0; i < n; i++ {
-		vals[i], _ = st.RawGet(t, value.NumberValue(float64(i+1)))
+	s := &tableSorter{st: st, t: t, comp: value.Nil}
+	if len(args) >= 2 && value.Tag(args[1]) == value.TagFunction {
+		s.comp = args[1]
 	}
-	var sortErr *crescent.LuaError
-	less := func(a, b value.Value) bool {
-		if sortErr != nil {
-			return false
+	// The prepayment covers any honest run, but quicksort is quadratic on an adversarial
+	// permutation (the stable merge sort this replaced was not), so comparisons beyond four times
+	// it are billed one by one rather than running unmetered.
+	s.free = 4 * n * (lg + 1)
+	return nil, s.auxsort(1, n)
+}
+
+// tableSorter is ltablib.c's auxsort, ported step for step.
+//
+// It used to copy the array out, run sort.SliceStable over the copy and write it back. That agrees
+// with lua5.1 only while the order is a strict weak ordering: given a NaN element or an
+// inconsistent comparator the two algorithms leave elements in different places (#271:
+// {0, 0, 0%0, 0} came back as 0 0 nan 0 where lua5.1 gives 0 nan 0 0). The copy also hid
+// everything a comparator can observe -- the table mid-sort, the partial order left behind when
+// the comparator raises -- and could never reach "invalid order function for sorting". So this
+// works on the table itself, reads and writes it in lua5.1's order, and compares the same pairs
+// with the same operand order.
+type tableSorter struct {
+	st   *crescent.State
+	t    arena.GCRef
+	comp value.Value // value.Nil: compare with `<`
+	free int         // comparisons still covered by the prepaid charge
+}
+
+func (s *tableSorter) get(i int) value.Value {
+	v, _ := s.st.RawGet(s.t, value.NumberValue(float64(i)))
+	return v
+}
+
+// set2 is ltablib.c's set2: a[i] = vi, then a[j] = vj.
+func (s *tableSorter) set2(i int, vi value.Value, j int, vj value.Value) *crescent.LuaError {
+	if e := s.st.RawSet(s.t, value.NumberValue(float64(i)), vi); e != nil {
+		return e
+	}
+	return s.st.RawSet(s.t, value.NumberValue(float64(j)), vj)
+}
+
+// less is sort_comp: the comparator when one was given, otherwise the full `<` semantics
+// (number/string fast path plus __lt, as lua_lessthan does, so tables of objects with __lt sort
+// directly).
+func (s *tableSorter) less(a, b value.Value) (bool, *crescent.LuaError) {
+	if s.free--; s.free < 0 {
+		if e := s.st.ChargeBulkWork(1); e != nil {
+			return false, e
 		}
-		if len(args) >= 2 && value.Tag(args[1]) == value.TagFunction {
-			rs, e := st.ProtectedCallDirect(args[1], []value.Value{a, b})
-			if e != nil {
-				sortErr = e
-				return false
-			}
-			return len(rs) > 0 && value.Truthy(rs[0])
-		}
-		// Default comparison uses the full `<` semantics (number/string fast
-		// path + __lt metamethod; official sort_comp goes through
-		// lua_lessthan, so object tables with __lt can be sorted directly)
-		r, e := st.LessThan(a, b)
+	}
+	if s.comp != value.Nil {
+		rs, e := s.st.ProtectedCallDirect(s.comp, []value.Value{a, b})
 		if e != nil {
-			sortErr = e
-			return false
+			return false, e
 		}
-		return r
+		return len(rs) > 0 && value.Truthy(rs[0]), nil
 	}
-	sort.SliceStable(vals, func(i, j int) bool { return less(vals[i], vals[j]) })
-	if sortErr != nil {
-		return nil, sortErr
-	}
-	for i := 0; i < n; i++ {
-		if e := st.RawSet(t, value.NumberValue(float64(i+1)), vals[i]); e != nil {
-			return nil, e
+	return s.st.LessThan(a, b)
+}
+
+func (s *tableSorter) auxsort(l, u int) *crescent.LuaError {
+	for l < u { // for tail recursion
+		// sort elements a[l], a[(l+u)/2] and a[u]
+		al, au := s.get(l), s.get(u)
+		lt, e := s.less(au, al) // a[u] < a[l]?
+		if e != nil {
+			return e
+		}
+		if lt {
+			if e := s.set2(l, au, u, al); e != nil {
+				return e
+			}
+		}
+		if u-l == 1 { // only 2 elements
+			break
+		}
+		i := (l + u) / 2
+		ai, al := s.get(i), s.get(l)
+		if lt, e = s.less(ai, al); e != nil { // a[i] < a[l]?
+			return e
+		}
+		if lt {
+			if e := s.set2(i, al, l, ai); e != nil {
+				return e
+			}
+		} else {
+			au := s.get(u)
+			if lt, e = s.less(au, ai); e != nil { // a[u] < a[i]?
+				return e
+			}
+			if lt {
+				if e := s.set2(i, au, u, ai); e != nil {
+					return e
+				}
+			}
+		}
+		if u-l == 2 { // only 3 elements
+			break
+		}
+		p := s.get(i) // pivot
+		if e := s.set2(i, s.get(u-1), u-1, p); e != nil {
+			return e
+		}
+		// a[l] <= P == a[u-1] <= a[u], only need to sort from l+1 to u-2
+		i, j := l, u-1
+		for { // invariant: a[l..i] <= P <= a[j..u]
+			var ai, aj value.Value
+			for { // repeat ++i until a[i] >= P
+				i++
+				ai = s.get(i)
+				if lt, e = s.less(ai, p); e != nil {
+					return e
+				}
+				if !lt {
+					break
+				}
+				if i > u {
+					return crescent.NewError("invalid order function for sorting")
+				}
+			}
+			for { // repeat --j until a[j] <= P
+				j--
+				aj = s.get(j)
+				if lt, e = s.less(p, aj); e != nil {
+					return e
+				}
+				if !lt {
+					break
+				}
+				if j < l {
+					return crescent.NewError("invalid order function for sorting")
+				}
+			}
+			if j < i {
+				break
+			}
+			if e := s.set2(i, aj, j, ai); e != nil {
+				return e
+			}
+		}
+		// swap pivot (a[u-1]) with a[i]
+		if e := s.set2(u-1, s.get(i), i, s.get(u-1)); e != nil {
+			return e
+		}
+		// a[l..i-1] <= a[i] == P <= a[i+1..u]; recurse into the smaller half and loop on the
+		// larger one
+		if i-l < u-i {
+			j, i, l = l, i-1, i+1
+		} else {
+			j, i, u = i+1, u, i-1
+		}
+		if e := s.auxsort(j, i); e != nil {
+			return e
 		}
 	}
-	return nil, nil
+	return nil
 }
 
 // tableFnGetn: table.getn(t) (5.1 legacy, = #t).
