@@ -249,12 +249,13 @@ TAILCALL 分支的「尾调用 gibbous 分发」看见 `GibbousCodeOf(proto)` �
 **例**:VS0-e 子步 ⑥ task 描述列 11 条 vararg 语料,实际 luasuite/closure.lua 已含 `{coroutine.yield(unpack(arg[i]))}`(NeedsArg + vararg + 协程多值 yield/resume + 解包到 _G,5.1 作者本人写的最复杂组合)——不写冗余,直接以「luasuite 覆盖到了这一处」作 vararg 覆盖度证据。
 > ⚠️ **这个例子本身在 2026-08-29 被实测推翻,保留在这里因为它现在是本节判据的最好反例。**
 > 原文的证据是「luasuite 14 文件全 PASS」,而 `closure.lua` **是被截断的文件之一**
-> (截断理由是 `setfenv`,`stopAt` 切在第 163 行),**被引用的那一行是第 195 行 —— 它从来没有被执行过。**
+> (截断理由是 `setfenv`,`stopAt` 切在第 163 行),**被引用的那一行是第 195 行 —— 它当时从来没有被执行过。**
+> (2026-10-01 起，第 178–407 行这一段经 `luasuite_test.go` 的 `resumeAt` 单独运行，第 195 行现在在跑，见 #272。)
 > 所以当年那句「不写冗余,以 luasuite 通过作 vararg 覆盖度证据」在这个具体引用上**不成立**:
 > `vararg.lua` 整文件确实在跑(它是完整跑完的少数文件之一),那一半证据是真的;
 > 而「`closure.lua` 里那个最复杂的组合已经覆盖了」这一半是假的。
 > **判据因此要改一格**:引用套件作覆盖度证据时,`grep -l` 命中之后**还要确认命中的那一行
-> 在 `stopAt` 之前** —— 「那个文件在套件里」与「那一行在跑」是两件事,
+> 在 `stopAt` 之前，或在 `resumeAt` 登记的区间里** —— 「那个文件在套件里」与「那一行在跑」是两件事,
 > 而前者恰恰是最容易拿来当证据的那一个。判据见 [[design-claims-vs-codebase-physics]] §7。
 
 ### 4.1 一个 reported case 是接受面的一个采样,不是那个接受面本身
