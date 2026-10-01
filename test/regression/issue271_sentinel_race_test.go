@@ -13,6 +13,11 @@ import (
 // master, reached by a plain A < B) and table.sort's default comparator marked it annotated. Two
 // States doing that on two goroutines is a data race, which -race reports; without -race this only
 // checks the runs finish.
+//
+// Since #272 such a yield is rejected in State.Yield before any sentinel exists (the coroutine is
+// inside a host->Lua reentry), so this script no longer produces the sentinel at all; it stays as a
+// guard for both: the boundary error must be raised without a race, and the two sentinel-skipping
+// writes remain in place for any path that does still return it.
 func TestYieldSentinelNotWrittenAcrossStates(t *testing.T) {
 	const src = `
 local m = {__lt = coroutine.yield}

@@ -45,6 +45,12 @@ type coroutine struct {
 	started bool
 	// yield transfer area (on yield: co→resumer; on resume: resumer→co)
 	xfer []value.Value
+	// baseCcalls is st.nCcalls just inside this coroutine's current resume: PUC's
+	// L->baseCcalls. A yield is legal only while nCcalls is still at it -- anything
+	// above means a host->Lua reentry (a metamethod, pcall, a sort comparator, a for-in
+	// iterator, ...) sits between the yield and the resume, and that Go frame cannot be
+	// suspended.
+	baseCcalls int
 }
 
 // coRegistry registers coroutines on State (coID → *coroutine).
@@ -122,6 +128,7 @@ func (st *State) Resume(id uint64, args []value.Value) ([]value.Value, bool, *Lu
 	}
 	st.nCcalls++
 	defer func() { st.nCcalls-- }()
+	co.baseCcalls = st.nCcalls
 
 	// Nested resume: the calling coroutine turns normal (5.1 state machine;
 	// visible to coroutine.status, and findRunningCo also relies on "only one
@@ -194,10 +201,24 @@ var errYieldSentinel = &LuaError{Msg: "<yield>"}
 // Puts the yielded values into the current coroutine's xfer area and returns
 // the sentinel error to let execute bubble up. On receiving the sentinel,
 // callHost passes it straight up (not treated as an ordinary error).
+//
+// The boundary check is ldo.c lua_yield's `L->nCcalls > L->baseCcalls`, raised HERE,
+// before anything is suspended. It used to be left to callLuaFromHost, which turns a
+// sentinel bubbling out of a Lua function into the error -- but only a Lua function: a
+// host function called directly as a metamethod or comparator (`__lt = coroutine.yield`,
+// `table.sort(t, coroutine.yield)`) returned the sentinel through callMetaHandler or
+// ProtectedCall without passing that check, so the coroutine suspended in the middle of
+// a comparison and the next resume found no yield point (#272). The main thread has no
+// coroutine to suspend and, like lua5.1's main state (nCcalls > baseCcalls there too),
+// reports the same boundary error.
 func (st *State) Yield(args []value.Value) *LuaError {
 	co := st.findRunningCo()
-	if co == nil {
-		return errf("attempt to yield from outside a coroutine")
+	if co == nil || st.nCcalls > co.baseCcalls {
+		// luaG_runerror from inside the C function yield: ci is not a Lua frame, so no
+		// position is added. Left unmarked, the caller's line would be prefixed.
+		e := errf("attempt to yield across metamethod/C-call boundary")
+		e.MarkAnnotated()
+		return e
 	}
 	co.xfer = append(co.xfer[:0], args...) // copy: args is a pooled buffer
 	return errYieldSentinel
