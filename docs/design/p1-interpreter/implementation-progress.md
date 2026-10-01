@@ -117,7 +117,7 @@
 | 开放 upvalue 链 | 按 stackIdx 降序单链(05 §8.3) | Go map(stackIdx → uvRef)+ uvOwner(uv → thread) | 共享语义等价(同槽同 uv);降序链是值栈 arena 化的配套,一并留 P3 |
 | executeSignal 三态 | sigReturn/sigYield/sigError 枚举(08 §3.3) | 显式 *LuaError 返回 + errYieldSentinel 哨兵 | 同一冒泡通道,哨兵区分;08 §3.4 "yield↔error 对称"的最小实现 |
 | 协程对象 | Thread 对象住 arena(01 §5.6) | lightuserdata 句柄 + Go 注册表 | type() 返回 "thread" 语义一致;arena Thread 对象随值栈 arena 化一并做 |
-| xpcall handler 时机 | 栈展开前调用(09) | 捕获后调用(栈已回滚) | **已知微差**:P1 不支持 handler 内 inspect 出错栈帧，所以 `xpcall(f, debug.traceback)` 只看到调用 xpcall 的那一帧(#279 修了 traceback 的格式，没有改这里的时机);未捕获错误自带的 traceback 在出错点生成，不受影响 |
+| xpcall handler 时机 | 栈展开前调用(09) | 出错点调用(2026-10-02 起) | **已对齐**(#279 本地审查补修):原先在捕获后调用、栈已回滚,`xpcall(f, debug.traceback)` 只看到调用 xpcall 的那一帧;现在按 5.1 的 `luaG_errormsg` 在出错点调用，见 09 §6.2 |
 | ephemeron | 键活则值无条件活(07 §13.5 P1 简化,自带) | 同设计 | 一致(设计本身即简化) |
 
 ## 重要实现决策与差分修偏记录
@@ -550,9 +550,19 @@
   | traceback 格式与生成时机(#279) | `internal/crescent/errors.go` | 见 09 §7.1 / §7.3 的订正：函数名从调用方指令推断、匿名函数 `<file:line>`、`[C]: in function 'x'` / `[C]: ?`、`(tail call): ?`、主线程栈底 `[C]: ?`、`LEVELS1/LEVELS2` 截断;未捕获错误的 traceback 改在出错点、没有捕获边界时生成(`protectDepth`) |
   | 顺带：P3/P4 调用 helper 的 pc 约定 | `internal/crescent/gibbous_host.go::DoCall` / `CallBaseline` / `TailCall` | 这三个 helper 把 `ci.pc` 存成 CALL 本身的 pc,而解释器与其余 helper(R3c-fix)都存「下一条」。差一条指令时 traceback 读到的是 CALL 之前的指令，给不出函数名;改成 `pc + 1` |
   | 顺带：协程栈底的幻影 C 帧 | `internal/crescent/coroutine.go::Resume` | `pcall(coroutine.resume, co)` 留在 resumer 上的 `pendingHostFrames` 被协程的第一帧吸收，协程内的 traceback 栈底多一行 `[C]: ?`、`getinfo(2)` 返回 C 帧。Resume 期间清零并在返回时恢复 |
+  | 本地审查补修:`__newindex` 遇到 nil / NaN 键(#278 同类) | `internal/crescent/meta.go::setIndexWithMeta` | `luaV_settable` 总是先做 `luaH_set`,nil / NaN 键在赋值所在的 Lua 帧报错，根本走不到 `__newindex`。望舒先找 `__newindex`:`__newindex = rawset` 时错误来自 rawset(冻结后成了裸消息),Lua 处理函数里报处理函数的行，什么都不做的处理函数则静默成功。键不存在时先做同样的检查(`rawtable.go::checkKey`) |
+  | 本地审查补修:`print` 少了 `tostring` 这一层(#277 / #279 同类) | `internal/stdlib/stdlib.go::baseFnPrint` | `luaB_print` 取全局 `tostring` 逐个 `lua_call`,所以重定义的 `tostring` 对 print 生效,`__tostring` 处理函数在两层 C 帧之上(`tostring`、`print`)。原先直接转换，少一层：处理函数里 `error(m, 3/4)` 差一层,traceback 少一行 `[C]: ?`。改为照做;全局 `tostring` 为 nil 时报 `attempt to call a nil value` |
+  | 本地审查补修：非常量键的变量名后缀 | `internal/crescent/objname.go::describeRegDepth` | `getobjname` 对 GETTABLE / SELF 总是给 `field` / `method`,键不是字符串常量时名字是 `'?'`:`t[i]()` 报 `attempt to call field '?' (a nil value)`。原先这种情况不给后缀，只有 traceback 用了 `kname` |
+  | 本地审查补修:`xpcall` 的 handler 时机 | `internal/crescent/errors.go::atRaisePoint` / `runErrFunc`、`meta.go::ProtectedCallWithHandler` | 见 09 §6.2 实现现状与 §6.5 订正:handler 在出错点调用，看得到出错的帧;只取一个结果;handler 不是函数时、一直失败时给 `error in error handling`,只失败一次时用再次调用的结果。原先在 `ProtectedCall` 返回后调用，见下面「xpcall handler 时机」一行的旧记录 |
+  | 本地审查补修:`debug.traceback(co)` 与数字字符串 level | `internal/crescent/coroutine.go::CoTraceback`、`internal/stdlib/tablelib.go::debugFnTraceback` | 见 09 §13.1。原先把协程句柄当成非字符串 message 原样返回;level 只认数字 |
+  | 本地审查补修：非字符串错误值不附 traceback | `internal/crescent/errors.go::wantsTraceback` | lua.c 的处理函数对非字符串错误值原样返回，未捕获的 `error({})` 不带 traceback |
 
   验证：四个 regression 文件(`issue276_*` / `issue277_*` / `issue278_*` / `issue279_*`)期望值逐条用 `lua5.1` 跑出;
-  #279 的用例在 P1、P3、P4 下各跑一遍 force-all 升层与不升层;`crescent` 内部测试 `TestTraceback_NotBuiltForCaughtErrors`
+  #279 的用例在 P1、P3、P4 下各跑一遍 force-all 与不升层，但这些用例调用 `debug.traceback` 等不在白名单里的函数，
+  force-all 下实际没有帧升层(本地审查用 `PromotionCount` 查出),只说明解释器路径正确;编译层由
+  `issue276_279_compiled_callers_test.go` 覆盖，它的调用方只调用已知局部函数和白名单 stdlib,force-all 与阈值 1
+  的 auto 各跑一遍并断言 `PromotionCount` 非零，去掉 gibbous 调用 helper 的 `pc + 1` 修复后它会失败;
+  `crescent` 内部测试 `TestTraceback_NotBuiltForCaughtErrors`
   钉住「被 pcall / resume 捕获的错误不生成 traceback」。各修复去掉后对应用例都会失败。`test/api` 里原先断言
   `[C]: in ?` 的用例改为断言 lua5.1 的完整输出。
 

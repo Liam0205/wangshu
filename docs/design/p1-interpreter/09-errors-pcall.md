@@ -74,6 +74,8 @@ type LuaError struct {
   白做)。traceback 只在两个时机生成:① `xpcall` 的 message handler 被调用时(handler 通常是 `debug.traceback`,
   §6/§7 在**栈展开前**调它);② 顶层错误传到 `Program.Call` 且宿主请求了 traceback(§11)。所以 `LuaError.traceback`
   字段是「若已生成则缓存于此」的槽,默认空串。
+  (2026-10-02 订正,#279:第 ② 种现在在抛出点生成，条件是此刻没有任何会捕获它的边界，见 §7.3 订正;被 pcall
+  捕获的错误仍然不生成。错误值不是字符串或数字时不生成，与 lua.c 的处理函数原样返回这类值一致。)
 - **`level`(构造期用)**:仅 `error(msg, level)` 内建用它决定「位置前缀加在哪一层的位置」(§3)。**位置前缀在
   `error` 构造 `LuaError` 时就拼进 `value` 了**(若 `value` 是 string 且 level≠0),拼完 `level` 字段对后续冒泡
   无意义——它不参与捕获,也不被 `pcall` 读取。保留它只为调试/对称,实际可省(标 doc-gap)。
@@ -671,6 +673,20 @@ xpcall 出错时的精确时序(定稿):
 handler):在边界捕获后、返回前调用 handler(可能再 reentry execute)」——本文定稿为「**捕获后、清理前**,
 在未展开的出错栈上调用」,这是 traceback 能拿到完整栈的**充要条件**。
 
+> **实现现状(2026-10-02,#279)**:P1 起初没有照这个时序做——handler 在 `ProtectedCall` 返回之后才调用，出错帧
+> 已经被宿主边界截掉,`xpcall(f, debug.traceback)` 只看到调用 xpcall 的那一帧。现在按 5.1 的 `luaG_errormsg`
+> 改成在**出错点**调用,比上面的「捕获后、清理前」更早一步:错误第一次同时具备最终措辞和完整栈的地方，就是未捕获错误
+> 生成 traceback 的那几个点(§7.3 订正:`executeFrom`、`raiseGibbous`、宿主调宿主时的 `callLuaFromHostNamed`),
+> 由 `atRaisePoint` 统一处理。`State.errFunc` 是最内层捕获边界的 handler(对应 `L->errfunc`):xpcall
+> (`ProtectedCallWithHandler`)设为 handler,pcall 与 `coroutine.resume` 设为 nil 并在返回时恢复，所以内层 pcall
+> 接住的错误、协程内部的错误都不会调外层 xpcall 的 handler;`table.sort` 比较器、gsub 替换函数这些 `lua_call`
+> 不改变它。handler 直接从出错处调用，中间不插 C 帧;宿主函数抛出的错误，宿主帧数随 `LuaError.hostAbove` 传给
+> handler,所以 `debug.traceback` 第一行是 `[C]: in function 'error'`。handler 的结果只取一个，存进 `LuaError`
+> (另经 `State.errFuncResult` 作 GC 根),xpcall 返回它。handler 运行期间 CallInfo 深度上限放宽一倍，对应 5.1
+> 在报 `stack overflow` 时 CallInfo 数组已经翻倍、handler 还有空间。实现在 `internal/crescent/errors.go`
+> (`atRaisePoint` / `runErrFunc`)与 `meta.go::ProtectedCallWithHandler`,回归在
+> `test/regression/issue279_traceback_format_test.go` 与 `issue276_279_compiled_callers_test.go`。
+
 ### 6.3 `xpcall` 实现
 
 ```go
@@ -743,6 +759,14 @@ func (vm *VM) callHandlerOnErrorStack(th *Thread, handler, errval value.Value) (
 无限),而是用一个固定错误信息 `"error in error handling"` 作为 `xpcall` 的第二返回值(`herr` 分支)。
 **待 12 差分核对**精确措辞(5.1 的 `luaD_throw(LUA_ERRERR)` 对应信息)。这是「错误处理的错误」的兜底,
 保证 xpcall 永远能返回(不会因 handler 出错而把错误继续冒泡出 xpcall)。
+
+> **订正(2026-10-02 与 `lua5.1` 核对,#279)**:5.1 其实会再调 handler。handler 里抛出的错误同样经过
+> `luaG_errormsg`,而 `L->errfunc` 还是这个 handler,于是对新错误再调一次;只有一直失败、嵌套到 `luaD_call`
+> 的 C 调用上限时才以 `LUA_ERRERR` 结束，得到 `"error in error handling"`。所以只失败一次的 handler 会用第二次
+> 调用的结果:`xpcall(function() error("x") end, function(m) n = n + 1 if n == 1 then error("again") end return m end)`
+> 返回的是 `"again"` 那条错误。handler 不是函数(包括带 `__call` 的表)时直接是 `LUA_ERRERR`。望舒照此实现:
+> handler 自身的错误在它的出错点再调 handler,内层调用的结果就是 xpcall 的结果;内层也失败或进不去时给
+> `"error in error handling"`。另外 xpcall 只返回 handler 的**一个**结果(`luaD_call(L, ..., 1)`)。
 
 ---
 
@@ -845,11 +869,15 @@ func (vm *VM) traceback(th *Thread, msg string, startLevel int) string {
 > **实现现状(2026-10-02 订正,#279)**:第 2 条原先在 `execute` 返回之后才生成,这时错误穿过的每个宿主边界
 > (`callLuaFromHost` 失败时 `truncateCI`)都已把其上的帧截掉——比较器在 `table.sort` 里出错,traceback 里既没有
 > 比较器也没有 `sort`。现在改在**错误第一次出现的地方**生成,条件是此刻没有任何会捕获它的边界:
-> `State.protectDepth` 统计 pcall / xpcall(`ProtectedCall`)与 `coroutine.resume`,为 0 时才生成。生成点是
-> `executeFrom`(Lua 运行期错误,出错帧还在栈上)、`doCall` / `doTailCall` 的宿主分支与 `callLuaFromHostNamed`
-> 的宿主分支(宿主函数抛出的错误,把该宿主函数作为最内层的 C 帧补上,即 `[C]: in function 'error'`)、
-> `raiseGibbous`(P3/P4)。版式按 lua.c 的错误处理函数(`debug.traceback(msg, 2)`)。这样第 ① 条「多数错误被
-> pcall 捕获」的情形照旧不生成 traceback;比较器、gsub 替换函数、foreach 回调走的 `ProtectedCallDirect` 不算捕获。
+> `State.protectDepth` 统计 pcall / xpcall(`ProtectedCall` / `ProtectedCallWithHandler`)与 `coroutine.resume`,
+> 为 0 时才生成。生成点要同时满足「措辞已是最终的」和「帧还在」,统一由 `atRaisePoint` 处理:`executeFrom`
+> (Lua 运行期错误，出错帧还在栈上;Lua 帧直接调用的宿主函数抛出的错误也在这里，由这一帧补上位置之后)、
+> `raiseGibbous`(P3/P4)、`callLuaFromHostNamed` 的宿主分支(只在调用方也是宿主函数时，那时措辞已经冻结)。
+> 宿主函数不压 CallInfo,它抛出错误时 `doCall` / `doTailCall` / `callLuaFromHostNamed` 把「最内层 Lua 帧之上有几个
+> 宿主帧」记进 `LuaError.hostAbove`,生成点据此补上 `[C]: in function 'error'` 这类行。版式按 lua.c 的错误处理函数
+> (`debug.traceback(msg, 2)`),错误值不是字符串或数字时不生成。这样第 ① 条「多数错误被 pcall 捕获」的情形照旧
+> 不生成 traceback;比较器、gsub 替换函数、foreach 回调走的 `ProtectedCallDirect` 不算捕获。xpcall 的 handler
+> 也在同一批点上调用，见 §6.2 实现现状。
 
 **为什么不在抛出点生成**:① 多数错误被 `pcall` 静默捕获后丢弃(不看 traceback),抛出点生成是白费功夫;
 ② 生成 traceback 要分配字符串、遍历栈,在错误路径上(虽冷)也无谓;③ `pcall`(无 handler)根本不需要
@@ -908,8 +936,9 @@ Lua 5.1 用一个巧妙机制推断:**看调用者帧在「发出调用的那条
 > 那个局部名,比如 `'(for generator)'`),其余一律无名;被尾调用的帧(`ci->tailcalls > 0`)和调用方是 C 函数的帧
 > 也无名。所以 5.1 的 traceback 里元方法处理函数显示为 `in function <src:line>`,不会出现 `metamethod 'index'`。
 > 另外 `GETTABLE` / `SELF` 的键不是字符串常量时(`t[i]()`),`kname` 给的是 `'?'` 而不是无名:traceback 显示
-> `in function '?'`,错误后缀显示 `(field '?')`。实现见 `internal/crescent/errors.go::tracebackFuncName` 与
-> `objname.go::kname`。
+> `in function '?'`,错误后缀显示 `field '?'`(如 `attempt to call field '?' (a nil value)`)。实现见
+> `internal/crescent/errors.go::tracebackFuncName`、`objname.go::kname` 与 `objname.go::describeRegDepth`,
+> 后缀的回归在 `test/regression/issue279_traceback_format_test.go::TestNonConstantKeyIsNamedFieldQuestionMark`。
 
 ### 8.2 这给出错误信息里的变量名后缀(承 07 §14.4)
 
@@ -1229,6 +1258,13 @@ debug.traceback(message, level):
   `(tail call): ?`;超出栈深时只剩 `stack traceback:` 一行(2026-10-02 核对,#279)。
 - **`thread` 参数**:可对**另一个协程** co 生成 traceback(`debug.traceback(co)`)——跨 Thread 读 co 的
   CallInfo 链(§12.2)。P1 可简化(只支持当前 thread,记缺口)。
+  **已实现(2026-10-02 与 `lua5.1` 核对,#279)**:另一个线程的默认 level 是 0(`db_errorfb` 里 `L != L1` 时);
+  挂起的协程栈顶是它所在的 `[C]: in function 'yield'`,normal 状态的协程栈顶是它等待中的 resume(或 wrap 函数);
+  没启动过、正常结束的协程没有栈，只剩 `stack traceback:`;**因错误而死的协程保留出错时的栈**(5.1 的 `lua_resume`
+  出错时不回退 CallInfo),所以 `debug.traceback(co)` 在 resume 失败后仍能看到出错位置。望舒的帧在出错后会被
+  截掉，所以在出错点、只剩 resume 一个捕获边界时(`State.coDeathDepth`)先把这些行存在协程上。传入正在运行的
+  协程自己时等同于不传。level 照 `lua_isnumber` 也接受数字字符串。实现在 `internal/crescent/coroutine.go::CoTraceback`
+  与 `internal/stdlib/tablelib.go::debugFnTraceback`。
 
 ### 13.2 `debug.getinfo([thread,] f_or_level [, what])`
 
@@ -1262,7 +1298,7 @@ debug.traceback(message, level):
 | `debug.getupvalue`/`setupvalue` | **△ 可选** | 读写 upvalue,依赖 UpvalNames |
 | `debug.setmetatable`/`getmetatable` | **✅ 必做** | 已在 07 §1.3 定义(per-type 元表后门) |
 | `debug.getregistry` | **❌ 不做** | registry 访问,P1 内部用不暴露 |
-| `debug.traceback(co)` 跨协程 | **△ 简化** | 只支持当前 thread,跨 co 记缺口 |
+| `debug.traceback(co)` 跨协程 | **✅ 已提供**(2026-10-02,#279) | 挂起 / normal / 出错死亡的协程都按 5.1 给出栈,§13.1 |
 
 > **P1 debug 库哲学**(roadmap §5 原则 4):debug 库是「不可升层、永远走解释」的典型形状。P1 只做
 > **错误处理必需的 `debug.traceback`** 与 **introspection 基本的 `debug.getinfo`**,其余(hook/getlocal/...)
@@ -1322,7 +1358,8 @@ debug.traceback(message, level):
 4. **assert 抛裸 message,不加位置**(§4.1):`assert` 跳过 `where()`,与 `error(msg,1)` 形成对比(后者加前缀)。
    默认 `"assertion failed!"`。
 5. **xpcall handler 在栈展开前调**(§6.2):捕获错误后、`recoverToProtectionPoint` 前,在**未清理的出错栈**上
-   调 handler——这是 `debug.traceback` 能拿到完整栈的充要条件。**P1 关键决策**。
+   调 handler——这是 `debug.traceback` 能拿到完整栈的充要条件。**P1 关键决策**。(2026-10-02 起按 5.1 在出错点调用，
+   见 §6.2 实现现状。)
 6. **xpcall 5.1 不传 args 给 f**(§6.1):`xpcall(f, h, ...)` 的额外参数被忽略(5.2+ 才传)。锁 5.1。
 7. **pc→line 含 -1 偏移**(§3.5/§7.4):栈顶帧 `pc-1`,非栈顶帧 `savedPC-1`。traceback/error 行号正确性的关键。
 7a. **CALL 记的是参数列表那一行**(§3.5.1):`CallExpr.ArgsLine` 取 `(`/字符串/`{` 那个 token 的行,不取被调用
@@ -1333,7 +1370,8 @@ debug.traceback(message, level):
 9. **变量名后缀由 09 定,类型名层由 07 定**(§8.2):完整错误 = `<src>:<line>: attempt to X a <type> value (<kind> '<name>')`。
 10. **函数名推断 P1 简化**(§8.3):必做 global/field/method(从常量池取名);应做 local(需 LocVars 回填);
     可选 upvalue/for-iter/metamethod;不做完整跨跳转 symbexec。退化为无后缀,类型名层仍完整。
-11. **traceback 按需生成**(§7.3):抛出点不生成;只在 xpcall handler / 顶层未捕获 / 显式 debug.traceback 时生成。
+11. **traceback 按需生成**(§7.3):被捕获的错误不生成;未捕获的错误在抛出点(没有捕获边界时)生成;此外只在
+    xpcall handler / 显式 debug.traceback 时生成(2026-10-02 订正,#279)。
 12. **两类 stack overflow 分清**(§10):Lua 深度 → `stack overflow`(arena 上限);host↔Lua 重入 → `C stack overflow`
     (`nCcalls`=200,实际的 Go 栈)。
 13. **host 不 panic,经 raise 抛错**(§3.3/§11):host 用 `raise`→`pendingErr`→`callHost` 返回 callError 路径;
