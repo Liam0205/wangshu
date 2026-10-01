@@ -74,9 +74,12 @@ TAILCALL 分支的注释写的是「run it on the tail-call frame we just entere
 官方 closure.lua 的「yields in tail calls」(第 220 行)在 `stopAt` 豁免的截断点(第 163 行，setfenv)之后，望舒从未
 跑过；被截掉的不只是 setfenv 那十几行，而是第 178–407 行整段协程测试。`return coroutine.yield(x)` 这种常见写法因此
 一直不能恢复，没有任何测试报出来。修好后把这一段单独拿出来跑,P1、P4 auto、P4 force-all 都能跑完，修复前的 P4
-在「yields in tail calls」那里报 `cannot resume: no pending yield point`。旧文档 [[prove-the-path-under-test]] §1 还拿「closure.lua
-含协程多值 yield/resume 组合且字节级一致通过」当覆盖度充分的例子——那一段其实从没跑过。**判据**:给官方套件加截断豁免时，
-扫一眼截断点之后还有哪些与豁免原因无关的用例，把它们单独放进 regression;豁免注释里写清截掉了什么。
+在「yields in tail calls」那里报 `cannot resume: no pending yield point`。[[prove-the-path-under-test]] 早在 2026-08-29 就记下「closure.lua 被引用的第 195 行从来没有被执行过」,
+但只把它当作「引用套件作证据前要确认行号」的反例，没有人把截掉的那一段放回去跑——缺口被记录了，却没有被
+处理。本轮在 `luasuite_test.go` 加了 `resumeAt`(文件 → 行区间),把第 178–407 行作为单独的子测试运行;
+去掉尾调用 yield 的修复，它在 `closure.lua:228` 失败。这一步是最终审查提出后才补的，最初只写了一个最小复现，
+没有把整段放回去。**判据**:给官方套件加截断豁免时，扫一眼截断点之后还有哪些与豁免原因无关的用例，把这些
+行区间登记进 `resumeAt`;发现「截断之后的某一行没在跑」时，处理办法是把它放回去跑，不只是记下来。
 
 ### 其余
 
