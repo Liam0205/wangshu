@@ -9,7 +9,9 @@
   ①② yield 越过元方法边界由 #272 修好;③ 宿主函数触发的元方法处理函数里 `error(m, 2)` 差一层(#277)、④ C 函数内部
   抛出的错误多了位置前缀(#278)、⑤ 未捕获错误的 traceback 缺帧(#279,连带 traceback 格式整体对齐 `db_errorfb`)、
   ⑥ `coroutine.wrap` 少一层调用方位置(#276)在 #276-#279 一轮修好。按原缺口的提示先扫了同类写法，实际范围比六项大，
-  对账见 `docs/design/p1-interpreter/implementation-progress.md` 的 #276-#279 条目，反思
+  本地审查第一轮又补了同类的 `__newindex` nil / NaN 键、`print` 的 `tostring` 层、非常量键的错误后缀、
+  `xpcall` 的 handler 时机与 `debug.traceback(co)`。对账见 `docs/design/p1-interpreter/implementation-progress.md`
+  的 #276-#279 条目，反思
   [[2026-10-02-issue276-279-host-boundary-positions-and-traceback]]。
 
 

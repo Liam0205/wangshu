@@ -6,7 +6,8 @@ description: >
   `error(m, 2)` 差一层(#277)、C 函数内部抛出的错误多了位置前缀(#278)、traceback 格式与生成时机(#279)。教训:
   **位置和层级取决于调用方是 Lua 帧还是 C 帧，判断「与 lua5.1 一致」必须两种调用方都测**(#202 把 wrap 一项判为不成立，
   只测了经 pcall 的写法);**延迟消费「当前栈」的状态会被中途的截栈改掉，traceback 要在出错点取**(R3c-fix 之后第二个样本);
-  **force-all 用例不等于升层路径被测到，要确认被测的帧真的升了层**。
+  **force-all 用例不等于升层路径被测到，要确认被测的帧真的升了层**;
+  **把某类错误统一冻结之前，先查有没有别的路径正好借这个错误拿到正确的位置**(本地审查发现 `__newindex = rawset` 因此回归)。
 metadata:
   type: reflection
   date: 2026-10-02
@@ -32,6 +33,14 @@ metadata:
    另一处是 `pcall(coroutine.resume, co)` 留下的 `pendingHostFrames` 被协程第一帧吸收，协程栈底多出一行 `[C]: ?`。
 4. **变异检查**。每项修复去掉后对应用例都失败，只有 gibbous `pc + 1` 例外：去掉它，新加的 #279 用例在 force-all 下
    仍然全过，是已有的 P3/P4 测试抓到的。没有逐个确认 #279 用例里哪些帧真的升了层。
+5. **本地审查第一轮**(阻塞 1、重要 4、小问题 3)。阻塞项是本轮引入的回归:`RawSet` 一律冻结为不带位置后,
+   `__newindex = rawset` 配 nil / NaN 键从 `x:N: table index is nil` 变成裸消息。根因是 `setIndexWithMeta` 先找
+   `__newindex` 再检查键，基线上 rawset 的错误冒到赋值所在的 Lua 帧，凑巧补对了位置。重要项里，扫描清单漏了
+   `print`(它不经全局 `tostring`、少一层 C 帧);`xpcall(f, debug.traceback)` 与 `debug.traceback(co)` 属于 #279
+   范围却仍然不同，而 doc-gaps 已经整条标成完成;09 §8 的订正写了代码并没有的错误后缀;编译层回归测试实际没有升层。
+   这些都在同一轮补修：键检查前移、`print` 走全局 `tostring`、`describeRegDepth` 用 `kname`、xpcall 的 handler
+   改在出错点调用(`atRaisePoint`)、`debug.traceback` 支持协程参数(死于错误的协程保留出错时的栈)、新增
+   `issue276_279_compiled_callers_test.go` 并断言 `PromotionCount`。
 
 ## 教训
 
@@ -53,11 +62,26 @@ metadata:
 这是第二个样本，可以考虑把它写进 [[design-claims-vs-codebase-physics]] §2:**延迟消费上下文相关的状态，要先列出
 从产生到消费之间有谁会改这个上下文**。
 
-### 3. force-all 用例要确认被测帧真的升了层
+### 3. force-all 用例要确认被测帧真的升了层(本地审查第一轮也指出了这一点)
 
 #279 的用例在 P3/P4 下各跑 force-all 和不升层两遍，但 gibbous 调用 helper 的 pc 改动去掉后它们照样通过。force-all
 只是打开升层开关，函数能不能升层还要过可编译性检查;traceback 用例的帧大多调用 `debug.traceback` 等宿主函数，
 没有确认它们是否升层。以后给编译层加的用例，要么断言升层计数，要么做一次变异确认用例对编译层的改动敏感。这属于 [[prove-the-path-under-test]] 说的「绿色不等于在测你以为在测的路径」。
+
+### 4. 冻结一类错误之前，先查谁在依赖它原来的位置
+
+#278 的修法是在 `RawSet` 等入口把错误冻结为不带位置，这对「C 函数直接调用 rawset」是对的。但 `__newindex = rawset`
+时，原来的正确结果其实来自一个凑巧:rawset 的错误冒到赋值所在的 Lua 帧，被补上了该行位置，而 5.1 里这个错误本来
+就该在那一帧由 `luaH_set` 报出，根本不进 `__newindex`。冻结让凑巧失效，暴露出键检查的顺序错了。
+
+**检查方法**:改变某个入口的错误标注方式时，列出所有会把这个入口当回调的写法(元方法处理函数直接是这个库函数、
+`sort` / `gsub` / `foreach` 的回调是它),逐个和 lua5.1 比一遍，而不只看直接调用。
+
+### 5. 扫描「会回调 Lua 的宿主函数」要按 5.1 的实现列，不按望舒的实现列
+
+扫描清单是按望舒里谁调用了 `ProtectedCallDirect` 列的。`print` 在望舒里直接调内部转换函数，不像会多出一层;
+5.1 的 `luaB_print` 却是 `lua_call` 全局 `tostring`。同类问题要从 `lbaselib.c` / `lstrlib.c` / `ltablib.c` 里所有
+`lua_call` / `lua_pcall` 的调用点列清单。
 
 ## 触发场景
 
@@ -65,3 +89,4 @@ metadata:
 - 修改宿主调用边界(`callLuaFromHost`、`ProtectedCall*`、`Resume`、元方法入口)上的错误标注或层级计数时。
 - 一个机制在事后读取栈、帧或 pc,而中间可能经过截栈、弹帧时。
 - 给 P3/P4 写 force-all 用例并据此声称编译层也覆盖到了时。
+- 把某个入口的错误改成「冻结、不带位置」之前，或者扫描「会回调 Lua 的宿主函数」时。
