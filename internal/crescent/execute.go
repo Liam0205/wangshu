@@ -627,67 +627,81 @@ func (st *State) doCompare(th *thread, ci *callInfo, i bytecode.Instruction) (bo
 			}
 		}
 		return false, nil
-	case bytecode.LT, bytecode.LE:
-		if value.IsNumber(b) && value.IsNumber(c) {
-			x, y := value.AsNumber(b), value.AsNumber(c)
-			if bytecode.Op(i) == bytecode.LT {
-				return x < y, nil
-			}
-			return x <= y, nil
-		}
-		if value.Tag(b) == value.TagString && value.Tag(c) == value.TagString {
-			cmp := stringCompare(st, value.GCRefOf(b), value.GCRefOf(c))
-			if bytecode.Op(i) == bytecode.LT {
-				return cmp < 0, nil
-			}
-			return cmp <= 0, nil
-		}
-		// Metamethod slow path (07): __lt / __le; 5.1-specific: with no __le, fall back to not __lt(c, b)
-		if bytecode.Op(i) == bytecode.LT {
-			h := st.metaFieldOfValue(b, "__lt")
-			if h == value.Nil {
-				h = st.metaFieldOfValue(c, "__lt")
-			}
-			if value.Tag(h) == value.TagFunction {
-				res, e := st.callMetaHandler(th, h, []value.Value{b, c}, 1)
-				if e != nil {
-					return false, e
-				}
-				return value.Truthy(res), nil
-			}
-		} else {
-			h := st.metaFieldOfValue(b, "__le")
-			if h == value.Nil {
-				h = st.metaFieldOfValue(c, "__le")
-			}
-			if value.Tag(h) == value.TagFunction {
-				res, e := st.callMetaHandler(th, h, []value.Value{b, c}, 1)
-				if e != nil {
-					return false, e
-				}
-				return value.Truthy(res), nil
-			}
-			// __le→__lt fallback: a <= b ⟺ not (b < a)
-			h = st.metaFieldOfValue(b, "__lt")
-			if h == value.Nil {
-				h = st.metaFieldOfValue(c, "__lt")
-			}
-			if value.Tag(h) == value.TagFunction {
-				res, e := st.callMetaHandler(th, h, []value.Value{c, b}, 1)
-				if e != nil {
-					return false, e
-				}
-				return !value.Truthy(res), nil
-			}
-		}
-		// No metamethod: same type raises "two X values", different types raise "X with Y" (5.1)
-		tb, tc := st.typeNameOf(b), st.typeNameOf(c)
-		if tb == tc {
-			return false, errf("attempt to compare two %s values", tb)
-		}
-		return false, errf("attempt to compare %s with %s", tb, tc)
+	case bytecode.LT:
+		return st.lessThan(th, b, c)
+	case bytecode.LE:
+		return st.lessEqual(th, b, c)
 	}
 	return false, errf("interpreter: bad compare op")
+}
+
+// lessThan is lvm.c's luaV_lessthan, shared by OP_LT and table.sort's default comparator.
+//
+// Operands of different types raise at once, before any metamethod is looked up, and __lt runs
+// only when BOTH operands carry the same handler (call_orderTM). An earlier version took the
+// handler from either side and ignored the types, so with a metatable on one table
+// `A < {}` and even `A < 1` returned the handler's answer where lua5.1 raises.
+func (st *State) lessThan(th *thread, l, r value.Value) (bool, *LuaError) {
+	tl, tr := st.typeNameOf(l), st.typeNameOf(r)
+	switch {
+	case tl != tr:
+		return false, orderError(tl, tr)
+	case value.IsNumber(l):
+		return value.AsNumber(l) < value.AsNumber(r), nil
+	case value.Tag(l) == value.TagString:
+		return stringCompare(st, value.GCRefOf(l), value.GCRefOf(r)) < 0, nil
+	}
+	if res, ok, e := st.callOrderTM(th, l, r, "__lt"); e != nil || ok {
+		return res, e
+	}
+	return false, orderError(tl, tr)
+}
+
+// lessEqual is lvm.c's lessequal: __le first, then not __lt with the operands swapped (5.1).
+func (st *State) lessEqual(th *thread, l, r value.Value) (bool, *LuaError) {
+	tl, tr := st.typeNameOf(l), st.typeNameOf(r)
+	switch {
+	case tl != tr:
+		return false, orderError(tl, tr)
+	case value.IsNumber(l):
+		return value.AsNumber(l) <= value.AsNumber(r), nil
+	case value.Tag(l) == value.TagString:
+		return stringCompare(st, value.GCRefOf(l), value.GCRefOf(r)) <= 0, nil
+	}
+	if res, ok, e := st.callOrderTM(th, l, r, "__le"); e != nil || ok {
+		return res, e
+	}
+	if res, ok, e := st.callOrderTM(th, r, l, "__lt"); e != nil || ok {
+		return !res, e
+	}
+	return false, orderError(tl, tr)
+}
+
+// callOrderTM is lvm.c's call_orderTM: ok is false when p1 has no handler for event or p2's is a
+// different one. The handler is called whatever its type, so a callable table goes through __call.
+func (st *State) callOrderTM(th *thread, p1, p2 value.Value, event string) (res, ok bool, e *LuaError) {
+	tm1 := st.metaFieldOfValue(p1, event)
+	if tm1 == value.Nil {
+		return false, false, nil
+	}
+	if !st.rawEqual(tm1, st.metaFieldOfValue(p2, event)) {
+		return false, false, nil
+	}
+	v, e := st.callMetaHandler(th, tm1, []value.Value{p1, p2}, 1)
+	if e != nil {
+		return false, true, e
+	}
+	return value.Truthy(v), true, nil
+}
+
+// orderError is ldebug.c's luaG_ordererror, which tells the two types apart by their THIRD letter
+// only: "string" and "thread" share it, so comparing a string with a coroutine reports "two string
+// values" in lua5.1, and so does this.
+func orderError(t1, t2 string) *LuaError {
+	if t1[2] == t2[2] {
+		return errf("attempt to compare two %s values", t1)
+	}
+	return errf("attempt to compare %s with %s", t1, t2)
 }
 
 func (st *State) rawEqual(a, b value.Value) bool {

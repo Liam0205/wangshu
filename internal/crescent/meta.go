@@ -428,28 +428,11 @@ func (st *State) IndexWithMeta(obj, key value.Value) (value.Value, *LuaError) {
 // LessThan exposes the full `<` semantics (number/string fast path + __lt metamethod;
 // used by table.sort's default comparator — PUC's sort_comp goes through lua_lessthan).
 func (st *State) LessThan(a, b value.Value) (bool, *LuaError) {
-	if value.IsNumber(a) && value.IsNumber(b) {
-		return value.AsNumber(a) < value.AsNumber(b), nil
-	}
-	if value.Tag(a) == value.TagString && value.Tag(b) == value.TagString {
-		return stringCompare(st, value.GCRefOf(a), value.GCRefOf(b)) < 0, nil
-	}
 	th := st.runningThread
 	if th == nil {
 		return false, errf("LessThan: no running thread")
 	}
-	h := st.metaFieldOfValue(a, "__lt")
-	if h == value.Nil {
-		h = st.metaFieldOfValue(b, "__lt")
-	}
-	if value.Tag(h) == value.TagFunction {
-		res, e := st.callMetaHandler(th, h, []value.Value{a, b}, 1)
-		if e != nil {
-			return false, e
-		}
-		return value.Truthy(res), nil
-	}
-	return false, errf("attempt to compare two %s values", st.typeNameOf(a))
+	return st.lessThan(th, a, b)
 }
 
 // MetaFieldOf exposes metamethod lookup for an arbitrary Value (used by stdlib __tostring etc.).
