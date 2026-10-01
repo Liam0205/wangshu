@@ -39,7 +39,7 @@ type LuaError struct {
 	// would be misjudged and replaced by the Msg string.
 	HasValue  bool
 	Msg       string // cached for the Go error interface
-	Traceback string // built when the error bubbles to the top level (09; errors caught by pcall carry none)
+	Traceback string // built at the raise point when nothing will catch the error (09 §7.3; caught errors carry none)
 	Level     int    // the level of error(msg, level) (09); 0 = no position prefix
 	annotated bool   // chunkname:line: prefix already added (added only once)
 	// hostRaised: the error came out of a host function that was itself the callee
@@ -56,6 +56,17 @@ type LuaError struct {
 	// arg error / already resolved".
 	argNarg  int
 	argExtra string
+	// hostAbove is the number of host frames above the innermost Lua frame where a host function
+	// raised this error: the raiser itself plus the host functions that called it. Host frames
+	// are not pushed onto cis, so the raise-point processing (atRaisePoint), which may run only
+	// once the message is final at the calling Lua frame, needs it to show them.
+	hostAbove int
+	// handled: errFunc already ran for this error at its raise point and its result is
+	// handlerVal -- what xpcall returns instead of the error value.
+	handled    bool
+	handlerVal value.Value
+	// coSnap: the dying coroutine's frames were already kept for this error (atRaisePoint).
+	coSnap bool
 }
 
 func (e *LuaError) Error() string {
@@ -104,6 +115,22 @@ type State struct {
 	// taken at the raise point, before any host boundary unwinds the frames it should show (09
 	// §7.3: only uncaught errors pay for one).
 	protectDepth int
+	// errFunc is the message handler of the innermost catching boundary: xpcall's handler, or Nil
+	// under pcall / resume / no boundary at all (ldo.c's L->errfunc). Like lua5.1 it runs at the
+	// raise point, with the raiser's frames still on the stack, so xpcall(f, debug.traceback)
+	// shows them.
+	errFunc value.Value
+	// errFuncResult roots the value errFunc returned while its error unwinds to xpcall: it lives
+	// in a Go struct (LuaError.handlerVal) that the collector does not scan.
+	errFuncResult value.Value
+	// coDeathDepth is protectDepth just inside the innermost running resume (0 outside any): an error
+	// raised while protectDepth is still at it has nothing but that resume to catch it, so it kills
+	// the coroutine.
+	coDeathDepth int
+	// errFuncDepthRoom is extra CallInfo depth allowed while an xpcall handler runs. luaD_growCI
+	// raises "stack overflow" on the way to doubling the CallInfo array, so a handler called for
+	// that very error still has room to run; overflowing again is LUA_ERRERR.
+	errFuncDepthRoom int
 
 	// threadChain is the suspended caller threads on the resume chain (06 §5.1
 	// R4/R5: runningThread only covers the current thread, but the stacks of the
@@ -404,7 +431,7 @@ func New() *State { return NewWithOptions(arena.Options{}) }
 func NewWithOptions(arenaOpts arena.Options) *State {
 	a, cleanup, p3env := newStateArena(arenaOpts)
 	c := gc.New(a, gc.Options{})
-	st := &State{arena: a, gc: c, bridge: bridge.NewBridge(), arenaCleanup: cleanup, p3env: p3env}
+	st := &State{arena: a, gc: c, bridge: bridge.NewBridge(), arenaCleanup: cleanup, p3env: p3env, errFunc: value.Nil, errFuncResult: value.Nil}
 	st.globals = object.AllocTable(a, 0, 8)
 	c.LinkSweep(st.globals)
 	// gcPending flag word (P3 PW9): allocate one arena word; the collector
@@ -523,6 +550,7 @@ func (st *State) visitExtraValues(visit func(value.Value)) {
 	for i := range st.baseline {
 		visit(st.baseline[i].val)
 	}
+	visit(st.errFuncResult)
 	// fast path (the vast majority of loads): no coroutines, no resume chain →
 	// scan runningThread directly, zero map allocation (every Collect round does a
 	// root scan, and the slow path's seen map is GC self-harm).
@@ -1271,7 +1299,7 @@ func (st *State) callOnStack(cl arena.GCRef, args []value.Value, nresults int) (
 			// enterGibbous entry=false (fresh=false), but the wasm path does not enter the
 			// execute main loop and does not depend on fresh; DoReturn ignores fresh and just processes per nresults.
 			if err := st.enterGibbous(th, code, 0 /*funcIdx*/, len(args), -1); err != nil {
-				if err.Traceback == "" {
+				if err.Traceback == "" && err.wantsTraceback() {
 					err.Traceback = st.buildTraceback(th, 0)
 				}
 				return nil, err
@@ -1296,7 +1324,7 @@ func (st *State) callOnStack(cl arena.GCRef, args []value.Value, nresults int) (
 		return nil, err
 	}
 	if err := st.execute(th); err != nil {
-		if err.Traceback == "" {
+		if err.Traceback == "" && err.wantsTraceback() {
 			err.Traceback = st.buildTraceback(th, 0)
 		}
 		return nil, err

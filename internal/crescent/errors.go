@@ -215,9 +215,13 @@ const (
 // lua_getstack level of frames[first]: db_errorfb counts levels absolutely, so where the "..."
 // elision starts depends on it (debug.traceback starts at 1, lua.c's error handler at 2).
 func (st *State) renderTraceback(th *thread, frames []tbFrame, first, startLevel int) string {
+	return joinTraceback(len(frames), first, startLevel, func(k int) string { return st.frameLine(th, frames, k) })
+}
+
+// joinTraceback lays out lines first..n-1 under the header, line(k) giving each one's text.
+func joinTraceback(n, first, startLevel int, line func(k int) string) string {
 	var sb strings.Builder
 	sb.WriteString("stack traceback:")
-	n := len(frames)
 	maxLevel := startLevel + n - 1 - first
 	elided := false
 	for k := first; k < n; k++ {
@@ -231,52 +235,160 @@ func (st *State) renderTraceback(th *thread, frames []tbFrame, first, startLevel
 				continue
 			}
 		}
-		f := frames[k]
 		sb.WriteString("\n\t")
-		switch f.kind {
-		case frameTail:
-			// info_tailcall: source "=(tail call)", currentline -1, what "tail".
-			sb.WriteString("(tail call): ?")
-			continue
-		case frameHost:
-			sb.WriteString("[C]:")
-		default:
-			ci := th.ciAt(f.idx)
-			proto := st.protoOf(&ci)
-			fmt.Fprintf(&sb, "%s:", bytecode.ChunkID(proto.Source))
-			if pc := int(ci.pc) - 1; pc >= 0 && pc < len(proto.LineInfo) && proto.LineInfo[pc] > 0 {
-				fmt.Fprintf(&sb, "%d:", proto.LineInfo[pc])
-			}
-		}
-		if name := st.tracebackFuncName(th, frames, k); name != "" {
-			fmt.Fprintf(&sb, " in function '%s'", name)
-			continue
-		}
-		if f.kind == frameHost {
-			sb.WriteString(" ?")
-			continue
-		}
-		ci := th.ciAt(f.idx)
-		proto := st.protoOf(&ci)
-		if proto.LineDefined == 0 {
-			sb.WriteString(" in main chunk")
-		} else {
-			fmt.Fprintf(&sb, " in function <%s:%d>", bytecode.ChunkID(proto.Source), proto.LineDefined)
-		}
+		sb.WriteString(line(k))
 	}
 	return sb.String()
 }
 
-// captureTraceback attaches the traceback to e if nothing will catch it (protectDepth == 0) and it
-// has none yet. Called where an error first appears with its frames still on the stack -- the
-// executing frame for a runtime error, the calling frame plus extraHost host frames for a host
-// raiser -- because every host boundary it later crosses truncates the frames above it.
-func (st *State) captureTraceback(th *thread, e *LuaError, extraHost int) {
-	if e == nil || e == errYieldSentinel || e.Traceback != "" || st.protectDepth > 0 || th.ciDepth == 0 {
+// frameLine is the text of frames[k]'s traceback line.
+func (st *State) frameLine(th *thread, frames []tbFrame, k int) string {
+	var sb strings.Builder
+	f := frames[k]
+	switch f.kind {
+	case frameTail:
+		// info_tailcall: source "=(tail call)", currentline -1, what "tail".
+		return "(tail call): ?"
+	case frameHost:
+		sb.WriteString("[C]:")
+	default:
+		ci := th.ciAt(f.idx)
+		proto := st.protoOf(&ci)
+		fmt.Fprintf(&sb, "%s:", bytecode.ChunkID(proto.Source))
+		if pc := int(ci.pc) - 1; pc >= 0 && pc < len(proto.LineInfo) && proto.LineInfo[pc] > 0 {
+			fmt.Fprintf(&sb, "%d:", proto.LineInfo[pc])
+		}
+	}
+	if name := st.tracebackFuncName(th, frames, k); name != "" {
+		fmt.Fprintf(&sb, " in function '%s'", name)
+		return sb.String()
+	}
+	if f.kind == frameHost {
+		sb.WriteString(" ?")
+		return sb.String()
+	}
+	ci := th.ciAt(f.idx)
+	proto := st.protoOf(&ci)
+	if proto.LineDefined == 0 {
+		sb.WriteString(" in main chunk")
+	} else {
+		fmt.Fprintf(&sb, " in function <%s:%d>", bytecode.ChunkID(proto.Source), proto.LineDefined)
+	}
+	return sb.String()
+}
+
+// atRaisePoint is lua5.1's luaG_errormsg moment for e: called where an error first has both its
+// final message and its frames on the stack -- the executing frame for a runtime error, the calling
+// frame plus e.hostAbove host frames for an error a host function raised -- because every host
+// boundary it later crosses truncates the frames above it. If nothing will catch the error
+// (protectDepth == 0) it takes the uncaught-error traceback; if the innermost catching boundary is
+// an xpcall it runs the handler, so the handler sees the raiser's stack. Either happens once.
+func (st *State) atRaisePoint(th *thread, e *LuaError, extraHost int) {
+	if e == nil || e == errYieldSentinel || th.ciDepth == 0 {
 		return
 	}
-	e.Traceback = st.buildTraceback(th, extraHost)
+	if e.hostAbove > extraHost {
+		extraHost = e.hostAbove
+	}
+	if st.protectDepth == 0 {
+		if e.Traceback == "" && e.wantsTraceback() {
+			e.Traceback = st.buildTraceback(th, extraHost)
+		}
+		return
+	}
+	if st.coDeathDepth > 0 && st.protectDepth == st.coDeathDepth && !e.coSnap {
+		// Only the resume boundary stands between this error and the running coroutine, which it
+		// kills. lua5.1 leaves a dead coroutine's stack as the error left it, so debug.traceback(co)
+		// still shows where it died; here the frames unwind, so their lines are kept now.
+		e.coSnap = true
+		if co := st.findRunningCo(); co != nil && co.th == th {
+			frames := st.tracebackFrames(th, extraHost)
+			co.deathLines = make([]string, len(frames))
+			for k := range frames {
+				co.deathLines[k] = st.frameLine(th, frames, k)
+			}
+		}
+	}
+	if st.errFunc != value.Nil && !e.handled {
+		st.runErrFunc(th, e, extraHost)
+	}
 }
+
+// wantsTraceback: lua.c's handler hands a non-string error object back untouched, so only a string
+// (or number) error gets an uncaught-error traceback.
+func (e *LuaError) wantsTraceback() bool {
+	return !e.HasValue || value.Tag(e.Value) == value.TagString || value.IsNumber(e.Value)
+}
+
+// markHostRaise records that a host function raised e with n host frames above the innermost Lua
+// frame, for an atRaisePoint that runs further out. An error that came through the host function
+// from deeper already had its raise point and keeps that record.
+func markHostRaise(e *LuaError, n int) {
+	if e != nil && e != errYieldSentinel && e.hostAbove == 0 {
+		e.hostAbove = n
+	}
+}
+
+// runErrFunc calls the innermost xpcall's handler with e's value, as luaG_errormsg does: the handler
+// is called straight from the raiser (no frame of its own in between), one result is kept, and it
+// replaces the error value xpcall returns. extraHost host frames stand above th's innermost Lua
+// frame, so the handler's frames sit on top of them.
+//
+// A handler that raises raises again under the same errFunc, so its own error runs the handler
+// once more from that new raise point; luaD_call ends the recursion with LUA_ERRERR, and so does a
+// handler that is not a function at all. Both give "error in error handling".
+func (st *State) runErrFunc(th *thread, e *LuaError, extraHost int) {
+	e.handled = true
+	h := st.errFunc
+	if value.Tag(h) != value.TagFunction {
+		e.handlerVal = st.errErrValue()
+		st.errFuncResult = e.handlerVal
+		return
+	}
+	errVal := e.Value
+	if !e.HasValue {
+		errVal = value.MakeGC(value.TagString, st.gc.Intern([]byte(e.Msg)))
+	}
+	// The interpreter keeps th.top at the frame's register ceiling; a compiled frame may not have
+	// written it back, and the handler's frame is built at th.top.
+	top := th.liveTop()
+	th.setTop(top)
+	if th.ciDepth > 0 {
+		ci := currentCI(th)
+		if ceil := ci.base + int(st.protoOf(ci).MaxStack); top < ceil {
+			th.ensureStack(ceil)
+			th.setTop(ceil)
+		}
+	}
+	outer, outerRoom := st.pendingHostFrames, st.errFuncDepthRoom
+	st.pendingHostFrames = uint8(extraHost)
+	st.errFuncDepthRoom = maxLuaCallDepth
+	res, he := st.callLuaFromHostNoLevel(th, h, []value.Value{errVal})
+	st.pendingHostFrames, st.errFuncDepthRoom = outer, outerRoom
+	switch {
+	case he == nil && len(res) > 0:
+		e.handlerVal = res[0]
+	case he == nil:
+		e.handlerVal = value.Nil
+	case he != errYieldSentinel && he.handled:
+		// The handler failed, and the handler run at that failure's raise point returned normally:
+		// its result is what reaches xpcall, the outer run never finishing (luaD_throw longjmps).
+		e.handlerVal = he.handlerVal
+	default:
+		e.handlerVal = st.errErrValue()
+	}
+	st.errFuncResult = e.handlerVal
+	th.setTop(top)
+}
+
+// errErrValue is the LUA_ERRERR error object (luaD_seterrorobj).
+func (st *State) errErrValue() value.Value {
+	return value.MakeGC(value.TagString, st.gc.Intern([]byte("error in error handling")))
+}
+
+// ErrFuncResult reports what xpcall returns for e: the handler's result when it ran at the raise
+// point.
+func (e *LuaError) ErrFuncResult() (value.Value, bool) { return e.handlerVal, e.handled }
 
 // buildTraceback is the traceback attached to an error that no protected call catches, laid out as
 // lua.c's error handler prints it: debug.traceback(msg, 2) run at the raise point, so the first

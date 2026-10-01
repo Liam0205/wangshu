@@ -85,17 +85,11 @@ func describeRegDepth(proto *bytecode.Proto, pc int32, reg int, depth int) strin
 			}
 		}
 	case bytecode.GETTABLE:
-		if rk := bytecode.C(ins); bytecode.IsK(rk) {
-			if name, ok := constStringAt(proto, bytecode.KIdx(rk)); ok {
-				return fmt.Sprintf("field '%s'", name)
-			}
-		}
+		// getobjname names a table read "field" whatever the key; kname gives '?' for a key that is
+		// not a string constant, so t[i]() is "field '?'" rather than nameless.
+		return fmt.Sprintf("field '%s'", kname(proto, bytecode.C(ins)))
 	case bytecode.SELF:
-		if rk := bytecode.C(ins); bytecode.IsK(rk) {
-			if name, ok := constStringAt(proto, bytecode.KIdx(rk)); ok {
-				return fmt.Sprintf("method '%s'", name)
-			}
-		}
+		return fmt.Sprintf("method '%s'", kname(proto, bytecode.C(ins)))
 	}
 	return ""
 }

@@ -42,7 +42,7 @@ func (st *State) enterLuaFrame(th *thread, funcIdx, nargs, nresults int, entry b
 	// Lua call-depth limit (05 §7.4; equivalent to LUAI_MAXCALLS=20000, aligned
 	// with 5.1.5 luaconf.h). TAILCALL pops before it enters, so net depth is
 	// unchanged and a proper tail call is not limited.
-	if th.ciDepth >= maxLuaCallDepth {
+	if th.ciDepth >= maxLuaCallDepth+st.errFuncDepthRoom {
 		return errf("stack overflow")
 	}
 	// The call-billing point for the instruction budget: a pure-recursion storm

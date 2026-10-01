@@ -109,19 +109,26 @@ func (st *State) rawGet(t arena.GCRef, key value.Value) value.Value {
 	return value.Nil
 }
 
+// checkKey is luaH_set's key check: nil and NaN cannot be table keys.
+func checkKey(key value.Value) *LuaError {
+	if key == value.Nil {
+		return errf("table index is nil")
+	}
+	if value.IsNumber(key) {
+		if f := value.AsNumber(key); f != f {
+			return errf("table index is NaN")
+		}
+	}
+	return nil
+}
+
 // rawSet writes key=val on the arena-native layout (no metamethods).
 //
 // val==Nil means delete (the slot keeps key set to Nil, the chain does not
 // shrink — same as 5.1, cleaned up on the next rehash).
 func (st *State) rawSet(t arena.GCRef, key, val value.Value) *LuaError {
-	if key == value.Nil {
-		return errf("table index is nil")
-	}
-	if value.IsNumber(key) {
-		f := value.AsNumber(key)
-		if f != f {
-			return errf("table index is NaN")
-		}
+	if e := checkKey(key); e != nil {
+		return e
 	}
 	key = normKey(key)
 	asize := object.TableASize(st.arena, t)

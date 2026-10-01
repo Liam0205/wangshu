@@ -51,6 +51,12 @@ type coroutine struct {
 	// iterator, ...) sits between the yield and the resume, and that Go frame cannot be
 	// suspended.
 	baseCcalls int
+	// hostAbove is the number of host frames above the innermost Lua frame of a coroutine that is
+	// not running: the yield it is suspended in, or the resume (or wrap function) it is waiting in
+	// while normal, plus the host functions that called it. debug.traceback(co) shows them.
+	hostAbove int
+	// deathLines keeps the traceback lines of the stack a coroutine died with by error.
+	deathLines []string
 }
 
 // coRegistry registers coroutines on State (coID → *coroutine).
@@ -135,6 +141,7 @@ func (st *State) Resume(id uint64, args []value.Value) ([]value.Value, bool, *Lu
 	// CoRunning" to decide yield ownership).
 	if resumer := st.findRunningCo(); resumer != nil {
 		resumer.status = CoNormal
+		resumer.hostAbove = int(st.pendingHostFrames) + 1 // Resume's own host function, and its callers
 		defer func() { resumer.status = CoRunning }()
 	}
 
@@ -146,7 +153,13 @@ func (st *State) Resume(id uint64, args []value.Value) ([]value.Value, bool, *Lu
 	// resume catches the coroutine's errors (they come back as (false, msg)), so nothing raised
 	// inside needs an uncaught-error traceback.
 	st.protectDepth++
-	defer func() { st.protectDepth-- }()
+	// The coroutine's errors come back to resume, not to any xpcall handler outside it: a new
+	// thread starts with errfunc 0.
+	outerErrFunc := st.errFunc
+	st.errFunc = value.Nil
+	outerDeathDepth := st.coDeathDepth
+	st.coDeathDepth = st.protectDepth
+	defer func() { st.protectDepth--; st.errFunc = outerErrFunc; st.coDeathDepth = outerDeathDepth }()
 	// A coroutine's stack starts at its own body; PUC has no C frames below it. Host frames pending
 	// on the RESUMER (pcall(coroutine.resume, co) leaves one) belong to the resumer's thread, so
 	// the coroutine's first frame must not absorb them -- they would show up as a spurious "[C]"
@@ -231,7 +244,8 @@ func (st *State) Yield(args []value.Value) *LuaError {
 		e.MarkAnnotated()
 		return e
 	}
-	co.xfer = append(co.xfer[:0], args...) // copy: args is a pooled buffer
+	co.xfer = append(co.xfer[:0], args...)       // copy: args is a pooled buffer
+	co.hostAbove = int(st.pendingHostFrames) + 1 // yield itself, and the host functions that called it
 	return errYieldSentinel
 }
 
@@ -317,4 +331,50 @@ type pendingResumeInfo struct {
 	dst        int // result register of the yield CALL (absolute stack slot)
 	nresults   int // expected number of results of the yield CALL (-1 = multret, always so for a tail call)
 	entryDepth int // execute's entry depth (the bubble boundary is unchanged after resume)
+}
+
+// CoTraceback is debug.traceback(co, ...) for a coroutine handle: co's stack from level on (0 when
+// the level is absent, as db_errorfb defaults it for another thread), laid out like any traceback.
+// A suspended or normal coroutine shows the host function it waits in on top; a dead one shows the
+// stack it died with by error, or nothing; one never started has no stack. ok is false when co is
+// the running coroutine, which is the current thread's own traceback.
+func (st *State) CoTraceback(id uint64, level int, hasLevel bool) (tb string, ok bool) {
+	co := st.coByID(id)
+	if co == nil {
+		return "stack traceback:", true
+	}
+	if co.status == CoRunning {
+		return "", false
+	}
+	if !hasLevel {
+		level = 0
+	}
+	var n int
+	var line func(k int) string
+	switch {
+	case co.status == CoDead:
+		lines := co.deathLines
+		n, line = len(lines), func(k int) string { return lines[k] }
+	case co.started:
+		frames := st.tracebackFrames(co.th, co.hostAbove)
+		n, line = len(frames), func(k int) string { return st.frameLine(co.th, frames, k) }
+	}
+	start, first := level, level
+	if level < 0 {
+		// lua_getstack takes a negative level for a lost tail call: each level below 0 is one
+		// "(tail call): ?" line ahead of level 0, as on the current thread.
+		tails, inner := -level, line
+		n += tails
+		line = func(k int) string {
+			if k < tails {
+				return "(tail call): ?"
+			}
+			return inner(k - tails)
+		}
+		first = 0
+	}
+	if first >= n {
+		return "stack traceback:", true
+	}
+	return joinTraceback(n, first, start, line), true
 }

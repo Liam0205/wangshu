@@ -543,16 +543,26 @@ func baseFnRawEqual(_ *crescent.State, args []value.Value) ([]value.Value, *cres
 }
 
 func baseFnPrint(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
+	// luaB_print fetches the global tostring (lua_getglobal, metamethods included) and lua_calls it
+	// for every argument, so a redefined tostring is what print uses, and a __tostring handler runs
+	// two C frames deep -- tostring over print. Converting in place skipped the tostring frame:
+	// error(m, 3) inside __tostring was one level off and the traceback lost its "[C]: ?" line.
+	tostr, e := st.IndexWithMeta(value.MakeGC(value.TagTable, st.Globals()), intern(st, "tostring"))
+	if e != nil {
+		return nil, e
+	}
 	parts := make([]string, len(args))
 	for i, a := range args {
-		raw, hadMeta, e := valueToStringMeta(st, a) // print goes through tostring semantics (__tostring applies)
+		res, e := st.ProtectedCallDirect(tostr, []value.Value{a})
 		if e != nil {
 			return nil, e
 		}
-		// PUC print runs lua_tostring on the tostring result: anything
-		// but string/number raises "'tostring' must return a string to
-		// 'print'".
-		if hadMeta && value.Tag(raw) != value.TagString && !value.IsNumber(raw) {
+		raw := value.Nil
+		if len(res) > 0 {
+			raw = res[0]
+		}
+		// print runs lua_tostring on the result: anything but a string or a number raises.
+		if value.Tag(raw) != value.TagString && !value.IsNumber(raw) {
 			return nil, crescent.NewError("'tostring' must return a string to 'print'")
 		}
 		parts[i] = valueToString(st, raw)
