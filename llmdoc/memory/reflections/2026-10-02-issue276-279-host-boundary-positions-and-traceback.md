@@ -41,6 +41,10 @@ metadata:
    这些都在同一轮补修：键检查前移、`print` 走全局 `tostring`、`describeRegDepth` 用 `kname`、xpcall 的 handler
    改在出错点调用(`atRaisePoint`)、`debug.traceback` 支持协程参数(死于错误的协程保留出错时的栈)、新增
    `issue276_279_compiled_callers_test.go` 并断言 `PromotionCount`。
+6. **本地审查第二轮**(阻塞 1、重要 1、小问题 2)。阻塞项又是本轮引入的：handler 挪到出错点调用后,`C stack overflow`
+   发生时 C 调用深度正好在上限，调 handler 的入口检查立刻失败。5.1 的 `luaD_call` 为此留了八分之一的余量。重要项是
+   load 的 reader 经 `ProtectedCallDirect` 调用、在 Go 侧吞掉错误，「协程将死」的判断却以为没有边界接住它。两项的共同点是
+   **把一段代码挪到更早的时刻执行，它所处的状态(深度计数、有哪些边界)也跟着变了**,要按新时刻重新核对每个前提。
 
 ## 教训
 
