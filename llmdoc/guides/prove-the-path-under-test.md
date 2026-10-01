@@ -17,7 +17,7 @@
 |---|---|---|
 | **空测 / 不公平基准** | 测的不是宣称在测的层 / 用相同负载形式对比不可比的两层 | PW9 loop `for` 写顶层 vararg chunk(F1 不升层),实测「crescent==crescent ≈1.0x」推出「memory-resident 根本限制」并准备立**错的**后续里程碑;PW10 R1-R2 bench 把 kernel 包内层函数调 50 次对裸顶层循环,工作负载错配致 loop「慢 20 倍」误读 |
 | **静默替身** | 路径有显式 fallback / 等价语义,绿色来自 fallback 而非 happy path | PW5 IC inline 与 helper 输出 byte-equal,普通 e2e 区分不了 inline 走没走;PW6 TierStuck 吸收态使 force-all promoteProto 静默 no-op,深 baseline 测试自然 `proto.tier != TierGibbous` 但测试套不抓;PW10 R3 错误路径漂移在全成功语料 difftest 下结构性失明 |
-| **覆盖度自欺** | 自行写 11 条语料看似全面,实则远不如已有官方/oracle 测试套 | VS0-e 子步 ⑥ 计划写 11 条 vararg 形式语料,但 `test/luasuite/testdata/vararg.lua`(官方 5.1 vararg 全套)+ `closure.lua`(NeedsArg + vararg + 协程多值 yield/resume 最复杂组合)已经字节级一致通过——**手写语料比官方测试权威性低 N 倍**。**反向的一格(2026-08-29)**:引用官方套件时也要给覆盖率,「套件通过」实际是 14/24 个文件、按行号 54%、只有 3 个完整跑完;而且**加进套件的文件不等于在跑** —— 加的四个文件里两个开头就 `if T == nil then ... return end`(官方 testC 库本仓不提供)、两个的断言被 `stopAt` 切在外面,合计执行 1 条断言而「已跑行数」涨了 331,判据与手法见 [[design-claims-vs-codebase-physics]] §7 |
+| **覆盖度自欺** | 自行写 11 条语料看似全面,实则远不如已有官方/oracle 测试套 | VS0-e 子步 ⑥ 计划写 11 条 vararg 形式语料,但 `test/luasuite/testdata/vararg.lua`(官方 5.1 vararg 全套)+ `closure.lua`(NeedsArg + vararg + 协程多值 yield/resume 最复杂组合)已经字节级一致通过——**手写语料比官方测试权威性低 N 倍**。**更正(2026-10-01,#272)**:closure.lua 在第 163 行(setfenv)截断，协程多值 yield/resume 那一段(第 178 行起)其实从没跑过，`return coroutine.yield(x)` 不能恢复就藏在里面——这个例子本身就是下一格说的「加进套件不等于在跑」。**反向的一格(2026-08-29)**:引用官方套件时也要给覆盖率,「套件通过」实际是 14/24 个文件、按行号 54%、只有 3 个完整跑完;而且**加进套件的文件不等于在跑** —— 加的四个文件里两个开头就 `if T == nil then ... return end`(官方 testC 库本仓不提供)、两个的断言被 `stopAt` 切在外面,合计执行 1 条断言而「已跑行数」涨了 331,判据与手法见 [[design-claims-vs-codebase-physics]] §7 |
 | **未强制测试静默退化** | 测试套自称覆盖某条自然触发路径(auto/natural),但实际条件永远不满足,悄悄滑向另一条更平凡的路径 | issue #67 auto-mode 覆盖轮:CI 里 P3/P4 的差分/一致性/fuzz 套长期只经 `SetForceAllPromote(true)` 驱动,未强制的测试脚本从没长到能在生产阈值(entry 200 / back edge 1000)下自然越过阈值,auto 在这些测试里**退化成纯解释器**,与真正测「auto 决策链」是两回事。同一形式还有**静态检查维度**:issue #77 math intrinsic 第一版 e2e 用直接 `math.sqrt(i)`,过不了 F2-b unknown-call ⟹ proto 根本不升 native、intrinsic 路径永远到不了,须 `local sqrt = math.sqrt` 别名才升层——不只 auto 阈值没到会退化,调用形式过不了静态检查也会,两者同靠 §2(b) `PromotionCount>0` 兜底断言防住 |
 
 ## 2. 反向侧解药(证「路径真被走到」)
@@ -172,6 +172,26 @@ dispatch」是同一类单位选择错误 —— 这一条也是 §9.5「harness
 **那条断言要有读取点**,以及**变异实测要包含 payload 本身**(换一个不该命中 X 的
 payload,也必须变红);断言读的计数器要与「进入 X」同量纲(编译 ≠ 执行)。
 反思 [[2026-08-29-conformance-coverage-and-tiered-oracle-diff]] 教训 3。
+
+### 2.2b force-all 进不了「调用到一半才升层」的那一格(2026-10-01,#273)
+
+**适用场景**:给 tier 切换(升层、降层、OSR)写测试或判断现有覆盖够不够时。
+
+force-all 让函数第一次进入就升层，所以**每一次调用都完整地由同一层执行**。auto 模式下有一次调用不是这样：
+P4 的升层检查 `bridge.OnEnterID` 在 `enterLuaFrame` 末尾，第 `hotEntry` 次进入时帧已经建好，这一次调用剩下的
+部分仍由解释器执行，而函数的 proto 此刻已经有了原生码。#273 就在这一格里：这次调用以宿主尾调用收尾时,
+TAILCALL 分支的「尾调用 gibbous 分发」看见 `GibbousCodeOf(proto)` 非空，以为进入了新帧，把调用者自己的原生码
+从 pc 0 重跑，尾调用之前的副作用执行两次。199 次调用全对、200 次起计数多 1——P4 的差分测试和 fuzz 多用
+force-all,从来没走到这里。
+
+**判据**:
+- tier 切换的测试至少有一格用 auto 模式、循环次数跨过升层阈值，让阈值落在一次调用的**中途**,并断言
+  `PromotionCount() > 0`(短 proto 会被升层下限挡住，静默留在解释器);
+- 代码里「在刚进入的帧上做 X」的分支，条件要直接检查确实进入了新帧(#273 的修法是加 `next != nil`),
+  不能用一个在没进入时也可能为真的派生量(「这个 proto 有原生码」)代替——同一个 `ci` 变量在另一条返回路径上
+  仍指向调用者。
+
+反思 [[2026-10-01-issue272-273-yield-base-and-promotion-replay]] 教训 1、2。
 
 ### 2.3 传递性证明继承中间项的所有盲区,并且看不见「两端各自一致地错」(2026-08-29)
 

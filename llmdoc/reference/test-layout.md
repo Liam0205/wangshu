@@ -96,6 +96,11 @@ profile 拼成一份(`go tool cover` 对同位置的 block 按计数求和,这�
 3. 新的 `Fuzz*` 靶点 → `test/fuzz/`,回调里先做长度检查再调 `fuzzforensics.RecordExec`。
 4. 两个包都要用的辅助函数 → `test/testutil/`,导出名。
 5. `internal/xxx` 自己的单元测试 → 留在 `internal/xxx`,内部测试包。
+6. 官方 Lua 套件(`test/luasuite/`)的某个文件被截断豁免(在某一行之后不再执行)时，截断点之后与豁免原因无关的
+   用例照样没人跑，要单独搬进 `test/regression/`。实例:closure.lua 在第 163 行(setfenv)截断，之后第 178–407 行
+   整段协程测试(多值 yield/resume、第 220 行的「yields in tail calls」等)一直没跑，`return coroutine.yield(x)`
+   不能恢复因此长期没被发现(#272,`TestTailCalledYieldResumes`;修好后这一段在 P1、P4 auto、P4 force-all 下都能
+   跑完)。
 
 ## 迁移不变量(2026-09-09 已验证)
 
