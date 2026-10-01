@@ -534,7 +534,9 @@
   验证:`test/regression/issue272_yield_boundary_test.go`(越界 12 条 + 尾调用 yield 3 条,期望值逐条用 `lua5.1`
   跑出;两半修复各自去掉后都会失败)。#271 的 `issue271_sentinel_race_test.go` 在 `-race` 下照常通过:那段脚本
   现在在 `Yield` 处就被拒绝,不再产生哨兵,哨兵上的两处跳过写入保留作纵深防御。设计稿 08 §5.2、§8.2、§1 / §5 /
-  §11 的措辞与 P3 设计稿 04 / 07 里的同一句已同步。
+  §11 的措辞与 P3 设计稿 04 / 07 里的同一句已同步。官方套件 closure.lua 截断点之后的协程一段(第 178–407 行)
+  经 `luasuite_test.go` 新增的 `resumeAt` 单独运行(子测试 `closure.lua:178-407`),P1 / P3 / P4 都通过;去掉尾调用
+  yield 的修复后它在 `closure.lua:228` 报 `cannot resume: no pending yield point`。
 
 ## 相关
 
