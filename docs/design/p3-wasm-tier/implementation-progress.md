@@ -452,7 +452,7 @@ PW10 的根本解法(gibbous→gibbous 直接分派、不经 host)被两条码�
 | 维度 | R3c 后(回归) | R3c-fix | 完成于 |
 |---|---|---|---|
 | 错误标注时机 | 错误**未标注**存进 pending,顶层 `executeFrom` 用 `currentCI` **延迟标注**——但 R3 逐层弹帧使标注时 `currentCI` 已非失败帧 ⟹ 读到错误帧行号 + 截断 traceback | 新的统一入口 `raiseGibbous(e)` 在**失败点就地标注**(失败帧仍是 `currentCI` 时)+ 物化 traceback + 标记「已标注」;所有 gibbous 错误助手路由经它;顶层据标记跳过重标注 | `86e39c9` |
-| `ci.pc` 约定 | arith 族部分 helper 用 `ci.pc=pc`(与解释器「pc 执行中已自增」约定不一致),`errWithName` 的 `ci.pc-1` 指错指令 ⟹ `:0:` 行号 + 丢变量名 | 统一改 `ci.pc=pc+1` 对齐解释器约定 | `86e39c9` |
+| `ci.pc` 约定 | arith 族部分 helper 用 `ci.pc=pc`(与解释器「pc 执行中已自增」约定不一致),`errWithName` 的 `ci.pc-1` 指错指令 ⟹ `:0:` 行号 + 丢变量名 | 统一改 `ci.pc=pc+1` 对齐解释器约定 (调用类 helper `DoCall` / `CallBaseline` / `TailCall` 当时漏改，仍存 `ci.pc=pc`,traceback 从调用方指令推断函数名时读到 CALL 前一条，给不出名字;2026-10-02 #279 一并改成 `pc+1`) | `86e39c9` |
 | 净结果 | (回归:错行号/截断 traceback) | gibbous→gibbous 错误**逐字节等于纯解释器**——**严格优于**旧 PW6c crescent→gibbous baseline(那个有截断 traceback、无变量名)。**是正确性改进,非仅回归修复** | `86e39c9` |
 
 **根因**(详反思教训 3):「延迟标注」依赖隐含不变式「从产生错误到标注的路上当前帧一直是产生错误的帧」——解释器满足(错误路径不弹帧),R3 逐层弹帧打破之。修复本质是把标注从「延迟到高层」改成「就地、在失败帧仍是当前帧时」。
