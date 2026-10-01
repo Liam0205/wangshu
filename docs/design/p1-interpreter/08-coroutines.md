@@ -1036,6 +1036,8 @@ coroutine.wrap(f):
 - **wrap 的错误直接传播到 resumer**(09 §12.3):wrap 函数内部 resume 若得 `(false, err)`,立即 `error(err)`
   重抛——错误传播到调用 wrap 函数的地方,被那里的 pcall 捕获(若有)或继续冒泡。这让 wrap 更适合"协程当
   普通函数/迭代器用"的场景(出错就抛,不用每次检查 true/false)。
+  重抛前,字符串(和数字)错误会先拼上调用 wrap 函数那一处的位置(`auxwrap` 的 `luaL_where(L, 1)`),
+  非字符串错误值原样传出;细节见 09 §12.3(2026-10-02 核对,#276)。
 - **实现机制**:wrap 返回的函数是一个 host closure(或 Lua closure),捕获 co(作为它的 upvalue)。调用它走
   正常 host/Lua 调用(05 §7),内部调 resume(§3.5),检查返回值,失败则 raise(09 §3.3)。**wrap 不是新机制**
   ——它是 resume 的薄包装 + 错误重抛,复用 resume(§3.5)与 raise(09 §3.3)。

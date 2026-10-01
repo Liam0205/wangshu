@@ -761,6 +761,26 @@ stack traceback:
 	<location>: in <what>
 ```
 
+> **实现现状(2026-10-02 订正,#279)**:上面的格式与 5.1 有出入。下面各条都按 `ldblib.c` 的
+> `db_errorfb` 与 `ldebug.c` 的 `getfuncname` 核对过,已逐字节对上 `lua5.1`:
+>
+> - **尾调用**:5.1 不是 `(...tail calls...)`(那是 5.2 的写法),而是被尾调用替换掉的每一层各占一行
+>   `(tail call): ?`(`info_tailcall`:source 为 `=(tail call)`、无行号、what 为 `tail`),位置在被尾调用的帧之下。
+> - **行的组成**:`<short_src>:` + 有行号时 `<line>:` + 名字部分。有名字时是 ` in function '<name>'`;没有名字时,
+>   主 chunk 是 ` in main chunk`,C 帧与尾调用是 ` ?`,其余 Lua 函数是 ` in function <<short_src>:<linedefined>>`。
+>   所以 C 帧是 `[C]: in function 'sort'`(有名字)或 `[C]: ?`(无名字),不存在 `[C]: in ?`。
+> - **名字只看调用方**:帧 k 的名字取自紧邻它外层那一帧——只有当外层是 Lua 帧、且停在 CALL / TAILCALL /
+>   TFORLOOP 上时才有名字(经 `getobjname`,非字符串常量键是 `'?'`)。所以宿主函数调用的回调(比较器、gsub 替换函数)
+>   无名;元方法处理函数无名(调用方停在 GETTABLE / ADD 等指令上);被尾调用的帧无名(外层是尾调用伪帧)。
+> - **栈底**:主线程最外层还有一帧 `[C]: ?`,即调用 chunk 的宿主(与 `debug.getinfo` 在最外层之外报 what=C 是同一帧);
+>   协程的栈到协程函数本身为止。
+> - **截断**:超过 `LEVELS1`(12)层后,若其后还多于 `LEVELS2`(10)层,在第 12 层位置打一行 `...`,只保留最后 10 层。
+>
+> wangshu 不把宿主帧压进 CallInfo 链,traceback 的帧序列由三处已有记录拼出:每个 Lua 帧的 `hostFrames`(其下的宿主帧数)、
+> `tailDepth`(尾调用折叠的层数)与 `pendingHostFrames`(最内层 Lua 帧之上、尚未被帧压入吸收的宿主帧)。
+> 实现在 `internal/crescent/errors.go`(`tracebackFrames` / `tracebackFuncName` / `renderTraceback`),
+> 回归 `test/regression/issue279_traceback_format_test.go`。
+
 逐部分定义:
 
 - **首行**:固定 `"stack traceback:"`(无缩进)。
@@ -822,6 +842,15 @@ func (vm *VM) traceback(th *Thread, msg string, startLevel int) string {
 2. **顶层未捕获错误**:错误传到 `Program.Call`(§11),若宿主配置「附带 traceback」,在转 Go error 前生成。
 3. **`debug.traceback(msg, level)` 被显式调用**(§13):脚本主动要当前栈回溯(不一定在错误时)。
 
+> **实现现状(2026-10-02 订正,#279)**:第 2 条原先在 `execute` 返回之后才生成,这时错误穿过的每个宿主边界
+> (`callLuaFromHost` 失败时 `truncateCI`)都已把其上的帧截掉——比较器在 `table.sort` 里出错,traceback 里既没有
+> 比较器也没有 `sort`。现在改在**错误第一次出现的地方**生成,条件是此刻没有任何会捕获它的边界:
+> `State.protectDepth` 统计 pcall / xpcall(`ProtectedCall`)与 `coroutine.resume`,为 0 时才生成。生成点是
+> `executeFrom`(Lua 运行期错误,出错帧还在栈上)、`doCall` / `doTailCall` 的宿主分支与 `callLuaFromHostNamed`
+> 的宿主分支(宿主函数抛出的错误,把该宿主函数作为最内层的 C 帧补上,即 `[C]: in function 'error'`)、
+> `raiseGibbous`(P3/P4)。版式按 lua.c 的错误处理函数(`debug.traceback(msg, 2)`)。这样第 ① 条「多数错误被
+> pcall 捕获」的情形照旧不生成 traceback;比较器、gsub 替换函数、foreach 回调走的 `ProtectedCallDirect` 不算捕获。
+
 **为什么不在抛出点生成**:① 多数错误被 `pcall` 静默捕获后丢弃(不看 traceback),抛出点生成是白费功夫;
 ② 生成 traceback 要分配字符串、遍历栈,在错误路径上(虽冷)也无谓;③ `pcall`(无 handler)根本不需要
 traceback,只要错误值。**所以 traceback 是「按需生成」**——谁要谁调,默认不生成(`LuaError.traceback` 默认空)。
@@ -873,6 +902,14 @@ Lua 5.1 用一个巧妙机制推断:**看调用者帧在「发出调用的那条
 | `MOVE R(A) R(B)` | 局部变量(从另一寄存器) | local,名 = 查局部变量表 `LocVars`(★需回填) | `(local 'x')` |
 | 是某局部变量寄存器 | 局部变量 | local,名 = `LocVars` 按 pc 活跃区间查 | `(local 'x')` |
 | `LOADK`/算术结果/... | 临时值,无名 | `?` 或无后缀 | (无变量名后缀) |
+
+> **实现现状(2026-10-02 订正,#279)**:上面伪代码里的 `SELF` 分支和「元方法事件名」分支是 5.2 的做法。5.1 的
+> `getfuncname` 只认 CALL / TAILCALL / TFORLOOP 三种指令(TFORLOOP 也走 `getobjname`,迭代器存在局部变量里时就是
+> 那个局部名,比如 `'(for generator)'`),其余一律无名;被尾调用的帧(`ci->tailcalls > 0`)和调用方是 C 函数的帧
+> 也无名。所以 5.1 的 traceback 里元方法处理函数显示为 `in function <src:line>`,不会出现 `metamethod 'index'`。
+> 另外 `GETTABLE` / `SELF` 的键不是字符串常量时(`t[i]()`),`kname` 给的是 `'?'` 而不是无名:traceback 显示
+> `in function '?'`,错误后缀显示 `(field '?')`。实现见 `internal/crescent/errors.go::tracebackFuncName` 与
+> `objname.go::kname`。
 
 ### 8.2 这给出错误信息里的变量名后缀(承 07 §14.4)
 
@@ -1147,6 +1184,11 @@ coroutine.resume(co, args...) 内:
 - **`wrap` 的函数不捕获**:协程内错误**直接传播**(re-raise)到调用 wrap 函数的地方(等价 `wrap` 内部
   `resume` 后若 `false` 就 `error(err)` 重抛)。所以 `wrap` 的函数出错会让**调用者**的 pcall 捕获(若有)。
 - **08 定稿 wrap 细节**,本文只点明这个错误传播差异(09↔08 协作)。
+- **重抛时补调用方位置**(2026-10-02 核对,#276):`lbaselib.c` 的 `auxwrap` 在错误值是字符串(`lua_isstring`,
+  数字也算)时先执行 `luaL_where(L, 1)`,把**调用 wrap 函数那一处**的位置拼在原信息前,再 `lua_error`。所以在 Lua
+  代码里直接调用 wrap 函数会得到两层位置(`x:3: x:1: boom`),嵌套的 wrap 每层各加一个;经 `pcall(f)` 或作
+  比较器时调用方是 C 函数,`luaL_where` 给空串,只剩一层。非字符串错误值原样传出。实现在
+  `internal/stdlib/coroutinelib.go::wrapError`。
 
 ---
 
@@ -1182,6 +1224,9 @@ debug.traceback(message, level):
 - **string / number 的 message 拼在 traceback 前,用一个换行分隔**:`debug.traceback("m")` 的第 2 个字节是
   `\n`(byte 10)。
 - **`level` 参数**:从第几层开始回溯(跳过最内层若干帧,如跳过 traceback 自身)。P1 支持(§7.2 `startLevel`)。
+  层号与 `debug.getinfo` 一致(level 1 是调用 traceback 的函数,宿主帧与尾调用伪帧各占一层),§7.1 的截断按绝对层号算;
+  level 0 从 `[C]: in function 'traceback'` 开始;负数 level 照 5.1 的 `lua_getstack` 在最前面多出 `-level` 行
+  `(tail call): ?`;超出栈深时只剩 `stack traceback:` 一行(2026-10-02 核对,#279)。
 - **`thread` 参数**:可对**另一个协程** co 生成 traceback(`debug.traceback(co)`)——跨 Thread 读 co 的
   CallInfo 链(§12.2)。P1 可简化(只支持当前 thread,记缺口)。
 

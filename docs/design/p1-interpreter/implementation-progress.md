@@ -117,7 +117,7 @@
 | 开放 upvalue 链 | 按 stackIdx 降序单链(05 §8.3) | Go map(stackIdx → uvRef)+ uvOwner(uv → thread) | 共享语义等价(同槽同 uv);降序链是值栈 arena 化的配套,一并留 P3 |
 | executeSignal 三态 | sigReturn/sigYield/sigError 枚举(08 §3.3) | 显式 *LuaError 返回 + errYieldSentinel 哨兵 | 同一冒泡通道,哨兵区分;08 §3.4 "yield↔error 对称"的最小实现 |
 | 协程对象 | Thread 对象住 arena(01 §5.6) | lightuserdata 句柄 + Go 注册表 | type() 返回 "thread" 语义一致;arena Thread 对象随值栈 arena 化一并做 |
-| xpcall handler 时机 | 栈展开前调用(09) | 捕获后调用(栈已回滚) | **已知微差**:P1 不支持 handler 内 inspect 出错栈帧;traceback 仍可经 Traceback() 取 |
+| xpcall handler 时机 | 栈展开前调用(09) | 捕获后调用(栈已回滚) | **已知微差**:P1 不支持 handler 内 inspect 出错栈帧，所以 `xpcall(f, debug.traceback)` 只看到调用 xpcall 的那一帧(#279 修了 traceback 的格式，没有改这里的时机);未捕获错误自带的 traceback 在出错点生成，不受影响 |
 | ephemeron | 键活则值无条件活(07 §13.5 P1 简化,自带) | 同设计 | 一致(设计本身即简化) |
 
 ## 重要实现决策与差分修偏记录
@@ -185,7 +185,7 @@
   | `error` 自己是被调 host 函数时位置前缀完全丢失(#202) | `internal/crescent/meta.go` + `errors.go` + `state.go` | host 抛错经 `callHost` 直接返回、不进解释器循环,`annotateError` 从来看不到它(#197 那套按帧计数在这条路径上一次都没被调用)。改在边界标注,另外两件要对:**level 1 是 host raiser 的调用者**(不占 Lua 帧,所以 level 1 该裸、level 2 该带前缀;第一版从 `Level-1` 消费使每个 level 偏一格)+ **只对显式 `level >= 2` 生效**(PUC 的库错误经 pcall 抛出时不带位置,`TestTableConcat_ErrorTextMatchesPUC` 立刻抓到)(09 §3.2.2) |
   | `os.time` 忽略 `isdst` 字段(#202) | `internal/stdlib/tablelib.go` | PUC 把它填进 `struct tm` 的 `tm_isdst` 交给 `mktime`,用来确定 DST 相关本地时间的解释;只在与该日期在该时区的自然状态**不一致**时才有影响。要区分「字段不存在」与「显式 false」(新增 `getBoolField` 返回 `(value, present)`)。`TZ=Europe/London` 下双向实测(10 §9.1.1) |
   | 移位区间的 skip 与产品上限拆成两个数(#203) | `internal/oracle/prelude.go` | 同一写法的**第三个** nightly crasher(约 100M 的移位跨度、刚好在 2^27 之下,三条都正确且对称、只是耗数秒,而 coordinator 并行重放整个 corpus)。第三次说明该改的是被接受的区间,不是再挪一个 seed:产品侧留 2^27(**正确性**——lua5.1 会做这个移位),harness skip 降到 2^20(**资源**——什么输入能待在并行重放里)(12 §4.9d) |
-  | **不成立的三项**(#202) | — | `coroutine.wrap` 缺前缀 / `%#g` 指数交界 / `math.deg` 差 1 ulp,**实测都与 `lua5.1` 一致**。那个 issue 是自己开的,七项里三项不成立 |
+  | **不成立的三项**(#202) | — | `coroutine.wrap` 缺前缀 / `%#g` 指数交界 / `math.deg` 差 1 ulp,**实测都与 `lua5.1` 一致**。那个 issue 是自己开的,七项里三项不成立。(2026-10-02 订正:`coroutine.wrap` 一项当时只测了经 `pcall` 调用的写法，那里调用方是 C 函数、两边都只有一层位置;在 Lua 代码里直接调用时 lua5.1 会多补一层调用方位置，这一项其实成立，见 #276) |
   | **挪去 #205 的两项**(#202) | — | `io.stdout`/`io.read` 缺失(需要 file-handle userdata 基础设施,10 §10.1.1)、`debug.traceback` 缺 `[C]` 帧(`debug` 库整个不存在,在 `debug` 表出现之前无从谈起) |
 
   **`io.stdout` 撤回的完整理由(10 §10.1.1)**:已经做出来了——三个标准流做成 file-handle userdata + 共享
@@ -537,6 +537,24 @@
   §11 的措辞与 P3 设计稿 04 / 07 里的同一句已同步。官方套件 closure.lua 截断点之后的协程一段(第 178–407 行)
   经 `luasuite_test.go` 新增的 `resumeAt` 单独运行(子测试 `closure.lua:178-407`),P1 / P3 / P4 都通过;去掉尾调用
   yield 的修复后它在 `closure.lua:228` 报 `cannot resume: no pending yield point`。
+
+- **宿主调用边界上的错误位置、层级与 traceback(2026-10-02,#276 / #277 / #278 / #279)**:#271、#272 两轮审查登记在
+  doc-gaps 里的存量差异，转成 issue 后一起修。四个问题都出在「宿主函数参与的调用链」上,修之前先用探针把同类写法
+  扫了一遍，范围都比 issue 原文大。
+
+  | 问题 | 位置 | 根因与修法 |
+  |---|---|---|
+  | `coroutine.wrap` 少一层调用方位置(#276) | `internal/stdlib/coroutinelib.go::wrapError` | 照 `auxwrap`:字符串或数字错误重新包成 level 1 的错误，由解释器的 CALL 点补上调用方位置;调用方是宿主函数(pcall、比较器)时由该边界冻结为不带位置。非字符串错误值原样传出 |
+  | 宿主函数触发的元方法处理函数里 `error(m, level)` 差一层(#277) | `internal/crescent/meta.go::LessThan` / `IndexWithMeta` | `callMetaHandler` 按「VM 派发元方法不插 C 帧」不加层，这对 VM 自己的派发是对的;但 `table.sort` 的默认比较器、`gsub` 的表替换值经这两个导出入口进来时，处理函数的调用方是 C 函数 `sort` / `gsub`,这一层没人计。入口处给 `pendingHostFrames` 加一 |
+  | 从 C 函数内部抛出的错误多了位置前缀(#278) | `meta.go::RawSet` / `RawNext` / `IndexWithMeta`、`callLuaFromHost` | `luaG_runerror` 只在当前帧是 Lua 函数时加位置:`next` 的 `invalid key to 'next'`、`rawset` 的 `table index is nil/NaN` 在 lua5.1 里不带位置;宿主函数被另一个宿主函数调用时(`gsub("a", "a", error)`、`sort` 的比较器是 `rawset`、`foreach` 的回调是 `error`),`luaL_where(L, 1)` 指向那个 C 函数，也不带位置。原先这些错误穿出宿主函数后被解释器 CALL 点补上了 Lua 行号。修法是在这几个只有宿主函数会调用的入口把错误冻结(`MarkAnnotated`);TFORLOOP 走的 `callLuaFromHostNamed` 调用方是 Lua 帧，不冻结 |
+  | traceback 格式与生成时机(#279) | `internal/crescent/errors.go` | 见 09 §7.1 / §7.3 的订正：函数名从调用方指令推断、匿名函数 `<file:line>`、`[C]: in function 'x'` / `[C]: ?`、`(tail call): ?`、主线程栈底 `[C]: ?`、`LEVELS1/LEVELS2` 截断;未捕获错误的 traceback 改在出错点、没有捕获边界时生成(`protectDepth`) |
+  | 顺带：P3/P4 调用 helper 的 pc 约定 | `internal/crescent/gibbous_host.go::DoCall` / `CallBaseline` / `TailCall` | 这三个 helper 把 `ci.pc` 存成 CALL 本身的 pc,而解释器与其余 helper(R3c-fix)都存「下一条」。差一条指令时 traceback 读到的是 CALL 之前的指令，给不出函数名;改成 `pc + 1` |
+  | 顺带：协程栈底的幻影 C 帧 | `internal/crescent/coroutine.go::Resume` | `pcall(coroutine.resume, co)` 留在 resumer 上的 `pendingHostFrames` 被协程的第一帧吸收，协程内的 traceback 栈底多一行 `[C]: ?`、`getinfo(2)` 返回 C 帧。Resume 期间清零并在返回时恢复 |
+
+  验证：四个 regression 文件(`issue276_*` / `issue277_*` / `issue278_*` / `issue279_*`)期望值逐条用 `lua5.1` 跑出;
+  #279 的用例在 P1、P3、P4 下各跑一遍 force-all 升层与不升层;`crescent` 内部测试 `TestTraceback_NotBuiltForCaughtErrors`
+  钉住「被 pcall / resume 捕获的错误不生成 traceback」。各修复去掉后对应用例都会失败。`test/api` 里原先断言
+  `[C]: in ?` 的用例改为断言 lua5.1 的完整输出。
 
 ## 相关
 
