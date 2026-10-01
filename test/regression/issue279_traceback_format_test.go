@@ -1,9 +1,11 @@
 package regression
 
 import (
+	"strings"
 	"testing"
 
 	wangshu "github.com/Liam0205/wangshu"
+	"github.com/Liam0205/wangshu/test/testutil"
 )
 
 // TestTracebackMatchesDbErrorfb covers #279: tracebacks are laid out as ldblib.c's db_errorfb prints them,
@@ -162,6 +164,178 @@ stack traceback:
 	x:1: in function 'deep'
 	x:2: in main chunk
 	[C]: ?`},
+		{"xpcall's handler sees the raiser's frames",
+			`local function lvl3() error("deep") end
+local function lvl2() lvl3() end
+local _, m = xpcall(function() lvl2() end, debug.traceback)
+OUT = m`,
+			`x:1: deep
+stack traceback:
+	[C]: in function 'error'
+	x:1: in function 'lvl3'
+	x:2: in function 'lvl2'
+	x:3: in function <x:3>
+	[C]: in function 'xpcall'
+	x:3: in main chunk
+	[C]: ?`},
+		{"xpcall's handler on a runtime error",
+			`local _, m = xpcall(function() local x = nil; return x.y end, debug.traceback)
+OUT = m`,
+			`x:1: attempt to index local 'x' (a nil value)
+stack traceback:
+	x:1: in function <x:1>
+	[C]: in function 'xpcall'
+	x:1: in main chunk
+	[C]: ?`},
+		{"xpcall's handler inside a sort comparator",
+			`local _, m = xpcall(function() table.sort({3, 2, 1}, function(a, b) error("cmp") end) end, debug.traceback)
+OUT = m`,
+			`x:1: cmp
+stack traceback:
+	[C]: in function 'error'
+	x:1: in function <x:1>
+	[C]: in function 'sort'
+	x:1: in function <x:1>
+	[C]: in function 'xpcall'
+	x:1: in main chunk
+	[C]: ?`},
+		{"xpcall's handler for an error re-raised by a wrap function",
+			`local _, m = xpcall(function() local co = coroutine.wrap(function() error("inco") end) co() end, debug.traceback)
+OUT = m`,
+			`x:1: x:1: inco
+stack traceback:
+	[C]: in function 'co'
+	x:1: in function <x:1>
+	[C]: in function 'xpcall'
+	x:1: in main chunk
+	[C]: ?`},
+		{"xpcall's handler inside __tostring under print",
+			`local _, m = xpcall(function() print(setmetatable({}, {__tostring = function() error("ts") end})) end, debug.traceback)
+OUT = m`,
+			`x:1: ts
+stack traceback:
+	[C]: in function 'error'
+	x:1: in function <x:1>
+	[C]: ?
+	[C]: in function 'print'
+	x:1: in function <x:1>
+	[C]: in function 'xpcall'
+	x:1: in main chunk
+	[C]: ?`},
+		{"xpcall keeps one handler result",
+			`OUT = tostring(select("#", xpcall(error, function(m) return 1, 2 end)))`,
+			`2`},
+		{"a handler that is not a function",
+			`local _, m = xpcall(function() error("x") end, setmetatable({}, {__call = function() return "called" end}))
+OUT = m`,
+			`error in error handling`},
+		{"a handler that always fails",
+			`local _, m = xpcall(function() error("x") end, function(m) error("again") end)
+OUT = m`,
+			`error in error handling`},
+		{"a handler that fails once runs again for its own error",
+			`local n = 0
+local _, m = xpcall(function() error("x") end, function(m) n = n + 1 if n == 1 then error("again") end return n .. ":" .. m end)
+OUT = m`,
+			`2:x:2: again`},
+		{"an inner pcall shields its errors from the handler",
+			`local _, m = xpcall(function() local ok, m = pcall(error, "inner") error("outer:" .. m) end, function(m) return "H " .. m end)
+OUT = m`,
+			`H x:1: outer:inner`},
+		{"a resumed coroutine's errors do not reach the handler",
+			`local _, a, b = xpcall(function() return coroutine.resume(coroutine.create(function() error("inco") end)) end, function(m) return "H" end)
+OUT = tostring(a) .. " " .. b`,
+			`false x:1: inco`},
+		{"the handler runs for a stack overflow",
+			`local _, m = xpcall(function() local function r() return r() + 1 end return r() end, function(m) return (m:gsub("\n.*", "")) end)
+OUT = m`,
+			`x:1: stack overflow`},
+		{"suspended coroutine: yield on top, level 0 by default",
+			`local co = coroutine.create(function() local function g() coroutine.yield() end g() end)
+coroutine.resume(co)
+OUT = debug.traceback(co, "co")`,
+			`co
+stack traceback:
+	[C]: in function 'yield'
+	x:1: in function 'g'
+	x:1: in function <x:1>`},
+		{"coroutine levels count from 0",
+			`local co = coroutine.create(function() local function g() coroutine.yield() end g() end)
+coroutine.resume(co)
+OUT = debug.traceback(co, "co", 1)`,
+			`co
+stack traceback:
+	x:1: in function 'g'
+	x:1: in function <x:1>`},
+		{"coroutine negative level",
+			`local co = coroutine.create(function() coroutine.yield() end)
+coroutine.resume(co)
+OUT = debug.traceback(co, "co", -1)`,
+			`co
+stack traceback:
+	(tail call): ?
+	[C]: in function 'yield'
+	x:1: in function <x:1>`},
+		{"coroutine not started",
+			`OUT = debug.traceback(coroutine.create(function() end), "new")`,
+			`new
+stack traceback:`},
+		{"coroutine finished",
+			`local co = coroutine.create(function() end)
+coroutine.resume(co)
+OUT = debug.traceback(co, "done")`,
+			`done
+stack traceback:`},
+		{"coroutine that died by error keeps its stack",
+			`local co = coroutine.create(function() table.sort({3, 2, 1}, function(a, b) error("cmp") end) end)
+coroutine.resume(co)
+OUT = debug.traceback(co, "dead")`,
+			`dead
+stack traceback:
+	[C]: in function 'error'
+	x:1: in function <x:1>
+	[C]: in function 'sort'
+	x:1: in function <x:1>`},
+		{"coroutine that died by a non-string error keeps its stack",
+			`local co = coroutine.create(function() error({}) end)
+coroutine.resume(co)
+OUT = debug.traceback(co)`,
+			`stack traceback:
+	[C]: in function 'error'
+	x:1: in function <x:1>`},
+		{"normal coroutine waits in resume",
+			`local outer
+local inner = coroutine.create(function() OUT = debug.traceback(outer, "normal") end)
+outer = coroutine.create(function() local r = coroutine.resume r(inner) end)
+coroutine.resume(outer)`,
+			`normal
+stack traceback:
+	[C]: in function 'r'
+	x:3: in function <x:3>`},
+		{"the running coroutine's own handle",
+			`local w
+w = coroutine.create(function() OUT = debug.traceback(w, "self") end)
+coroutine.resume(w)`,
+			`self
+stack traceback:
+	x:2: in function <x:2>`},
+		{"a numeric string level",
+			`local function f() return debug.traceback("s", "2") end
+OUT = f()`,
+			`s
+stack traceback:
+	x:2: in main chunk
+	[C]: ?`},
+		{"traceback under print's tostring",
+			`local T = setmetatable({}, {__tostring = function() OUT = debug.traceback("ts") return "" end})
+print(T)`,
+			`ts
+stack traceback:
+	x:1: in function <x:1>
+	[C]: ?
+	[C]: in function 'print'
+	x:2: in main chunk
+	[C]: ?`},
 	} {
 		for _, force := range []bool{false, true} {
 			st := runTracebackCase(t, tc.src, force)
@@ -273,6 +447,24 @@ stack traceback:
 	x:1: in function 'r'
 	x:2: in main chunk
 	[C]: ?`},
+		{"__newindex = rawset nil key",
+			`local t = setmetatable({}, {__newindex = rawset})
+t[nil] = 1`,
+			`x:2: table index is nil
+stack traceback:
+	x:2: in main chunk
+	[C]: ?`},
+		{"__tostring raising under print",
+			`local T = setmetatable({}, {__tostring = function() error("ts") end})
+print(T)`,
+			`x:1: ts
+stack traceback:
+	[C]: in function 'error'
+	x:1: in function <x:1>
+	[C]: ?
+	[C]: in function 'print'
+	x:2: in main chunk
+	[C]: ?`},
 	} {
 		for _, force := range []bool{false, true} {
 			prog, err := wangshu.Compile([]byte(tc.src), "@x")
@@ -289,6 +481,85 @@ stack traceback:
 			if got := err.Error(); got != tc.want {
 				t.Errorf("%s (force=%v):\n got %q\nwant %q", tc.name, force, got, tc.want)
 			}
+		}
+	}
+}
+
+// TestNonConstantKeyIsNamedFieldQuestionMark covers getobjname's GETTABLE / SELF case: a table read is
+// "field" whatever its key, and kname gives '?' for a key that is not a string constant, so the error
+// suffix is "field '?'" -- the same name the traceback prints for such a callee. Expectations are
+// lua5.1's.
+func TestNonConstantKeyIsNamedFieldQuestionMark(t *testing.T) {
+	for _, tc := range []struct{ name, src, want string }{
+		{"call through a register key",
+			`local function e(f, ...) local ok, m = pcall(f, ...) return tostring(ok) .. " " .. tostring(m) end
+local t, i = {}, 1
+return e(function()
+  t[i]()
+end)`,
+			`false [string "test"]:4: attempt to call field '?' (a nil value)`},
+		{"index through a number constant key",
+			`local function e(f, ...) local ok, m = pcall(f, ...) return tostring(ok) .. " " .. tostring(m) end
+local t = {}
+return e(function()
+  return t[1].x
+end)`,
+			`false [string "test"]:4: attempt to index field '?' (a nil value)`},
+		{"arithmetic on a boolean constant key",
+			`local function e(f, ...) local ok, m = pcall(f, ...) return tostring(ok) .. " " .. tostring(m) end
+local t = {}
+return e(function()
+  return t[true] + 1
+end)`,
+			`false [string "test"]:4: attempt to perform arithmetic on field '?' (a nil value)`},
+		{"length of a register key",
+			`local function e(f, ...) local ok, m = pcall(f, ...) return tostring(ok) .. " " .. tostring(m) end
+local t, k = {}, "s"
+return e(function()
+  return #t[k]
+end)`,
+			`false [string "test"]:4: attempt to get length of field '?' (a nil value)`},
+		{"concatenation of a register key",
+			`local function e(f, ...) local ok, m = pcall(f, ...) return tostring(ok) .. " " .. tostring(m) end
+local t, i = {}, 1
+return e(function()
+  return t[i] .. "x"
+end)`,
+			`false [string "test"]:4: attempt to concatenate field '?' (a nil value)`},
+		{"method call through a register key",
+			`local function e(f, ...) local ok, m = pcall(f, ...) return tostring(ok) .. " " .. tostring(m) end
+local o, i = {}, 1
+return e(function()
+  o[i](o)
+end)`,
+			`false [string "test"]:4: attempt to call field '?' (a nil value)`},
+		{"string constant keys keep their name",
+			`local function e(f, ...) local ok, m = pcall(f, ...) return tostring(ok) .. " " .. tostring(m) end
+local t = {}
+return e(function()
+  t.x()
+end)`,
+			`false [string "test"]:4: attempt to call field 'x' (a nil value)`},
+	} {
+		if got := testutil.RunOne(t, tc.src).Str(); got != tc.want {
+			t.Errorf("%s: got %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestUncaughtNonStringErrorHasNoTraceback: lua.c's handler hands a non-string error object back
+// untouched, so an uncaught error({}) gets no traceback.
+func TestUncaughtNonStringErrorHasNoTraceback(t *testing.T) {
+	for _, src := range []string{`error({})`, `error()`, `error(setmetatable({}, {__tostring = function() return "T" end}))`} {
+		prog, err := wangshu.Compile([]byte(src), "@x")
+		if err != nil {
+			t.Fatalf("%s: compile: %v", src, err)
+		}
+		_, err = prog.Run(wangshu.NewState(wangshu.Options{}))
+		if err == nil {
+			t.Errorf("%s: no error", src)
+		} else if strings.Contains(err.Error(), "stack traceback") {
+			t.Errorf("%s: got a traceback: %q", src, err.Error())
 		}
 	}
 }

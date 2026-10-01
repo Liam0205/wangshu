@@ -91,6 +91,48 @@ return e(function()
   for k in rawset, {}, nil do end
 end)`,
 			`false [string "test"]:3: bad argument #3 to '(for generator)' (value expected)`},
+		{"__newindex = rawset with a nil key fails in the assigning frame",
+			`local function e(f, ...) local ok, m = pcall(f, ...) return tostring(ok) .. " " .. tostring(m) end
+local t = setmetatable({}, {__newindex = rawset})
+return e(function()
+  t[nil] = 1
+end)`,
+			`false [string "test"]:4: table index is nil`},
+		{"__newindex = rawset with a NaN key fails in the assigning frame",
+			`local function e(f, ...) local ok, m = pcall(f, ...) return tostring(ok) .. " " .. tostring(m) end
+local t = setmetatable({}, {__newindex = rawset})
+return e(function()
+  t[0/0] = 1
+end)`,
+			`false [string "test"]:4: table index is NaN`},
+		{"a nil key never reaches a Lua __newindex",
+			`local function e(f, ...) local ok, m = pcall(f, ...) return tostring(ok) .. " " .. tostring(m) end
+local t = setmetatable({}, {__newindex = function(t, k, v) rawset(t, k, v) end})
+return e(function()
+  t[nil] = 1
+end)`,
+			`false [string "test"]:4: table index is nil`},
+		{"a nil key fails even when __newindex would drop the write",
+			`local function e(f, ...) local ok, m = pcall(f, ...) return tostring(ok) .. " " .. tostring(m) end
+local t = setmetatable({}, {__newindex = function() end})
+return e(function()
+  t[nil] = 1
+end)`,
+			`false [string "test"]:4: table index is nil`},
+		{"a NaN key along a __newindex table chain",
+			`local function e(f, ...) local ok, m = pcall(f, ...) return tostring(ok) .. " " .. tostring(m) end
+local t = setmetatable({}, {__newindex = {}})
+return e(function()
+  t[0/0] = 1
+end)`,
+			`false [string "test"]:4: table index is NaN`},
+		{"an existing key and a valid new key still reach __newindex",
+			`local function e(f, ...) local ok, m = pcall(f, ...) return tostring(ok) .. " " .. tostring(m) end
+local seen = {}
+local t = setmetatable({}, {__newindex = function(t, k, v) seen[#seen + 1] = k end})
+t.x = 1 t[1] = 2
+return #seen .. " " .. tostring(rawget(t, "x"))`,
+			`2 nil`},
 	} {
 		if got := testutil.RunOne(t, tc.src).Str(); got != tc.want {
 			t.Errorf("%s: got %q, want %q", tc.name, got, tc.want)

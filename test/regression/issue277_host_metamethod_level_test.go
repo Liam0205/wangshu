@@ -84,6 +84,41 @@ return e(function()
   table.sort({3, 2, 1}, function() error("k2", 2) end)
 end)`,
 			`false k2`},
+		{"print runs __tostring two C frames deep: error(m, 3) is tostring's C caller",
+			`local function e(f, ...) local ok, m = pcall(f, ...) return tostring(ok) .. " " .. tostring(m) end
+local T = setmetatable({}, {__tostring = function() error("ts3", 3) end})
+return e(function()
+  print(T)
+end)`,
+			`false ts3`},
+		{"print runs __tostring two C frames deep: error(m, 4) is print's caller",
+			`local function e(f, ...) local ok, m = pcall(f, ...) return tostring(ok) .. " " .. tostring(m) end
+local T = setmetatable({}, {__tostring = function() error("ts4", 4) end})
+return e(function()
+  print(T)
+end)`,
+			`false [string "test"]:4: ts4`},
+		{"print calls the global tostring",
+			`local old, got = tostring, {}
+tostring = function(v) got[#got + 1] = old(v) return "" end
+print(1, "a")
+tostring = old
+return table.concat(got, ",")`,
+			`1,a`},
+		{"print without a global tostring",
+			`local old = tostring
+tostring = nil
+local ok, m = pcall(print, 1)
+tostring = old
+return tostring(ok) .. " " .. tostring(m)`,
+			`false attempt to call a nil value`},
+		{"print rejects a non-string tostring result",
+			`local old = tostring
+tostring = function() return {} end
+local ok, m = pcall(print, 1)
+tostring = old
+return tostring(ok) .. " " .. tostring(m)`,
+			`false 'tostring' must return a string to 'print'`},
 	} {
 		if got := testutil.RunOne(t, tc.src).Str(); got != tc.want {
 			t.Errorf("%s: got %q, want %q", tc.name, got, tc.want)

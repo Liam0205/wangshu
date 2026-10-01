@@ -61,7 +61,9 @@ func (st *State) doCall(th *thread, ci *callInfo, i bytecode.Instruction) (*call
 		// so the CALL itself is at ci.pc-1.
 		e = st.resolveArgError(e, ci, ci.pc-1, a)
 		// The raising host function is the traceback's first frame ("[C]: in function 'error'").
-		st.captureTraceback(th, e, 1)
+		// Its message is final only once this frame annotates it, so the raise point is
+		// processed there (executeFrom / raiseGibbous); this records the frame to show.
+		markHostRaise(e, 1)
 		return nil, e
 	}
 	// gibbous promotion branch (VS0-d / 04-trampoline §2.2): the callee Proto
@@ -169,7 +171,7 @@ func (st *State) doTailCall(th *thread, ci *callInfo, i bytecode.Instruction) (*
 			return nil, e
 		}
 		e = st.resolveArgError(e, ci, ci.pc-1, a)
-		st.captureTraceback(th, e, 1)
+		markHostRaise(e, 1)
 		return nil, e
 	}
 	st.closeUpvals(th, ci.base)

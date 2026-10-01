@@ -400,7 +400,7 @@ func (st *State) raiseGibbous(e *LuaError) int32 {
 	th := st.runningThread
 	if th.ciDepth > 0 {
 		e = st.annotateError(e, currentCI(th), th)
-		st.captureTraceback(th, e, 0)
+		st.atRaisePoint(th, e, 0)
 	}
 	st.gibbousPendingErr = e
 	return 1

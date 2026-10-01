@@ -1416,35 +1416,24 @@ func baseFnUnpackImpl(st *crescent.State, args []value.Value) ([]value.Value, *c
 
 // baseFnXpcall: xpcall(f, handler) → (true, results...) | (false, handler(err)).
 //
-// 09 semantics: the handler is called before the stack unwinds -- P1
-// implements this as "call the handler immediately after catching" (the
-// stack has already been rolled back by the protected boundary; P1 does not
-// support inspecting the erroring stack frame inside the handler, which is a
-// documented simplification, see implementation-progress).
+// The handler runs where the error is raised, before anything unwinds (luaG_errormsg), so
+// xpcall(f, debug.traceback) reports the frames that raised it; ProtectedCallWithHandler arranges
+// that. Exactly one handler result comes back, and a handler that is not a function, or that
+// keeps failing, gives "error in error handling".
 func baseFnXpcall(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
 	if len(args) < 2 {
 		return nil, crescent.NewArgError(2, "value expected")
 	}
 	fn, handler := args[0], args[1]
-	results, e := st.ProtectedCall(fn, nil)
+	results, e := st.ProtectedCallWithHandler(fn, nil, handler)
 	if e == nil {
 		out := make([]value.Value, 0, len(results)+1)
 		out = append(out, value.True)
 		out = append(out, results...)
 		return out, nil
 	}
-	errVal := e.Value
-	if !e.HasValue {
-		errVal = intern(st, e.Msg)
-	}
-	hres, he := st.ProtectedCall(handler, []value.Value{errVal})
-	if he != nil {
-		return []value.Value{value.False, intern(st, "error in error handling")}, nil
-	}
-	out := make([]value.Value, 0, len(hres)+1)
-	out = append(out, value.False)
-	out = append(out, hres...)
-	return out, nil
+	v, _ := e.ErrFuncResult()
+	return []value.Value{value.False, v}, nil
 }
 
 // ----- io standard streams -----
@@ -1859,28 +1848,48 @@ var debugFns = []entry{
 	{"getinfo", debugFnGetInfo},
 }
 
-// debugFnTraceback: debug.traceback([message [, level]]).
+// debugFnTraceback: debug.traceback([thread,] [message [, level]]).
 //
 // PUC returns the message unchanged when it is a non-string, non-nil value, and otherwise
 // prefixes it to "stack traceback:" separated by a newline.
 func debugFnTraceback(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
+	// A coroutine first argument selects that thread's stack (db_errorfb's getthread), and the
+	// message and level shift one place right.
+	var coID uint64
+	onCo := len(args) >= 1 && st.IsCoroutineHandle(args[0])
+	if onCo {
+		coID = value.AsLightUD(args[0])
+		args = args[1:]
+	}
 	// The optional level SKIPS that many leading frames, so traceback("m", 2) starts at the
 	// caller's caller. Ignoring it produced the level-1 traceback for every level.
-	// PUC uses lua_isnumber here, NOT luaL_optint: a non-number level is silently ignored and
-	// the default applies. debug.traceback("m", {}) does fail in lua5.1, but with "attempt to
-	// concatenate a table value" from further down -- the level argument itself raises nothing.
-	// Reporting an argument error for it was the wrong reading of the same symptom.
+	// PUC uses lua_isnumber here, NOT luaL_optint: a level that is neither a number nor a numeric
+	// string is silently ignored and the default applies. debug.traceback("m", {}) does fail in
+	// lua5.1, but with "attempt to concatenate a table value" from further down -- the level
+	// argument itself raises nothing. Reporting an argument error for it was the wrong reading of
+	// the same symptom.
 	//
 	// Not reproduced: lua5.1's db_errorfb pops the level argument ONLY when it is a number, so
 	// a non-number one stays on the stack and ends up in the concatenation, which is where the
-	// "attempt to concatenate a table value" comes from. That is a C stack-layout artifact
-	// rather than a semantic -- the same category as print's NUL truncation -- so
-	// debug.traceback("m", {}) returns the traceback here instead of failing.
-	level := 1
-	if len(args) >= 2 && value.IsNumber(args[1]) {
-		level = int(cCharCastInt32(value.AsNumber(args[1])))
+	// "attempt to concatenate a table value" comes from (and why traceback("s", "x") starts with
+	// "sx"). That is a C stack-layout artifact rather than a semantic -- the same category as
+	// print's NUL truncation -- so the level is just ignored here.
+	level, hasLevel := 1, false
+	if len(args) >= 2 {
+		if f, ok := crescentToNumber(st, args[1]); ok {
+			level, hasLevel = int(cCharCastInt32(f)), true
+		}
 	}
-	tb := st.TracebackFrom(level)
+	var tb string
+	if onCo {
+		var ok bool
+		if tb, ok = st.CoTraceback(coID, level, hasLevel); !ok {
+			// The running coroutine's own handle: the current thread, as without one.
+			tb = st.TracebackFrom(level)
+		}
+	} else {
+		tb = st.TracebackFrom(level)
+	}
 	if len(args) == 0 {
 		return []value.Value{intern(st, tb)}, nil
 	}

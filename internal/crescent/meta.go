@@ -152,6 +152,13 @@ func (st *State) setIndexWithMeta(th *thread, obj, key, val value.Value) *LuaErr
 				// existing key: raw set directly, does not trigger __newindex
 				return st.tableSet(tref, key, val)
 			}
+			// luaV_settable always does the primitive luaH_set first, so a nil or NaN key fails here,
+			// in the frame doing the assignment, before __newindex is even looked up: with
+			// `__newindex = rawset` the error carries the SETTABLE line, and a handler that would
+			// swallow the write never runs.
+			if e := checkKey(key); e != nil {
+				return e
+			}
 			h := st.metaField(tref, "__newindex")
 			if h == value.Nil {
 				return st.tableSet(tref, key, val)
@@ -340,10 +347,6 @@ func (st *State) callLuaFromHostNamed(th *thread, fn value.Value, args []value.V
 	th.setTop(need)
 	if isHost := st.isHostClosure(cl); isHost {
 		if e := st.callHost(th, funcIdx, len(args), -1); e != nil {
-			// Above the innermost Lua frame sit the host callee and the host functions that
-			// led to it (pendingHostFrames): sort calling error is "[C]: ?" over "[C]: in
-			// function 'sort'".
-			st.captureTraceback(th, e, int(st.pendingHostFrames)+1)
 			// A host function raising goes straight back out without re-entering
 			// the interpreter loop, so execute.go's annotateError never sees it.
 			// pcall(error,"m",2) therefore lost its position prefix entirely, where
@@ -358,7 +361,17 @@ func (st *State) callLuaFromHostNamed(th *thread, fn value.Value, args []value.V
 			// final text, so leave them alone.
 			if e.Level >= 2 {
 				e.hostRaised = true
-				return nil, st.annotateError(e, currentCI(th), th)
+				e = st.annotateError(e, currentCI(th), th)
+			}
+			// Above the innermost Lua frame sit the host callee and the host functions that
+			// led to it (pendingHostFrames): sort calling error is "[C]: ?" over "[C]: in
+			// function 'sort'". With a host caller (pendingHostFrames > 0) the message is final
+			// now -- the wrapper only freezes it -- so this is the raise point. With a Lua
+			// caller (TFORLOOP, the VM's own metamethod dispatch) that frame still has to name
+			// and position it, so the raise point is processed there.
+			markHostRaise(e, int(st.pendingHostFrames)+1)
+			if st.pendingHostFrames > 0 {
+				st.atRaisePoint(th, e, 0)
 			}
 			return nil, e
 		}
@@ -419,8 +432,31 @@ func (st *State) ProtectedCall(fn value.Value, args []value.Value) ([]value.Valu
 		return nil, errf("pcall: no running thread")
 	}
 	st.protectDepth++
-	defer func() { st.protectDepth-- }()
+	outerErrFunc := st.errFunc
+	st.errFunc = value.Nil // lua_pcall(..., 0): no message handler inside
+	defer func() { st.protectDepth--; st.errFunc = outerErrFunc }()
 	return st.callLuaFromHost(th, fn, args)
+}
+
+// ProtectedCallWithHandler is xpcall's protected call: handler becomes the message handler for every
+// error raised inside, run at the raise point (see atRaisePoint). A caught error then carries the
+// handler's result, read with LuaError.ErrFuncResult.
+func (st *State) ProtectedCallWithHandler(fn value.Value, args []value.Value, handler value.Value) ([]value.Value, *LuaError) {
+	th := st.runningThread
+	if th == nil {
+		return nil, errf("pcall: no running thread")
+	}
+	st.protectDepth++
+	outerErrFunc := st.errFunc
+	st.errFunc = handler
+	defer func() { st.protectDepth--; st.errFunc = outerErrFunc }()
+	results, e := st.callLuaFromHost(th, fn, args)
+	if e != nil && e != errYieldSentinel && !e.handled {
+		// An error that never reached a raise point with the handler installed (one raised while
+		// entering a frame, say) still gets the handler, on whatever stack is left.
+		st.runErrFunc(th, e, int(st.pendingHostFrames)+1)
+	}
+	return results, e
 }
 
 // ProtectedCallDirect calls back into Lua from a stdlib host function (gsub's function repl,
