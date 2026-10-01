@@ -2830,9 +2830,10 @@ P1 成功、P4 抬 `SETLIST: not a table`。**根因不在 JIT 里**,而在共�
   `RETURN A 0` 跑完,与 P1 一致。
 - **验证**:`test/regression/issue273_tailcall_promotion_p4_test.go` 三种写法 × (auto 升层 / force-all + GC stress),
   共 5 个子用例(第三种写法的 proto 低于 auto 模式的升层下限,只跑 force-all 一格),对照 P1,断言结果等于固定的
-  期望值,并要求 `PromotionCount > 0`。去掉修复后 4 个子用例失败:auto 两格计数多 1(`1001` / `1001 501301`),
-  force-all + GC stress 两格报 `attempt to index a nil value`;第三种写法重跑时没有可见的副作用,不失败。
+  期望值,并要求 `PromotionCount > 0`。去掉修复后 5 个子用例全部失败:auto 两格计数多 1(`1001` /
+  `1001 501301`),force-all + GC stress 三格都报 `attempt to index a nil value`。第三种写法尾调用之前没有副作用,
+  只开 force-all 时结果正确,打开 GC stress 才报错。
 - **为什么长期没被发现**:「升层那一次调用由解释器跑完」这个窗口在两种模式下都有——force-all 下是每个函数的
   第一次调用,auto 模式下是第 `hotEntry` 次——但**每个函数只经过一次**,而且只有这一次调用以**宿主**尾调用收尾、
-  并且尾调用之前有可见副作用时,重跑才看得出来。修复前用 force-all 跑上面的脚本同样得到 `1001`。已有的 P4 差分
+  并且尾调用之前有可见副作用、或者开着 GC stress 时,重跑才看得出来(没有副作用的写法只在 GC stress 下报错)。修复前用 force-all 跑上面的脚本同样得到 `1001`。已有的 P4 差分
   测试和 nightly fuzz 为什么没有生成过这种写法,本轮没有追查。
