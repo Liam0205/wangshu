@@ -235,19 +235,23 @@ func callSiteFuncNameDepth(proto *bytecode.Proto, pc int32, reg int, depth int) 
 			}
 		}
 	case bytecode.GETTABLE:
-		if rk := bytecode.C(ins); bytecode.IsK(rk) {
-			if n, ok := constStringAt(proto, bytecode.KIdx(rk)); ok {
-				return n, "field"
-			}
-		}
+		return kname(proto, bytecode.C(ins)), "field"
 	case bytecode.SELF:
-		if rk := bytecode.C(ins); bytecode.IsK(rk) {
-			if n, ok := constStringAt(proto, bytecode.KIdx(rk)); ok {
-				return n, "method"
-			}
-		}
+		return kname(proto, bytecode.C(ins)), "method"
 	}
 	return "", ""
+}
+
+// kname is ldebug.c's kname: a string-constant key names the field, anything else is "?". The kind
+// ("field"/"method") still holds -- t[i]() is a field call whose name is unknown, which is why a
+// traceback prints "in function '?'" for it rather than the anonymous "<source:line>" form.
+func kname(proto *bytecode.Proto, rk int) string {
+	if bytecode.IsK(rk) {
+		if n, ok := constStringAt(proto, bytecode.KIdx(rk)); ok {
+			return n
+		}
+	}
+	return "?"
 }
 
 // resolveArgError rewrites a host-raised arg error (NewArgError) with

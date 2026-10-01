@@ -31,6 +31,9 @@ func (st *State) executeFrom(th *thread, entryDepth int) *LuaError {
 	e := st.executeLoop(th, entryDepth)
 	if e != nil && e != errYieldSentinel && th.ciDepth > 0 {
 		e = st.annotateError(e, currentCI(th), th)
+		// The faulting frame is still on the stack here; a host callee's error was already
+		// captured with that callee on top (doCall / doTailCall), so this only fills in the rest.
+		st.captureTraceback(th, e, 0)
 	}
 	return e
 }

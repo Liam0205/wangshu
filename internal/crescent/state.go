@@ -99,6 +99,11 @@ type State struct {
 	pendingTailDepth  uint8 // tail-call chain length for the frame about to be pushed
 	pendingHostFrames uint8 // host frames entered since the last Lua frame (error level walks)
 	nCcalls           int
+	// protectDepth counts the boundaries that will catch an error: pcall/xpcall (ProtectedCall) and
+	// coroutine.resume. While it is 0 an error is going to escape to the host, so its traceback is
+	// taken at the raise point, before any host boundary unwinds the frames it should show (09
+	// §7.3: only uncaught errors pay for one).
+	protectDepth int
 
 	// threadChain is the suspended caller threads on the resume chain (06 §5.1
 	// R4/R5: runningThread only covers the current thread, but the stacks of the
@@ -1267,7 +1272,7 @@ func (st *State) callOnStack(cl arena.GCRef, args []value.Value, nresults int) (
 			// execute main loop and does not depend on fresh; DoReturn ignores fresh and just processes per nresults.
 			if err := st.enterGibbous(th, code, 0 /*funcIdx*/, len(args), -1); err != nil {
 				if err.Traceback == "" {
-					err.Traceback = st.buildTraceback(th)
+					err.Traceback = st.buildTraceback(th, 0)
 				}
 				return nil, err
 			}
@@ -1292,7 +1297,7 @@ func (st *State) callOnStack(cl arena.GCRef, args []value.Value, nresults int) (
 	}
 	if err := st.execute(th); err != nil {
 		if err.Traceback == "" {
-			err.Traceback = st.buildTraceback(th)
+			err.Traceback = st.buildTraceback(th, 0)
 		}
 		return nil, err
 	}

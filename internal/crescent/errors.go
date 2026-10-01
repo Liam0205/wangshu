@@ -140,74 +140,180 @@ func (st *State) annotateError(e *LuaError, ci *callInfo, th *thread) *LuaError 
 	return e
 }
 
-// buildTraceback builds the call-stack traceback (09: chunkname:line + [C] frames).
-func (st *State) buildTraceback(th *thread) string {
+// tbFrame is one level of a traceback as PUC's lua_getstack sees it: a Lua frame (a cis entry), a C
+// frame (wangshu pushes none, so these are reconstructed from the per-frame hostFrames counts) or the
+// pseudo-frame a tail call leaves for its vanished caller.
+type tbFrame struct {
+	kind frameKind
+	idx  int // cis index: the frame itself for frameLua; the Lua frame these sit below otherwise
+}
+
+// tracebackFrames lists th's stack innermost-first, the order lua_getstack walks it.
+//
+// extraHost C frames sit above the innermost Lua frame: the host function currently running
+// (debug.traceback itself, a host function that raised) plus any host frames entered since the last
+// Lua frame push. Below each Lua frame come its tail-call pseudo-frames, then its host frames; on the
+// main thread the host that entered the interpreter is one more C frame at the bottom -- the
+// "[C]: ?" every lua.c traceback ends with, and the same frame resolveLevel reports to getinfo. A
+// coroutine's stack stops at its own body, as PUC's does.
+func (st *State) tracebackFrames(th *thread, extraHost int) []tbFrame {
+	frames := make([]tbFrame, 0, th.ciDepth+extraHost+1)
+	for h := 0; h < extraHost; h++ {
+		frames = append(frames, tbFrame{frameHost, th.ciDepth})
+	}
+	for idx := th.ciDepth - 1; idx >= 0; idx-- {
+		frames = append(frames, tbFrame{frameLua, idx})
+		ci := th.ciAt(idx)
+		for d := int(ci.tailDepth); d > 0; d-- {
+			frames = append(frames, tbFrame{frameTail, idx})
+		}
+		for h := int(ci.hostFrames); h > 0; h-- {
+			frames = append(frames, tbFrame{frameHost, idx})
+		}
+	}
+	if th == st.mainTh && th.ciDepth > 0 {
+		frames = append(frames, tbFrame{frameHost, -1})
+	}
+	return frames
+}
+
+// tracebackFuncName is getfuncname for frames[k]: the callee's name as its CALLER's current
+// instruction sees it. Only a Lua caller stopped on CALL, TAILCALL or TFORLOOP names its callee; a C
+// caller, a tail-call pseudo-frame (the real caller is gone) or a metamethod dispatch (no call
+// instruction) gives no name.
+func (st *State) tracebackFuncName(th *thread, frames []tbFrame, k int) string {
+	if k+1 >= len(frames) || frames[k+1].kind != frameLua {
+		return ""
+	}
+	caller := th.ciAt(frames[k+1].idx)
+	proto := st.protoOf(&caller)
+	pc := caller.pc - 1
+	if pc < 0 || int(pc) >= len(proto.Code) {
+		return ""
+	}
+	ins := proto.Code[pc]
+	switch bytecode.Op(ins) {
+	case bytecode.CALL, bytecode.TAILCALL, bytecode.TFORLOOP:
+	default:
+		return ""
+	}
+	name, namewhat := callSiteFuncName(proto, pc, bytecode.A(ins))
+	if namewhat == "" {
+		return ""
+	}
+	return name
+}
+
+// Traceback depth limits, ldblib.c's LEVELS1 / LEVELS2: past LEVELS1 levels the middle is elided
+// to "..." so that only the last LEVELS2 remain.
+const (
+	tracebackLevels1 = 12
+	tracebackLevels2 = 10
+)
+
+// renderTraceback formats frames[first:] the way ldblib.c's db_errorfb does. startLevel is the
+// lua_getstack level of frames[first]: db_errorfb counts levels absolutely, so where the "..."
+// elision starts depends on it (debug.traceback starts at 1, lua.c's error handler at 2).
+func (st *State) renderTraceback(th *thread, frames []tbFrame, first, startLevel int) string {
 	var sb strings.Builder
 	sb.WriteString("stack traceback:")
-	for i := th.ciDepth - 1; i >= 0; i-- {
-		ci := th.ciAt(i)
+	n := len(frames)
+	maxLevel := startLevel + n - 1 - first
+	elided := false
+	for k := first; k < n; k++ {
+		// db_errorfb: at level LEVELS1, if more than LEVELS2 levels remain past it, print "..."
+		// in place of that level and resume at the last LEVELS2 levels.
+		if lvl := startLevel + k - first; !elided && lvl >= tracebackLevels1 {
+			elided = true
+			if lvl+tracebackLevels2+1 <= maxLevel {
+				sb.WriteString("\n\t...")
+				k = first + (maxLevel - tracebackLevels2 - startLevel) // the loop's k++ lands on maxLevel-LEVELS2+1
+				continue
+			}
+		}
+		f := frames[k]
 		sb.WriteString("\n\t")
-		// Everything pushed onto cis is a Lua frame (host frames are not pushed onto cis); protoID is always valid.
+		switch f.kind {
+		case frameTail:
+			// info_tailcall: source "=(tail call)", currentline -1, what "tail".
+			sb.WriteString("(tail call): ?")
+			continue
+		case frameHost:
+			sb.WriteString("[C]:")
+		default:
+			ci := th.ciAt(f.idx)
+			proto := st.protoOf(&ci)
+			fmt.Fprintf(&sb, "%s:", bytecode.ChunkID(proto.Source))
+			if pc := int(ci.pc) - 1; pc >= 0 && pc < len(proto.LineInfo) && proto.LineInfo[pc] > 0 {
+				fmt.Fprintf(&sb, "%d:", proto.LineInfo[pc])
+			}
+		}
+		if name := st.tracebackFuncName(th, frames, k); name != "" {
+			fmt.Fprintf(&sb, " in function '%s'", name)
+			continue
+		}
+		if f.kind == frameHost {
+			sb.WriteString(" ?")
+			continue
+		}
+		ci := th.ciAt(f.idx)
 		proto := st.protoOf(&ci)
-		line := int32(0)
-		pc := int(ci.pc) - 1
-		if pc >= 0 && pc < len(proto.LineInfo) {
-			line = proto.LineInfo[pc]
-		}
-		what := "function"
-		if i == 0 {
-			what = "main chunk"
-		}
-		if ci.Tailcall() {
-			sb.WriteString("(...tail calls...)\n\t")
-		}
-		fmt.Fprintf(&sb, "%s:%d: in %s", bytecode.ChunkID(proto.Source), line, what)
-		// Host frames below this one are real stack entries PUC shows as "[C]: in ?" -- a
-		// traceback taken from inside table.foreach or a sort comparator omitted the C frame
-		// entirely. This is the third reader of this stack to need the hostFrames count; the
-		// other two are error()'s level walk and resolveLevel.
-		for h := int(ci.hostFrames); h > 0; h-- {
-			sb.WriteString("\n\t[C]: in ?")
+		if proto.LineDefined == 0 {
+			sb.WriteString(" in main chunk")
+		} else {
+			fmt.Fprintf(&sb, " in function <%s:%d>", bytecode.ChunkID(proto.Source), proto.LineDefined)
 		}
 	}
 	return sb.String()
 }
 
+// captureTraceback attaches the traceback to e if nothing will catch it (protectDepth == 0) and it
+// has none yet. Called where an error first appears with its frames still on the stack -- the
+// executing frame for a runtime error, the calling frame plus extraHost host frames for a host
+// raiser -- because every host boundary it later crosses truncates the frames above it.
+func (st *State) captureTraceback(th *thread, e *LuaError, extraHost int) {
+	if e == nil || e == errYieldSentinel || e.Traceback != "" || st.protectDepth > 0 || th.ciDepth == 0 {
+		return
+	}
+	e.Traceback = st.buildTraceback(th, extraHost)
+}
+
+// buildTraceback is the traceback attached to an error that no protected call catches, laid out as
+// lua.c's error handler prints it: debug.traceback(msg, 2) run at the raise point, so the first
+// frame is the raiser -- the Lua frame for a runtime error, or the host function that raised (the
+// "[C]: in function 'error'" line), passed as extraHost frames above th's innermost Lua frame.
+func (st *State) buildTraceback(th *thread, extraHost int) string {
+	return st.renderTraceback(th, st.tracebackFrames(th, extraHost), 0, 2)
+}
+
 // Traceback is exposed to stdlib (the P1 form of debug.traceback).
 func (st *State) Traceback() string { return st.TracebackFrom(1) }
 
-// TracebackFrom builds a traceback that SKIPS the innermost level-1 frames, for
-// debug.traceback's optional level argument. Level 1 is the default and includes everything.
+// TracebackFrom is debug.traceback's stack walk, starting LEVEL levels up. As in db_errorfb, level 0
+// is debug.traceback's own C frame and level 1 (the default) its caller; a level past the stack
+// yields the bare header.
 func (st *State) TracebackFrom(level int) string {
 	th := st.runningThread
 	if th == nil {
 		return "stack traceback:"
 	}
-	if level <= 1 {
-		return st.buildTraceback(th)
+	// Level 0 is the running host function itself, plus whatever host frames called it.
+	frames := st.tracebackFrames(th, int(st.pendingHostFrames)+1)
+	start := level
+	if level < 0 {
+		// lua_getstack treats a negative level as a lost tail call, so each level below 0 is one
+		// "(tail call): ?" line ahead of level 0.
+		tails := make([]tbFrame, -level, -level+len(frames))
+		for i := range tails {
+			tails[i] = tbFrame{frameTail, th.ciDepth}
+		}
+		frames = append(tails, frames...)
+		level = 0
 	}
-	// Resolve through the SAME frame model getinfo uses, so a level counts the C and tail
-	// pseudo-frames rather than just Lua frames. Subtracting from ciDepth directly landed on
-	// the wrong frame whenever a host frame sat in between -- a traceback taken at a level
-	// from inside table.foreach or a sort comparator skipped past the C frame PUC shows.
-	idx, kind, ok := st.resolveLevel(level)
-	if !ok {
+	if level >= len(frames) {
 		return "stack traceback:"
 	}
-	// Landing ON a pseudo-frame means the visible stack starts at the Lua frame below it,
-	// which is the one resolveLevel returned.
-	keep := idx + 1
-	if kind == frameLua {
-		keep = idx + 1
-	}
-	if keep <= 0 || keep > th.ciDepth {
-		return "stack traceback:"
-	}
-	saved := th.ciDepth
-	th.ciDepth = keep
-	out := st.buildTraceback(th)
-	th.ciDepth = saved
-	return out
+	return st.renderTraceback(th, frames, level, start)
 }
 
 // FrameInfo reports the chunk name and current line of the frame LEVEL steps up from the
@@ -285,6 +391,15 @@ func (st *State) resolveLevel(level int) (int, frameKind, bool) {
 		return 0, frameLua, false
 	}
 	remaining := level
+	// Host frames entered since the innermost Lua frame sit between it and the host function asking
+	// (getinfo called through pcall): pcall(debug.getinfo, 1) names pcall, a C frame. They have no cis
+	// entry to sit below, so they are reported as host frames of the frame above the stack.
+	for h := int(st.pendingHostFrames); h > 0; h-- {
+		remaining--
+		if remaining == 0 {
+			return th.ciDepth, frameHost, true
+		}
+	}
 	for idx := th.ciDepth - 1; idx >= 0; idx-- {
 		remaining--
 		if remaining == 0 {

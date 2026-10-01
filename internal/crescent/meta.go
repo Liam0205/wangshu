@@ -280,6 +280,15 @@ func (st *State) callLuaFromHost(th *thread, fn value.Value, args []value.Value)
 	out, e := st.callLuaFromHostNamed(th, fn, args)
 	if e != nil && e != errYieldSentinel { // the sentinel is shared by every State: never write it
 		e.argNarg = 0
+		// Every caller of this wrapper is a host function (pcall, sort's comparator, gsub's
+		// replacement, foreach), so whatever escapes has its final text. A Lua callee's error
+		// was annotated in its own execute layer; a host callee's is a luaL_error-style message
+		// whose luaL_where(L, 1) is the calling host function -- a C frame, no position. Left
+		// unfrozen, the error crossed that host function and the interpreter's CALL site
+		// prefixed the Lua line: gsub("a", "a", error) reported "x:N: a" where lua5.1 says "a"
+		// (#278). Not done in callLuaFromHostNamed: there the caller is TFORLOOP, a Lua frame,
+		// which PUC does name.
+		e.MarkAnnotated()
 	}
 	return out, e
 }
@@ -331,6 +340,10 @@ func (st *State) callLuaFromHostNamed(th *thread, fn value.Value, args []value.V
 	th.setTop(need)
 	if isHost := st.isHostClosure(cl); isHost {
 		if e := st.callHost(th, funcIdx, len(args), -1); e != nil {
+			// Above the innermost Lua frame sit the host callee and the host functions that
+			// led to it (pendingHostFrames): sort calling error is "[C]: ?" over "[C]: in
+			// function 'sort'".
+			st.captureTraceback(th, e, int(st.pendingHostFrames)+1)
 			// A host function raising goes straight back out without re-entering
 			// the interpreter loop, so execute.go's annotateError never sees it.
 			// pcall(error,"m",2) therefore lost its position prefix entirely, where
@@ -398,7 +411,23 @@ func (st *State) isHostClosure(cl arena.GCRef) bool {
 // ProtectedCall is the core of pcall's implementation (05 §9.3): calls fn inside a protected boundary.
 //
 // Errors are caught and returned (*LuaError non-nil); the CallInfo rollback is already handled by callLuaFromHost.
+// Only pcall/xpcall use it: it marks the call as protected, so an error inside does not pay for a
+// traceback nobody will see.
 func (st *State) ProtectedCall(fn value.Value, args []value.Value) ([]value.Value, *LuaError) {
+	th := st.runningThread
+	if th == nil {
+		return nil, errf("pcall: no running thread")
+	}
+	st.protectDepth++
+	defer func() { st.protectDepth-- }()
+	return st.callLuaFromHost(th, fn, args)
+}
+
+// ProtectedCallDirect calls back into Lua from a stdlib host function (gsub's function repl,
+// table.sort's comparator, foreach's callback). It is the same host->Lua boundary as ProtectedCall
+// but does NOT catch: the host function propagates the error, so an uncaught one must still get
+// its traceback at the raise point.
+func (st *State) ProtectedCallDirect(fn value.Value, args []value.Value) ([]value.Value, *LuaError) {
 	th := st.runningThread
 	if th == nil {
 		return nil, errf("pcall: no running thread")
@@ -406,33 +435,49 @@ func (st *State) ProtectedCall(fn value.Value, args []value.Value) ([]value.Valu
 	return st.callLuaFromHost(th, fn, args)
 }
 
-// ProtectedCallDirect is isomorphic to ProtectedCall (for stdlib internals that call back into
-// Lua functions, such as gsub's function repl and table.sort's comparator).
-func (st *State) ProtectedCallDirect(fn value.Value, args []value.Value) ([]value.Value, *LuaError) {
-	return st.ProtectedCall(fn, args)
-}
-
 // MetaOf exposes metaOf (used by stdlib getmetatable).
 func (st *State) MetaOf(t arena.GCRef) arena.GCRef { return st.metaOf(t) }
 
 // IndexWithMeta exposes the table read with the __index chain (used by stdlib gsub's table repl —
 // PUC's gsub fetches the replacement value via lua_gettable, which triggers metamethods).
+//
+// The caller is a host function, so an __index handler reached from here runs above a real C
+// frame: PUC's stack is [handler, gsub(C), caller]. callMetaHandler deliberately adds no level
+// (the VM's own metamethod dispatch interposes no C frame), so the host frame is counted here,
+// exactly as callLuaFromHost counts it for a comparator or replacement function. Without it,
+// error(m, 2) in the handler named gsub's caller instead of the C frame (#277).
 func (st *State) IndexWithMeta(obj, key value.Value) (value.Value, *LuaError) {
 	th := st.runningThread
 	if th == nil {
 		return value.Nil, errf("IndexWithMeta: no running thread")
 	}
-	return st.indexWithMeta(th, obj, key)
+	outer := st.pendingHostFrames
+	st.pendingHostFrames++
+	v, e := st.indexWithMeta(th, obj, key)
+	st.pendingHostFrames = outer
+	if e != nil {
+		// Raised under lua_gettable called from a C function: no position (#278).
+		e.MarkAnnotated()
+	}
+	return v, e
 }
 
 // LessThan exposes the full `<` semantics (number/string fast path + __lt metamethod;
 // used by table.sort's default comparator — PUC's sort_comp goes through lua_lessthan).
+//
+// Counts the calling host function's C frame for an __lt handler, for the reason given on
+// IndexWithMeta: inside table.sort the handler's caller is sort, so error(m, 2) must land on
+// that C frame (no position) and error(m, 3) on sort's Lua caller (#277).
 func (st *State) LessThan(a, b value.Value) (bool, *LuaError) {
 	th := st.runningThread
 	if th == nil {
 		return false, errf("LessThan: no running thread")
 	}
-	return st.lessThan(th, a, b)
+	outer := st.pendingHostFrames
+	st.pendingHostFrames++
+	r, e := st.lessThan(th, a, b)
+	st.pendingHostFrames = outer
+	return r, e
 }
 
 // MetaFieldOf exposes metamethod lookup for an arbitrary Value (used by stdlib __tostring etc.).
@@ -445,13 +490,28 @@ func (st *State) RawGet(t arena.GCRef, key value.Value) (value.Value, *LuaError)
 	return st.tableGet(t, key)
 }
 
+// RawSet's errors ("table index is nil" / "is NaN") are luaH_set's luaG_runerror, raised while
+// the running frame is the C function that called lua_rawset (rawset, table.insert, sort's
+// swap). luaG_runerror adds a position only for a Lua frame, so lua5.1 reports them bare; left
+// unmarked, the host-call boundary prefixed the Lua caller's line (#278).
 func (st *State) RawSet(t arena.GCRef, key, val value.Value) *LuaError {
-	return st.tableSet(t, key, val)
+	e := st.tableSet(t, key, val)
+	if e != nil {
+		e.MarkAnnotated()
+	}
+	return e
 }
 
-// RawNext exposes iteration (used by stdlib next/pairs).
+// RawNext exposes iteration (used by stdlib next/pairs/table.foreach).
+//
+// "invalid key to 'next'" is luaH_next's luaG_runerror, raised inside the C function next (or
+// foreach), so it carries no position in lua5.1 -- the same reasoning as RawSet (#278).
 func (st *State) RawNext(t arena.GCRef, key value.Value) (value.Value, value.Value, bool, *LuaError) {
-	return st.rawNext(t, key)
+	k, v, ok, e := st.rawNext(t, key)
+	if e != nil {
+		e.MarkAnnotated()
+	}
+	return k, v, ok, e
 }
 
 // RawBorder exposes #t (used by stdlib table.*).
