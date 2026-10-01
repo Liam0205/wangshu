@@ -21,23 +21,23 @@ import (
 // vacuous pass where nothing was promoted.
 func TestP4PromotionCallDoesNotReplayBeforeHostTailCall(t *testing.T) {
 	for _, tc := range []struct {
-		name, src string
-		forceOnly bool // shorter than the auto-mode promotion floor
+		name, src, want string
+		forceOnly       bool // shorter than the auto-mode promotion floor
 	}{
 		{"upvalue increment then tail call with table constructor",
 			`local nid = 0
 			local function mk(v) nid = nid + 1 return rawequal({id = 1}, {}) end
 			for i = 1, 1000 do mk(i) end
-			return nid`, false},
+			return nid`, "1000", false},
 		{"the increment feeds the next value",
 			`local nid = 0
 			local function mk(v) nid = nid + 1 return setmetatable({v = v, id = nid}, {}) end
 			local s = 0 for i = 1, 1000 do s = s + mk(i).id end
-			return nid .. " " .. s`, false},
+			return nid .. " " .. s`, "1000 500500", false},
 		{"table constructor with a computed field as the tail call argument",
 			`local function f(i) return type({v = i % 50}) end
 			local n = 0 for i = 1, 1000 do if f(i) == "table" then n = n + 1 end end
-			return n`, true},
+			return n`, "1000", true},
 	} {
 		prog, err := wangshu.Compile([]byte(tc.src), "i273")
 		if err != nil {
@@ -45,20 +45,24 @@ func TestP4PromotionCallDoesNotReplayBeforeHostTailCall(t *testing.T) {
 		}
 		st1 := wangshu.NewState(wangshu.Options{})
 		st1.SetTierEnabled(false)
-		want, err := prog.Run(st1)
+		ref, err := prog.Run(st1)
 		if err != nil {
 			t.Fatalf("%s: P1: %v", tc.name, err)
 		}
+		// Display, not Str: Str is empty for a number, which made every numeric comparison pass.
+		if got := ref[0].Display(); got != tc.want {
+			t.Fatalf("%s: P1 returned %q, want %q", tc.name, got, tc.want)
+		}
 		for _, mode := range []struct {
-			name           string
-			force, gcStres bool
+			name            string
+			force, gcStress bool
 		}{{"auto", false, false}, {"force+gcstress", true, true}} {
 			if tc.forceOnly && !mode.force {
 				continue
 			}
 			st := wangshu.NewState(wangshu.Options{})
 			st.SetForceAllPromote(mode.force)
-			st.SetGCStressMode(mode.gcStres)
+			st.SetGCStressMode(mode.gcStress)
 			got, err := prog.Run(st)
 			if err != nil {
 				t.Errorf("%s [%s]: %v", tc.name, mode.name, err)
@@ -67,8 +71,8 @@ func TestP4PromotionCallDoesNotReplayBeforeHostTailCall(t *testing.T) {
 			if st.PromotionCount() == 0 {
 				t.Errorf("%s [%s]: nothing was promoted, the case does not reach P4", tc.name, mode.name)
 			}
-			if got[0].Str() != want[0].Str() {
-				t.Errorf("%s [%s]: got %q, want %q (P1)", tc.name, mode.name, got[0].Str(), want[0].Str())
+			if g := got[0].Display(); g != tc.want {
+				t.Errorf("%s [%s]: got %q, want %q (P1)", tc.name, mode.name, g, tc.want)
 			}
 		}
 	}
