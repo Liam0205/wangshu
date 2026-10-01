@@ -745,12 +745,12 @@ equal(a, b):
   // __eq 仅在「a、b 同为 table 或同为 userdata」时才查(5.1 要求同 primitive type)
   if not ((a 是 table and b 是 table) or (a 是 userdata and b 是 userdata)):
     return false                              // 类型不同,或非 table/userdata ⇒ rawequal 假即最终 false
-  // 取 __eq:先 a 的,a 没有再 b 的
+  // 取 __eq:lvm.c get_compTM——a 必须有,且 b 的必须与之 rawequal(同一元表则必然相同)
   mm := getMetamethod(a, __eq)
   if mm == nil:
-    mm = getMetamethod(b, __eq)
-  if mm == nil:
-    return false                              // 都没 __eq ⇒ false
+    return false                              // a 没有 __eq ⇒ false(b 有也不用)
+  if not rawequal(mm, getMetamethod(b, __eq)):
+    return false                              // 两边处理函数不同 ⇒ false
   return truthy(call mm(a, b))                // 结果取真值(转 bool)
 ```
 
@@ -758,7 +758,9 @@ equal(a, b):
 
 - **只有「同为 table」或「同为 userdata」才查 `__eq`**。`1 == "1"` ⇒ 类型不同 ⇒ **直接 false,不查元方法**(number vs string 永不相等,也不调 `__eq`)。`{} == 5` ⇒ table vs number ⇒ false。**只有 `tableA == tableB`(两个不同 table 对象)或 `udA == udB` 才可能调 `__eq`**。
 - **rawequal 为真直接返回 true**(同一对象 `a==a` 不调 `__eq`)。`__eq` 只在「两个**不同**的同类对象」间被查。
-- **查找顺序先 a 后 b**;都没有则 false。
+- **两边处理函数必须相同**(`get_compTM`):a 没有 `__eq`、或 b 的 `__eq` 与 a 的不是同一个值,都直接 false,不会退而
+  用 b 的。**2026-10-01 订正(#271 一轮)**:本节原写「先 a 后 b」,与 5.1 不符;实现(`internal/crescent/execute.go`
+  `doCompare` 的 EQ 分支要求 `h == h2`)一直是对的,只是文档写错了。
 - **结果取真值**(`truthy`,[01](./01-value-object-model.md) §6):`__eq` 返回任意值,非 nil/false 即视为相等。
 - **`EQ` 指令的 `bool(A)`**:05 §4.4 的 `比较结果 ≠ bool(A) ⇒ pc++`。`equalMeta` 返回 bool 结果,由 05 的 EQ case 套用 `bool(A)` 逻辑。
 
@@ -767,11 +769,8 @@ equal(a, b):
 func (vm *VM) equalMeta(f *frame, a, b value.Value) (bool, *LuaError) {
     // 调用方(05 EQ case)已确认:rawequal 假 且 (双 table 或 双 userdata)
     mm := vm.getMetamethod(a, vm.eventKey(EvEq))
-    if mm == value.Nil {
-        mm = vm.getMetamethod(b, vm.eventKey(EvEq))
-    }
-    if mm == value.Nil {
-        return false, nil                       // 无 __eq ⇒ 不等
+    if mm == value.Nil || mm != vm.getMetamethod(b, vm.eventKey(EvEq)) {
+        return false, nil                       // a 无 __eq,或两边处理函数不同 ⇒ 不等
     }
     var out value.Value
     if e := vm.callMMInto(f, mm, []value.Value{a, b}, &out, 1); e != nil {
@@ -1119,7 +1118,9 @@ sweep 阶段(06 §8):
 - **错误措辞精确格式**:§14 所有 `*Error` helper 的措辞(冠词/复数/标点/变量名增强)以 Lua 5.1 参考实现为准,**待 12 差分核对**。本文给骨架,不编造精确标点。变量名层(`field 'x'` 等)在 [09](./09-errors-pcall.md) 定稿。
 - **`maxIndexChain` 值**:§3.3 `__index`/`__newindex`/`__call` 链的上限,**倾向对齐 Lua 5.1 `MAXTAGLOOP=100`**,报错措辞(`"'__index' chain too long; possible loop"`)待 12 核对。
 - **`__unm` arity**:§6 定 `__unm` 传 `(a, a)`(5.1 `call_binTM` 对一元传两次操作数),**待 12 核对**;`__len` on userdata 定 `(a)` 单参(§7),亦待核对。
-- **`__le→__lt` 回退的 `__lt` 查找顺序**:§9.3 回退里再找 `__lt` 的「先 a 后 b」顺序与官方 `lessequal` 对齐,**待 12 核对**。
+- ~~**`__le→__lt` 回退的 `__lt` 查找顺序**:§9.3 回退里再找 `__lt` 的「先 a 后 b」顺序与官方 `lessequal` 对齐,待 12 核对。~~
+  **已核对(2026-10-01,#271)**:不是「先 a 后 b」,而是 `call_orderTM(b, a, __lt)`——以 b 为左操作数取 `__lt`,且 a 的
+  必须与之相同,见 §9.3。
 - **十六进制浮点 coercion**:§5.2 定「`0x` 只接受十六进制整数,不支持 `0x1p4` 浮点」(5.2+ 特性),**待 12 核对** 5.1 `strtod` 在 `0x` 上的实际行为(可能平台相关)。
 - **`__tostring` 返回非 string**:§11 按 5.1 严格报错;`tostring(table)` 的地址格式不可逐字节比(差分豁免),交 12 定口径。
 - **弱表 ephemeron**:§13.5 weak key 表的「值存活依赖键存活」P1 简化为「键活则值无条件标活」。与 5.1 精确差异待 12 用例核对,若触及记为已知 P1 限制。

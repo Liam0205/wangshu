@@ -349,7 +349,7 @@ case bytecode.LT:    // if (RK(B) < RK(C)) ≠ bool(A) then pc++  (跳过下一�
 
 - **EQ**:先 `rawequal`([01](./01-value-object-model.md) §6:number 走 `AsNumber` 浮点比较以正确处理 `+0/-0`/`NaN`;string 走 GCRef 相等;其它 boxed 走 bits 相等)。**仅当两操作数同为 table 或同为 userdata 且 rawequal 为假**时才查 `__eq`(Lua 5.1 要求两者同类型且各自有 `__eq`,[01](./01-value-object-model.md) §6),见 [07](./07-metatables-metamethods.md)。
 - **LT/LE 快路径**:两 number → 直接 `<` / `<=`;两 string → 字典序(逐字节,[01](./01-value-object-model.md) §5.1 内容)。**注意 `NaN` 的比较**:`NaN < x`、`NaN <= x`、`x < NaN` 全为 false(IEEE 语义,Go 的 `<` 天然满足),无需特判。
-- **混合类型 LT/LE**:number vs string **不自动转**(与算术不同!Lua 5.1 比较不做 string↔number coercion),直接走 `__lt`/`__le`,没有则错 "attempt to compare number with string"。这条易错,差分测试重点覆盖。
+- **混合类型 LT/LE**:number vs string **不自动转**(与算术不同!Lua 5.1 比较不做 string↔number coercion)。两边类型不同时**直接报错、不查元方法**("attempt to compare number with string");只有同类型的非 number/string 值才查 `__lt`/`__le`,且两边的处理函数必须相同,见 [07](./07-metatables-metamethods.md) §9.2-§9.4。这条易错,差分测试重点覆盖。**2026-10-01 订正(#271 一轮)**:本条原写「直接走 `__lt`/`__le`」,实现也照此写错过。
 - **`bool(A)`** 是 codegen 编码进 A 的「期望布尔」([02](./02-bytecode-isa.md) §4 记号),用于把 `a < b`(期望 true 才不跳)与 `a >= b`(把 `<` 取反编码)统一成同一条 LT。解释器只做 `比较结果 ≠ bool(A) ⇒ pc++`,不关心它是哪种源码比较。
 
 ### 4.5 TEST / TESTSET(and/or 短路)
