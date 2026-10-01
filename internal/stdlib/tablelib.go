@@ -512,11 +512,14 @@ type heldPin struct {
 // hold roots v in slot, releasing whatever the slot held before. Only values that can be
 // collected while a comparison runs need it: with a comparator any value can, while the default
 // `<` runs Lua code only through __lt, which numbers and strings never reach. Leaving strings
-// unpinned there is safe because an unpinned string is never READ after a handler has run, not
-// because none is ever held while one runs: within one recursion level every comparison is
-// between values of the pivot's type (any other type raises before a handler is called), and a
-// string an inner level leaves behind in a slot is never reused -- the outer level re-reads every
-// value from the table and re-holds it before comparing.
+// unpinned there is safe because no Go local holding a string is used after a comparison that ran
+// a handler. lessThan raises on mixed types before it looks for a handler and never calls one for
+// strings, so a comparison that ran a handler had two non-string operands of one type. Every value
+// auxsort reuses across a comparison is one of its operands, or was compared without error against
+// one of them earlier (ai against the pivot that the --j comparisons share), so it has that type
+// too. Values used after a handler ran are otherwise read afresh from the table -- where the handler
+// may well have stored strings -- and a string an inner recursion level leaves in a slot is never
+// read again.
 func (s *tableSorter) hold(slot int, v value.Value) {
 	p := &s.pins[slot]
 	if p.ok {
