@@ -257,22 +257,36 @@ func baseFnLoad(st *crescent.State, args []value.Value) ([]value.Value, *crescen
 	const maxReaderPieces = 1 << 20 // guardrail: guard against a malicious reader that never returns nil
 	done := false
 	for i := 0; i < maxReaderPieces; i++ {
-		results, e := st.ProtectedCallDirect(args[0], nil)
+		results, e := st.ProtectedCallKeepingHandler(args[0], nil)
 		if e != nil {
 			// PUC's lua_load runs the reader inside
 			// luaD_protectedparser: an error raised BY the reader is
 			// caught and surfaces as load's (nil, errmsg) result
 			// instead of propagating (oracle diff fuzz catch:
 			// load(load) -- a reader error is a load failure, not a
-			// caller error).
+			// caller error). The parser keeps the message handler, so
+			// under xpcall the caught value is the handler's result.
+			if v, ok := e.ErrFuncResult(); ok {
+				return []value.Value{value.Nil, v}, nil
+			}
 			return []value.Value{value.Nil, intern(st, e.Error())}, nil
 		}
 		if len(results) == 0 || results[0] == value.Nil {
 			done = true
 			break
 		}
+		if value.IsNumber(results[0]) {
+			// lua_isstring accepts a number, and lua_tolstring converts it.
+			results[0] = intern(st, valueToString(st, results[0]))
+		}
 		if value.Tag(results[0]) != value.TagString {
-			return []value.Value{value.Nil, intern(st, "reader function must return a string")}, nil
+			// generic_reader's luaL_error, raised in load's frame inside the protected parser: it
+			// names load's caller, runs an enclosing xpcall's handler, and is caught by load.
+			e := st.RaiseCaughtInHost(crescent.NewError("reader function must return a string"))
+			if v, ok := e.ErrFuncResult(); ok {
+				return []value.Value{value.Nil, v}, nil
+			}
+			return []value.Value{value.Nil, intern(st, e.Error())}, nil
 		}
 		piece := object.StringBytes(st.Arena(), value.GCRefOf(results[0]))
 		if len(piece) == 0 {

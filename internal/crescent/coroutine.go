@@ -128,9 +128,9 @@ func (st *State) Resume(id uint64, args []value.Value) ([]value.Value, bool, *Lu
 
 	// resume starts a new layer of execute (Go stack +1); the nested resume
 	// chain and host→Lua reentry share the same limit (05 §7.4).
-	if st.nCcalls >= maxCCallDepth {
+	if e := st.cCallCheck(); e != nil {
 		co.status = CoSuspended
-		return nil, false, errf("C stack overflow")
+		return nil, false, e
 	}
 	st.nCcalls++
 	defer func() { st.nCcalls-- }()
@@ -157,9 +157,15 @@ func (st *State) Resume(id uint64, args []value.Value) ([]value.Value, bool, *Lu
 	// thread starts with errfunc 0.
 	outerErrFunc := st.errFunc
 	st.errFunc = value.Nil
+	st.catchDepth++
 	outerDeathDepth := st.coDeathDepth
-	st.coDeathDepth = st.protectDepth
-	defer func() { st.protectDepth--; st.errFunc = outerErrFunc; st.coDeathDepth = outerDeathDepth }()
+	st.coDeathDepth = st.catchDepth
+	defer func() {
+		st.protectDepth--
+		st.catchDepth--
+		st.errFunc = outerErrFunc
+		st.coDeathDepth = outerDeathDepth
+	}()
 	// A coroutine's stack starts at its own body; PUC has no C frames below it. Host frames pending
 	// on the RESUMER (pcall(coroutine.resume, co) leaves one) belong to the resumer's thread, so
 	// the coroutine's first frame must not absorb them -- they would show up as a spurious "[C]"

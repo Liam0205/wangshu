@@ -336,6 +336,52 @@ stack traceback:
 	[C]: in function 'print'
 	x:2: in main chunk
 	[C]: ?`},
+		{"C stack overflow under xpcall still reaches the handler",
+			`local t = setmetatable({}, {})
+getmetatable(t).__index = function(t, k) return t[k] end
+local _, m = xpcall(function() return t.x end, function(m) return "H:" .. tostring(m) end)
+OUT = m`,
+			`H:x:2: C stack overflow`},
+		{"C stack overflow through __tostring under xpcall",
+			`local function deep(n) return tostring(setmetatable({}, {__tostring = function() return deep(n + 1) end})) end
+local _, m = xpcall(function() return deep(0) end, function(m) return "H:" .. tostring(m) end)
+OUT = m`,
+			`H:C stack overflow`},
+		{"load's reader runs the enclosing xpcall's handler",
+			`local n = 0
+local _, m = xpcall(function() local f, m = load(function() error("rd") end) return m end, function(m) n = n + 1 return "H:" .. m end)
+OUT = tostring(m) .. " " .. n`,
+			`H:x:2: rd 1`},
+		{"a reader error does not count as the coroutine dying",
+			`local co = coroutine.create(function() local f, m = load(function() error("rd") end) return m end)
+coroutine.resume(co)
+OUT = debug.traceback(co, "done")`,
+			`done
+stack traceback:`},
+		{"a reader's non-string piece names load's caller",
+			`local _, f, m = pcall(function() return load(function() return {} end) end)
+OUT = tostring(f) .. " " .. m`,
+			`nil x:1: reader function must return a string`},
+		{"a reader's non-string piece runs the enclosing xpcall's handler",
+			`local _, f, m = xpcall(function() return load(function() return {} end) end, function(m) return "H:" .. m end)
+OUT = tostring(f) .. " " .. m`,
+			`nil H:x:1: reader function must return a string`},
+		{"a reader's non-string piece with a C caller is bare",
+			`local _, f, m = pcall(load, function() return {} end)
+OUT = tostring(f) .. " " .. m`,
+			`nil reader function must return a string`},
+		{"a reader's non-string piece at top level carries the traceback",
+			`local f, m = load(function() return {} end)
+OUT = m`,
+			`x:1: reader function must return a string
+stack traceback:
+	[C]: in function 'load'
+	x:1: in main chunk
+	[C]: ?`},
+		{"a reader may return a number piece",
+			`local parts, i = {"return ", 42}, 0
+OUT = tostring(load(function() i = i + 1 return parts[i] end)())`,
+			`42`},
 	} {
 		for _, force := range []bool{false, true} {
 			st := runTracebackCase(t, tc.src, force)

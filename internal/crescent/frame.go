@@ -32,6 +32,25 @@ const (
 	gibbousReentryCCallCap = maxCCallDepth / 2
 )
 
+// cCallCheck is luaD_call's C-depth check for one more host->Lua reentry: "C stack overflow" at
+// the limit, LUA_ERRERR once past it by an eighth. Only an xpcall handler runs past the limit
+// (see runErrFunc), since the overflow error itself is what calls it.
+func (st *State) cCallCheck() *LuaError {
+	switch n := st.nCcalls; {
+	case n < maxCCallDepth:
+		return nil
+	case n >= maxCCallDepth+maxCCallDepth>>3:
+		e := errf("error in error handling")
+		e.errErr = true
+		return e
+	case n > maxCCallDepth:
+		return nil
+	}
+	e := errf("C stack overflow")
+	e.cOverflow = true
+	return e
+}
+
 // enterLuaFrame prepares a frame and pushes its CallInfo (05 §1.4).
 //
 // funcIdx is the index of the callee closure on the stack; the arguments follow

@@ -1041,8 +1041,8 @@ func (st *State) ExecutePlainCallInlineFrame(base, callA, nargs, nresults int32)
 	if int(calleePID) >= len(st.protos) || st.protos[calleePID] == nil {
 		return st.raiseGibbous(errf("ExecutePlainCallInlineFrame: invalid callee protoID %d", calleePID))
 	}
-	if st.nCcalls >= maxCCallDepth {
-		return st.raiseGibbous(errf("C stack overflow"))
+	if e := st.cCallCheck(); e != nil {
+		return st.raiseGibbous(e)
 	}
 	// nCcalls watermark (gibbousReentryCCallCap): each zero-cross level
 	// is a real Go re-entry (enterGibbous → Run → dispatcher → here),
@@ -1333,8 +1333,8 @@ func (st *State) DoCall(base, pc, a, b, c int32) int64 {
 		// is a new Go stack re-entry boundary, preventing alternating
 		// gibbous<->crescent recursion from blowing the Go stack (same guard as
 		// meta.go callLuaFromHost).
-		if st.nCcalls >= maxCCallDepth {
-			st.raiseGibbous(errf("C stack overflow"))
+		if e := st.cCallCheck(); e != nil {
+			st.raiseGibbous(e)
 			return -1
 		}
 		st.nCcalls++
@@ -1389,8 +1389,8 @@ func (st *State) CallBaseline(base, pc, a, b, c int32) int32 {
 		// Entering a new Lua frame (the callee is an un-promoted closure or a
 		// no-slot gibbous) — drive it to completion synchronously. nCcalls
 		// accounting same as DoCall (same guard as meta.go callLuaFromHost).
-		if st.nCcalls >= maxCCallDepth {
-			st.raiseGibbous(errf("C stack overflow"))
+		if e := st.cCallCheck(); e != nil {
+			st.raiseGibbous(e)
 			return 1
 		}
 		st.nCcalls++
@@ -1444,8 +1444,8 @@ func (st *State) TailCall(base, pc, a, b, c int32) int32 {
 	}
 	// Lua tail call: G has been replaced by the callee frame. Drive the callee
 	// chain to completion synchronously.
-	if st.nCcalls >= maxCCallDepth {
-		st.raiseGibbous(errf("C stack overflow"))
+	if e := st.cCallCheck(); e != nil {
+		st.raiseGibbous(e)
 		return 1
 	}
 	st.nCcalls++
@@ -1534,8 +1534,8 @@ func (st *State) ExecuteCalleeFromInlineFrame(base, callA, callArgCount, nresult
 	//    multi-ret.
 	nargs := 1 + int(callArgCount)
 	// 5. C stack depth check + nCcalls++
-	if st.nCcalls >= maxCCallDepth {
-		return st.raiseGibbous(errf("C stack overflow"))
+	if e := st.cCallCheck(); e != nil {
+		return st.raiseGibbous(e)
 	}
 	// nCcalls watermark mirrors ExecutePlainCallInlineFrame (see the
 	// gibbousReentryCCallCap doc in frame.go): past the watermark, take
