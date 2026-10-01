@@ -511,8 +511,11 @@
   各自去掉修复后也会失败。改完先由独立子代理逐行对照 `ltablib.c` / `lvm.c` 审查并做差分测试,上面最后三行来自这次审查。
   比较器里 yield 的位置前缀、`__lt` 处理函数里 `error(m, 2)` 的层级、`next({}, {})` 的位置前缀、traceback 少一行
   `[C]: in function 'sort'` 几处差异在 master 上就有,与本轮无关,登记在 `llmdoc/memory/doc-gaps.md`。#271 语料入 `test/fuzz/testdata/fuzz/FuzzOracleDiff/`。
-  `make test-all` / `conformance-all` / `difftest-all` 与 oracle 语料重放全绿。代价:排序密集的循环慢约 14%
-  (每次访问走 `RawGet`/`RawSet`,不再在 Go 切片上排序)。设计稿 07 §9.2-§9.4、10 §7.3 已按实际规则改写。
+  `make test-all` / `conformance-all` / `difftest-all` 与 oracle 语料重放全绿。代价按元素类型不同,原因是每次访问都走
+  `RawGet`/`RawSet`,不再在 Go 切片上排序。P1 构建,本机 base 与 HEAD 交替各跑三轮取均值(每轮三次排序):30 万个
+  数字默认 `<` 0.45s → 0.62s(慢约 39%),15 万个字符串 0.49s → 0.57s(慢约 15%),10 万个 table 加 Lua 比较器
+  1.24s → 1.13s(快约 9%)。独立审查用另一组数据规模量到数字约 +28%、字符串约 +10%、table 加比较器约 +25%。
+  前两类两次测量方向一致,数字排序变慢最明显;第三类两次方向相反,只能说在噪声范围内,没有可靠结论。设计稿 07 §9.2-§9.4、10 §7.3 已按实际规则改写。
 
 ## 相关
 

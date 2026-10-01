@@ -24,7 +24,7 @@ metadata:
 > `internal/crescent/execute.go`(`lessThan` / `lessEqual` / `callOrderTM` / `orderError`)、
 > `internal/crescent/meta.go`(`LessThan` 改为委托)、`internal/crescent/state.go`(`CheckCancel`);
 > 新测试 `test/regression/issue271_sort_order_test.go`;设计稿 07 §9.2-§9.4、10 §7.3-§7.4 与 implementation-progress。
-> 本轮巡检在中途中断过一次,接续时语料已入库(`b5cbdd5`),修复从头做。
+> 本轮巡检在中途中断过一次,接续时 #271 语料已经提交(分支上第一个 commit `test(fuzz): add the #271 table.sort NaN-order crasher ...`),修复从头做。
 
 ## 过程
 
