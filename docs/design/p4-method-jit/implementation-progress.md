@@ -2811,3 +2811,26 @@ P1 成功、P4 抬 `SETLIST: not a table`。**根因不在 JIT 里**,而在共�
   ① 「有一段既有注释正好描述了这个症状」是最容易走错的线索,先用探针证明那条路径真的被执行;
   ② 抬错的位置不是缺陷的位置,栈迹里**缺少**哪一层本身就是关键信息,对「X 报错」类缺陷先问
   「X 读到的坏数据是谁写的」;③ 一个共享层的恢复动作已有 N 处兄弟路径在做时,第 N+1 处漏做就是缺陷。
+
+## 28. issue #273 升层那一次调用在宿主尾调用处从 pc 0 重跑(2026-10-01)
+
+- **现象**:P4 构建下,`local function mk(v) nid = nid + 1 return rawequal({id = 1}, {}) end` 调用 1000 次后
+  `nid` 是 1001(lua5.1、P1、P3 都是 1000)。调用次数 ≤ 199 正确,从第 200 次(默认 `hotEntry`)起多 1,多出的
+  只有一次。同一写法再打开 force-all 升层 + GC stress 时,报 `attempt to index a nil value`。
+- **根因**(`internal/crescent/execute.go` 的 TAILCALL 分支):升层发生在 `enterLuaFrame` 末尾的 `OnEnterID`
+  里,也就是**第 200 次调用的帧已经建好、即将由解释器执行**的时候。解释器把这一次跑到 TAILCALL;`doTailCall`
+  调宿主函数 `rawequal`,返回 `next == nil`,`ci` 仍是 `mk` 自己这一帧。紧接着的「PJ10 tail-call gibbous
+  dispatch」本意是「在刚进入的尾调用帧上运行被调者的 gibbous 码」,却没有判断是不是真的进入了新帧,于是查到的是
+  `mk` 自己**刚刚**装好的原生码,从 pc 0 再跑一遍:TAILCALL 之前的 GETUPVAL / ADD / SETUPVAL 执行了两次。GC stress
+  那一格出现在同一个窗口:force-all 下函数第一次进入就升层,所以第一次调用就是「升层那一次」,重跑同样发生;
+  修复前只有以宿主尾调用收尾的写法报错,`local t = {...} return t`、非尾调用的同一表构造器都不报错,修复后全部
+  通过。重跑的原生段在第一遍留下的寄存器状态上执行 NEWTABLE / SETTABLE,其中哪一步读到已回收的表没有再逐指令
+  追,结论只到「它是这次重跑的后果,去掉重跑即消失」为止。
+- **修法**:分发条件加 `next != nil`(只在 Lua 尾调用进入了新帧之后分发)。宿主尾调用时由解释器把这一帧剩下的
+  `RETURN A 0` 跑完,与 P1 一致。
+- **验证**:`test/regression/issue273_tailcall_promotion_p4_test.go` 三种写法 × (auto 升层 / force-all + GC stress),
+  对照 P1,并要求 `PromotionCount > 0`;去掉修复后 6 个子用例中 4 个失败(另 2 个是 auto 模式下的同一写法,失败的
+  是计数)。
+- **为什么长期没被发现**:差分测试与 fuzz 的 P4 模式多用 force-all 升层,第一次调用就已经升层,不存在「本次调用在
+  解释器里跑、函数中途被升层」的窗口;auto 模式只有当一次调用恰好是第 `hotEntry` 次、且该函数以**宿主**尾调用收尾时
+  才触发。

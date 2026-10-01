@@ -519,6 +519,23 @@
   补快路径前是 0.61s),15 万个字符串 0.50s → 0.55s(慢约 10%),10 万个 table 加 Lua 比较器两次测量方向相反
   (本机快约 9%,独立审查用另一组数据规模量到慢约 25%),只能说在噪声范围内,没有可靠结论。设计稿 07 §9.2-§9.4、10 §7.3 已按实际规则改写。
 
+- **issue #272 —— yield 越界检查补到 `State.Yield`,并修好被尾调用的 yield(2026-10-01,
+  分支 `fix/272-273-yield-boundary-and-p4-tailcall`)**。#271 一轮的独立审查发现:元方法处理函数直接是宿主函数
+  `coroutine.yield` 时,协程会在比较中途挂起,lua5.1 报 `attempt to yield across metamethod/C-call boundary`。
+
+  | 项 | 落点 | 结论与要点 |
+  |---|---|---|
+  | 根因:基线检查从没实现 | `internal/crescent/coroutine.go::Yield` | 设计稿 08 §5.2 写了 nCcalls 基线比对,实现只在 `callLuaFromHost` 里把「从 **Lua** 函数冒出来的哨兵」改成越界错误。宿主函数被直接当元方法 / 比较器 / gsub 替换函数 / for-in 迭代器调用时,哨兵经 `callMetaHandler` / `ProtectedCall` 原样返回,绕过了这道检查 |
+  | 修法 | `coroutine.baseCcalls` + `State.Yield` | 照 `ldo.c`:`lua_resume` 里 `L->baseCcalls = ++L->nCcalls`,`lua_yield` 在 `nCcalls > baseCcalls` 时报错。resume 的 `nCcalls++` 之后记录基线,`Yield` 先比较,越界就报错、不产生哨兵 |
+  | 主线程措辞 | 同上 | 5.1 只有一种措辞:主线程的 `nCcalls` 也大于 `baseCcalls`,同样报 `attempt to yield across metamethod/C-call boundary`。望舒原先报 5.2+ 的 `attempt to yield from outside a coroutine` |
+  | 错误不带位置 | 同上 | 错误由 C 函数 `yield` 内部抛出,5.1 不加位置前缀;`MarkAnnotated` 防止宿主调用边界补上调用方行号 |
+  | 顺带发现:被尾调用的 yield | `internal/crescent/call.go::doTailCall` | `return coroutine.yield(x)` 是宿主尾调用,`doTailCall` 没有像 `doCall` 那样记录 resume 点,下一次 resume 报 `cannot resume: no pending yield point`。官方套件 closure.lua 的「yields in tail calls」正好测这个,但它在 setfenv 豁免行之后,从没跑到。补上与 `doCall` 相同的 `pendingResume`(nresults 为 multret,由紧随的 `RETURN A 0` 从 top 返回) |
+
+  验证:`test/regression/issue272_yield_boundary_test.go`(越界 12 条 + 尾调用 yield 3 条,期望值逐条用 `lua5.1`
+  跑出;两半修复各自去掉后都会失败)。#271 的 `issue271_sentinel_race_test.go` 在 `-race` 下照常通过:那段脚本
+  现在在 `Yield` 处就被拒绝,不再产生哨兵,哨兵上的两处跳过写入保留作纵深防御。设计稿 08 §5.2、§8.2、§1 / §5 /
+  §11 的措辞与 P3 设计稿 04 / 07 里的同一句已同步。
+
 ## 相关
 
 [00-overview](./00-overview.md) · [../engineering](../engineering.md) ·
