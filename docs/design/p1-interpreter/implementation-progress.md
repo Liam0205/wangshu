@@ -76,7 +76,7 @@
   只有少数文件从头跑到尾(`events.lua` 只跑 3 行)。更细的一格是**「在套件里」不等于「在跑」** ——
   有文件开头就是 `if T == nil then ... return end`(官方 testC 调试库,本仓不提供),整文件零断言;
   所以按行号算的占比与已跑行数都不能当执行证据,要用执行侧的量(实际执行的断言次数)核。
-  准确数字读 `test/luasuite/luasuite_test.go` 的 `stopAt` 表(**文件数与占比不在本文写死**,
+  准确数字读 `test/luasuite/luasuite_test.go` 的 `stopAt` 表与 `resumeAt` 表(**文件数与占比不在本文写死**,
   这类量写进文档就会变成陈旧计数);口径与判据见
   [12](./12-testing-difftest.md) §2.1a,反思 [[2026-08-29-conformance-coverage-and-tiered-oracle-diff]]。
 - **长时间稳定性承诺**:freelist 循环复用(22000 轮分配密集脚本 arena 稳定

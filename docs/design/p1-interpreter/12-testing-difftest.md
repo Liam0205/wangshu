@@ -173,7 +173,7 @@ Lua 5.1 官方发行带一套测试脚本(`test/` 目录:`attrib.lua`/`calls.lua
 
 **引用规则(本节最有用的产出)**:
 
-- 拿套件当覆盖度证据前,先读一遍 `stopAt` 表;`grep -l <feature> test/luasuite/testdata/`
+- 拿套件当覆盖度证据前,先读一遍 `stopAt` 表和 `resumeAt` 表;`grep -l <feature> test/luasuite/testdata/`
   命中之后**还要确认那一行在 `stopAt` 之前，或落在 `resumeAt` 登记的区间里** —— 两者都不是的等于没被覆盖。
 - 报覆盖率时给「跑了多少 / 总共多少 / 有多少被截断及为什么」,并且用**执行侧的量**
   (实际执行的断言次数)核一次,不要只给按行号算的占比或已跑行数;
