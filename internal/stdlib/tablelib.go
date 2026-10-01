@@ -439,9 +439,10 @@ func tableFnSort(st *crescent.State, args []value.Value) ([]value.Value, *cresce
 	// Sorting compares about n*log2(n) times, all of it inside one call billed as a single step on
 	// the caller's back edge: a loop sorting a 999-element reversed table projected to 56 seconds
 	// against the 10-second watchdog. Charged by the comparison count, approximating log2(n) with
-	// floor(log2(n)). The oracle prelude charges the same prepayment, so leaving the engine free was
-	// also an asymmetry between the two differential sides. (The overrun charge below is the
-	// engine's alone; it only fires on adversarial input, and the differential harness skips a
+	// floor(log2(n)). For n >= 2 the oracle prelude charges the same prepayment (it clamps lg to 1,
+	// so at n == 1 it bills 1 where the engine bills nothing), so leaving the engine free was also
+	// an asymmetry between the two differential sides. (The overrun charge below is the engine's
+	// alone; it only fires on adversarial input, and the differential harness skips a
 	// resource-limit error on either side.)
 	lg := 0
 	for m := n; m > 1; m >>= 1 {
@@ -486,7 +487,7 @@ type tableSorter struct {
 	st   *crescent.State
 	t    arena.GCRef
 	comp value.Value // value.Nil: compare with `<`
-	free int         // comparisons still covered by the prepaid charge
+	free int         // comparisons left before per-comparison charging starts (4x the prepayment)
 	pins [nHeld]heldPin
 }
 
