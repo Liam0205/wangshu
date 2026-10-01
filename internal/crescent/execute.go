@@ -642,14 +642,19 @@ func (st *State) doCompare(th *thread, ci *callInfo, i bytecode.Instruction) (bo
 // handler from either side and ignored the types, so with a metatable on one table
 // `A < {}` and even `A < 1` returned the handler's answer where lua5.1 raises.
 func (st *State) lessThan(th *thread, l, r value.Value) (bool, *LuaError) {
-	tl, tr := st.typeNameOf(l), st.typeNameOf(r)
-	switch {
-	case tl != tr:
-		return false, orderError(tl, tr)
-	case value.IsNumber(l):
+	// Two numbers or two strings first, before any type name is computed: table.sort's default
+	// comparator lands here for every comparison, and typeNameOf on both operands cost about a
+	// third of a numeric sort's slowdown. Same-typed operands are exactly the case where the type
+	// check below would pass, so the order of checks is unobservable.
+	if value.IsNumber(l) && value.IsNumber(r) {
 		return value.AsNumber(l) < value.AsNumber(r), nil
-	case value.Tag(l) == value.TagString:
+	}
+	if value.Tag(l) == value.TagString && value.Tag(r) == value.TagString {
 		return stringCompare(st, value.GCRefOf(l), value.GCRefOf(r)) < 0, nil
+	}
+	tl, tr := st.typeNameOf(l), st.typeNameOf(r)
+	if tl != tr {
+		return false, orderError(tl, tr)
 	}
 	if res, ok, e := st.callOrderTM(th, l, r, "__lt"); e != nil || ok {
 		return res, e
@@ -659,14 +664,16 @@ func (st *State) lessThan(th *thread, l, r value.Value) (bool, *LuaError) {
 
 // lessEqual is lvm.c's lessequal: __le first, then not __lt with the operands swapped (5.1).
 func (st *State) lessEqual(th *thread, l, r value.Value) (bool, *LuaError) {
-	tl, tr := st.typeNameOf(l), st.typeNameOf(r)
-	switch {
-	case tl != tr:
-		return false, orderError(tl, tr)
-	case value.IsNumber(l):
+	// Same fast paths as lessThan, for the same reason.
+	if value.IsNumber(l) && value.IsNumber(r) {
 		return value.AsNumber(l) <= value.AsNumber(r), nil
-	case value.Tag(l) == value.TagString:
+	}
+	if value.Tag(l) == value.TagString && value.Tag(r) == value.TagString {
 		return stringCompare(st, value.GCRefOf(l), value.GCRefOf(r)) <= 0, nil
+	}
+	tl, tr := st.typeNameOf(l), st.typeNameOf(r)
+	if tl != tr {
+		return false, orderError(tl, tr)
 	}
 	if res, ok, e := st.callOrderTM(th, l, r, "__le"); e != nil || ok {
 		return res, e
