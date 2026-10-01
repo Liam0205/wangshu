@@ -510,16 +510,18 @@ type heldPin struct {
 }
 
 // hold roots v in slot, releasing whatever the slot held before. Two kinds of value are left
-// unpinned. Numbers, nil and booleans cannot be collected at all. Strings, under the default `<`
-// only, CAN be collected while a comparison runs -- a handler may drop them and collect -- but are
-// never used afterwards: the default `<` runs Lua code only through __lt, which strings never
-// reach, and no Go local holding a string is used after a comparison that ran a handler. lessThan raises on mixed types before it looks for a handler and never calls one for
-// strings, so a comparison that ran a handler had two non-string operands of one type. Every value
-// auxsort reuses across a comparison is one of its operands, or was compared without error against
-// one of them earlier (ai against the pivot that the --j comparisons share), so it has that type
-// too. Values used after a handler ran are otherwise read afresh from the table -- where the handler
-// may well have stored strings -- and a string an inner recursion level leaves in a slot is never
-// read again.
+// unpinned. Values that cannot be collected at all: numbers, nil, booleans and light userdata
+// (coroutine handles are light userdata, and the coroutine registry never shrinks). And strings,
+// under the default `<` only: they CAN be collected while a comparison runs -- a handler may drop
+// them and collect -- but are never used afterwards. The default `<` runs Lua code only through
+// __lt, which strings never reach, and no Go local holding a string is used after a comparison
+// that ran a handler: lessThan raises on mixed types before it looks for a handler and never calls
+// one for strings, so a comparison that ran a handler had two non-string operands of one type.
+// Every value auxsort reuses across a comparison is one of its operands, or was compared without
+// error against one of them earlier (ai against the pivot that the --j comparisons share), so it
+// has that type too. Values used after a handler ran are otherwise read afresh from the table --
+// where the handler may well have stored strings -- and a string an inner recursion level leaves
+// in a slot is never read again.
 func (s *tableSorter) hold(slot int, v value.Value) {
 	p := &s.pins[slot]
 	if p.ok {
