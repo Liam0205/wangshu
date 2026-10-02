@@ -133,7 +133,9 @@ type State struct {
 	// shows them.
 	errFunc value.Value
 	// errFuncResult roots the value errFunc returned while its error unwinds to xpcall: it lives
-	// in a Go struct (LuaError.handlerVal) that the collector does not scan.
+	// in a Go struct (LuaError.handlerVal) that the collector does not scan. The xpcall boundary
+	// (ProtectedCallWithHandler) puts back the value it found on entry when it returns, so a
+	// result is not kept alive past the xpcall that caught it.
 	errFuncResult value.Value
 	// coDeathDepth is catchDepth just inside the innermost running resume (0 outside any): an error
 	// raised while catchDepth is still at it has nothing but that resume to catch it, so it kills

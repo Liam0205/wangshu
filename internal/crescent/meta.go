@@ -485,9 +485,15 @@ func (st *State) ProtectedCallWithHandler(fn value.Value, args []value.Value, ha
 	}
 	st.protectDepth++
 	st.catchDepth++
-	outerErrFunc := st.errFunc
+	outerErrFunc, outerResult := st.errFunc, st.errFuncResult
 	st.errFunc = handler
-	defer func() { st.protectDepth--; st.catchDepth--; st.errFunc = outerErrFunc }()
+	// Restoring errFuncResult drops the root on the handler's result once xpcall has it: from here
+	// it is a host function's return value like any other, on its way to the Lua stack.
+	defer func() {
+		st.protectDepth--
+		st.catchDepth--
+		st.errFunc, st.errFuncResult = outerErrFunc, outerResult
+	}()
 	results, e := st.callLuaFromHost(th, fn, args)
 	if e != nil && e != errYieldSentinel && !e.handled {
 		// An error that never reached a raise point with the handler installed (one raised while
