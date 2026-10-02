@@ -382,6 +382,52 @@ stack traceback:
 			`local parts, i = {"return ", 42}, 0
 OUT = tostring(load(function() i = i + 1 return parts[i] end)())`,
 			`42`},
+		{"resume stays at the C limit while a handler runs past it",
+			`local t = setmetatable({}, {})
+getmetatable(t).__index = function(t, k) return t[k] end
+local co = coroutine.create(function() return "ran" end)
+local _, m = xpcall(function() return t.x end, function(m) return tostring(m) .. " | " .. tostring(select(2, coroutine.resume(co))) end)
+OUT = m`,
+			`x:2: C stack overflow | C stack overflow`},
+		{"LUA_ERRERR caught inside a handler has no position",
+			`local t = setmetatable({}, {})
+getmetatable(t).__index = function(t, k) return t[k] end
+local _, m = xpcall(function() return t.x end, function(m)
+  local ok, m2 = pcall(function() return t.y end)
+  return tostring(m) .. " | " .. tostring(ok) .. " " .. tostring(m2)
+end)
+OUT = m`,
+			`x:2: C stack overflow | false error in error handling`},
+		{"calling the handler at the C limit: a runtime error one level short",
+			`local n, limit = 0, nil
+local mt = {}
+mt.__index = function(t, k)
+  n = n + 1
+  if limit and n >= limit then return n + {} end
+  return t[k]
+end
+local t = setmetatable({}, mt)
+pcall(function() return t.x end)
+limit = n
+n = 0
+local _, m = xpcall(function() return t.x end, function(m) return "H:" .. tostring(m) end)
+OUT = m`,
+			`H:x:5: C stack overflow`},
+		{"calling the handler at the C limit: a host function raising one level short",
+			`local n, limit = 0, nil
+local mt = {}
+mt.__index = function(t, k)
+  n = n + 1
+  if limit and n >= limit then error("e") end
+  return t[k]
+end
+local t = setmetatable({}, mt)
+pcall(function() return t.x end)
+limit = n
+n = 0
+local _, m = xpcall(function() return t.x end, function(m) return "H:" .. tostring(m) end)
+OUT = m`,
+			`H:C stack overflow`},
 	} {
 		for _, force := range []bool{false, true} {
 			st := runTracebackCase(t, tc.src, force)

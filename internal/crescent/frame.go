@@ -40,8 +40,10 @@ func (st *State) cCallCheck() *LuaError {
 	case n < maxCCallDepth:
 		return nil
 	case n >= maxCCallDepth+maxCCallDepth>>3:
+		// luaD_seterrorobj's literal: thrown, never positioned.
 		e := errf("error in error handling")
 		e.errErr = true
+		e.MarkAnnotated()
 		return e
 	case n > maxCCallDepth:
 		return nil
