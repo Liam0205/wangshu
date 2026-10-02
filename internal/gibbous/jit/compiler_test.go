@@ -370,7 +370,7 @@ func (m *mockP4Host) TopHostAddr() uintptr { return 0 }
 // ExecuteCalleeFromInlineFrame mock stub (per §9.20.9 commit-2 + commit-5l/5p/5q signature fix).
 // Unit-test paths never reach it (archSupportsFrameInline=false blocks the real
 // call), so it returns 0=OK as a fallback.
-func (m *mockP4Host) ExecuteCalleeFromInlineFrame(base, callA, callArgCount, nresults int32) int32 {
+func (m *mockP4Host) ExecuteCalleeFromInlineFrame(base, pc, callA, callArgCount, nresults int32) int32 {
 	_ = base
 	_ = callA
 	_ = callArgCount
@@ -412,7 +412,7 @@ func (m *mockP4Host) CalleeSeg2SegRetCount(protoID uint32) int32  { _ = protoID;
 // ExecutePlainCallInlineFrame mock stub (issue #50 Spike 2): unit
 // tests don't emit the CALL EmitCallInline path (the segment guard is
 // gated on IC + arch flags), so this stub returns 0=OK as a safety net.
-func (m *mockP4Host) ExecutePlainCallInlineFrame(base, callA, nargs, nresults int32) int32 {
+func (m *mockP4Host) ExecutePlainCallInlineFrame(base, pc, callA, nargs, nresults int32) int32 {
 	_ = base
 	_ = callA
 	_ = nargs

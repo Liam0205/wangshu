@@ -522,7 +522,11 @@ type P4HostState interface {
 	// 1-return getter / callC=3..16 → N=2..15 return, dropping multi-ret;
 	// inside the helper enterLuaFrame sets nresults + the callee RETURN
 	// doReturn automatically lands R(callA..callA+nresults-1)).
-	ExecuteCalleeFromInlineFrame(base int32, callA int32, callArgCount int32, nresults int32) int32
+	//
+	// pc is the CALL's pc; the helper stores pc+1 as the caller's ci.pc before running the callee,
+	// as CallBaseline does, so a traceback taken inside the callee gives the caller's line and
+	// names the callee from that CALL.
+	ExecuteCalleeFromInlineFrame(base int32, pc int32, callA int32, callArgCount int32, nresults int32) int32
 
 	// ExecutePlainCallInlineFrame is the PJ10 native CALL variant of
 	// ExecuteCalleeFromInlineFrame — same shape (mmap segment builds
@@ -544,6 +548,8 @@ type P4HostState interface {
 	// Params:
 	//
 	//   - base:  jitCtx.valueStackBase (caller frame R(0) byte offset).
+	//   - pc:    the CALL's pc; stored as the caller's ci.pc = pc+1 before the callee runs, as
+	//     CallBaseline does, so a traceback inside the callee has the caller's line and callee name.
 	//   - callA: CALL.A field — R(callA) held the closure that the
 	//     segment reflected into CI[depth].cl.
 	//   - nargs: CALL.B - 1 (0..255).
@@ -551,7 +557,7 @@ type P4HostState interface {
 	//     rejects multret in the Spike 2 minimal form).
 	//
 	// Return: 0=OK / 1=ERR (state.pendingErr already set).
-	ExecutePlainCallInlineFrame(base int32, callA int32, nargs int32, nresults int32) int32
+	ExecutePlainCallInlineFrame(base int32, pc int32, callA int32, nargs int32, nresults int32) int32
 
 	// NativeCalleeSegAddr returns the PJ10 native mmap segment entry
 	// address for the callee Proto with the given protoID, or 0 if the

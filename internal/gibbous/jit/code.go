@@ -1126,7 +1126,7 @@ func (c *p4Code) runFrameInlineDispatcher(base int32) int32 {
 		//   - nresults: callC - 1 (callC=1=0-return setter/2=1-return getter/3..16=N=2..15
 		//     return drop multi-ret)
 		nresults := int32(c.callC) - 1
-		st := c.host.ExecuteCalleeFromInlineFrame(base, int32(c.callA), int32(c.callArgCount), nresults)
+		st := c.host.ExecuteCalleeFromInlineFrame(base, int32(c.retPC)-1, int32(c.callA), int32(c.callArgCount), nresults)
 		if st != 0 {
 			// error propagation (host-side raise already set pendingErr)
 			return 1

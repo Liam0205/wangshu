@@ -120,7 +120,7 @@ func (h *fakeHost) RefreshJitCtxAddrs(ctx *jit.JITContext, base int32) {
 
 // ExecuteCalleeFromInlineFrame is a Spike 1 Step C-1 helper (unused by
 // PJ10 native shim tests, we always return 0=OK).
-func (h *fakeHost) ExecuteCalleeFromInlineFrame(base, callA, callArgCount, nresults int32) int32 {
+func (h *fakeHost) ExecuteCalleeFromInlineFrame(base, pc, callA, callArgCount, nresults int32) int32 {
 	return 0
 }
 
@@ -132,7 +132,7 @@ func (h *fakeHost) ObserveCallCallee(base, a int32) uint64 { return 0 }
 // ExecutePlainCallInlineFrame stub (issue #50 Spike 2 plain-CALL
 // variant of ExecuteCalleeFromInlineFrame). Shim tests don't exercise
 // the CALL EmitCallInline path — always return 0 as a safety net.
-func (h *fakeHost) ExecutePlainCallInlineFrame(base, callA, nargs, nresults int32) int32 {
+func (h *fakeHost) ExecutePlainCallInlineFrame(base, pc, callA, nargs, nresults int32) int32 {
 	return 0
 }
 
