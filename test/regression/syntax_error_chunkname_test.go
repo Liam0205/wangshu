@@ -10,8 +10,10 @@ import (
 // TestSyntaxErrorChunkNameUsesMaxSrc covers the chunk name in compile-time errors: luaX_lexerror,
 // which every lexer, parser and code-generator error goes through, formats it with llex.c's MAXSRC
 // (80) where runtime positions, tracebacks and short_src use LUA_IDSIZE (60). Every chunk name was
-// formatted with 60, so a [string "..."] longer than 43 bytes, an "@file" longer than 52 or an
-// "=name" longer than 59 was cut early in syntax errors. Expectations are lua5.1's.
+// formatted with 60, so in syntax errors a [string "..."] first line longer than 43 bytes or an
+// "=name" longer than 59 was cut early. The "@file" form had its own off-by-four: it kept 56 bytes
+// of the tail where luaO_chunkid keeps bufflen - sizeof(" '...' ") = 52 at runtime (72 in syntax
+// errors). Expectations are lua5.1's.
 func TestSyntaxErrorChunkNameUsesMaxSrc(t *testing.T) {
 	const src = `local a60 = string.rep("a", 60)
 local a80 = string.rep("a", 80)
