@@ -769,8 +769,9 @@ func (vm *VM) callHandlerOnErrorStack(th *Thread, handler, errval value.Value) (
 > `"error in error handling"`。另外 xpcall 只返回 handler 的**一个**结果(`luaD_call(L, ..., 1)`)。
 > C 调用深度也照 `luaD_call` 处理:到上限(200)时报 `C stack overflow`,而这个错误本身就要调 handler,所以
 > handler 可以越过上限继续运行，超过上限八分之一(225)才是 `LUA_ERRERR`;报错的那次调用在 5.1 里已经把深度加了一，
-> handler 比出错处深一层。望舒的 `State.cCallCheck` 是这条规则，所有宿主进入 Lua 的入口(`callLuaFromHostNamed`、
-> `Resume`、gibbous 的调用 helper)都经过它。(深度的起点与 lua5.1 独立解释器差 3 层，是早已存在的差异，不在本轮
+> handler 比出错处深一层;`LUA_ERRERR` 的错误值是字面量，不带位置。望舒的 `State.cCallCheck` 是这条规则，宿主进入
+> Lua 的入口(`callLuaFromHostNamed`、gibbous 的调用 helper)都经过它。`coroutine.resume` 例外:`lua_resume` 的检查
+> 是不留余量的 `nCcalls >= LUAI_MAXCCALLS`,所以 handler 越过上限运行时调用 resume 仍然得到 `C stack overflow`。(深度的起点与 lua5.1 独立解释器差 3 层，是早已存在的差异，不在本轮
 > 范围内。)
 
 ---

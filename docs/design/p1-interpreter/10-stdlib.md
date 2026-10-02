@@ -821,6 +821,8 @@ STW §7.3)。本文只列 opt 字符串 → 行为映射(对齐 Lua 5.1):
 | `load(func [,name])` | △ **简化**:5.1 的 `load` 取一个 reader 函数,反复调它拿源码片段拼成完整 chunk 再编译。P1 实现 reader 循环 + Compile | `Compile` + reader 重入(callLuaFromHost) | reader 函数重入(§1.4);P1 可先支持「reader 返回完整串一次」简化形式,完整分块记缺口 |
 | `loadfile([fn])` | △ **部分**:读文件字节(io,§8)+ Compile;无 fn 读 stdin | io 文件读 + Compile | 依赖 io 库文件读(§8 P1 范围);P1 至少支持读文件路径 |
 | `dofile([fn])` | △ **部分**:= `loadfile` + 立即调用(callLuaFromHost) | loadfile + 重入 | 同 loadfile 依赖 |
+| `require(modname)` | **❌/△ 缺口**:5.1 module 系统(`package.loaders`/`package.path`/`package.loaded`/`package.cpath`) | package 库 + 文件查找 | **P1 缺口或极简**:见下 |
+| `module(name, ...)` | **❌ 缺口** | package 系统 | P1 不做 |
 
 > **`load` 的 reader 与错误(2026-10-02 与 `lua5.1` 核对,#279 本地审查补修)**:5.1 在 `luaD_protectedparser`
 > 里调 reader,这是一层**不改 message handler 的保护调用**。所以 reader 抛出的错误被 load 接住、作为
@@ -829,8 +831,6 @@ STW §7.3)。本文只列 opt 字符串 → 行为映射(对齐 Lua 5.1):
 > `luaL_error` 同样走这一套，位置取 load 的调用方(调用方是 C 函数时不带位置);数字片段按 `lua_tolstring`
 > 转成字符串接受。语法错误走 `luaD_throw`,不调 handler。望舒用 `State.ProtectedCallKeepingHandler` 调 reader,
 > 用 `State.RaiseCaughtInHost` 报 reader 返回值不对的错误(`internal/stdlib/stdlib.go` 的 load)。
-| `require(modname)` | **❌/△ 缺口**:5.1 module 系统(`package.loaders`/`package.path`/`package.loaded`/`package.cpath`) | package 库 + 文件查找 | **P1 缺口或极简**:见下 |
-| `module(name, ...)` | **❌ 缺口** | package 系统 | P1 不做 |
 
 **`require`/`module`/`package` 系统的 P1 决策**:
 
