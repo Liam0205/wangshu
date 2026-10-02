@@ -77,8 +77,9 @@ metadata:
     traceback 多或少一行 `[C]: ?`,外层协程死后 traceback 为空。改为同一个错误值新建错误对象。之后的第十一、十二轮
     只剩文档小问题(提交说明里节号写错、少句号)。
 15. **第二次全范围终审**(阻塞 1、小问题 2)。本地审查之前的最初修复(第 3 条，提交 `4801209`)就把 `DoCall` /
-    `CallBaseline` / `TailCall` 改成写回调用方 `ci.pc = pc + 1`,同样实现「编译帧调 Lua」的两个 inline-frame helper 却没改，参数里也没有 pc。P4 的调用点要先成功
-    一次才改走 `ExecutePlainCallInlineFrame`,而编译层回归用例的预热调用每次都报错，所以十几轮都没测到。
+    `CallBaseline` / `TailCall` 改成写回调用方 `ci.pc = pc + 1`,同样实现「编译帧调 Lua」的两个 inline-frame
+    helper 却没改，参数里也没有 pc。P4 的调用点要先成功一次才改走 `ExecutePlainCallInlineFrame`,而编译层回归
+    用例的预热调用每次都报错，所以十几轮都没测到。
 
 ## 教训
 
@@ -104,7 +105,8 @@ metadata:
 
 #279 的用例在 P3/P4 下各跑 force-all 和不升层两遍，但 gibbous 调用 helper 的 pc 改动去掉后它们照样通过。force-all
 只是打开升层开关，函数能不能升层还要过可编译性检查;traceback 用例的帧大多调用 `debug.traceback` 等宿主函数，
-没有确认它们是否升层。以后给编译层加的用例，要么断言升层计数，要么做一次变异确认用例对编译层的改动敏感。这属于 [[prove-the-path-under-test]] 说的「绿色不等于在测你以为在测的路径」。
+没有确认它们是否升层。以后给编译层加的用例，要么断言升层计数，要么做一次变异确认用例对编译层的改动敏感。
+这属于 [[prove-the-path-under-test]] 说的「绿色不等于在测你以为在测的路径」。
 
 ### 4. 冻结一类错误之前，先查谁在依赖它原来的位置
 
