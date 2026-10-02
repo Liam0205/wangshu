@@ -184,6 +184,10 @@ resume 本身是 protected 边界,§5.2):
 | `running` | `cannot resume non-suspended coroutine` | 不能 resume 正在跑的协程(它就是当前在跑的,resume 自己无意义) |
 | `normal` | `cannot resume non-suspended coroutine` | 它在 resume 链上(已被更外层 resume),再 resume 会形成环 |
 
+> **订正(2026-10-02 与 `lua5.1` 核对)**:下面这段的说法不对。lua5.1 按 `lbaselib.c` 的 `statnames` 区分，
+> 报 `cannot resume running coroutine` / `cannot resume normal coroutine`;`non-suspended` 是 5.2 的措辞。
+> 望舒目前仍报 `non-suspended`,代码与本节一起在 #281 修正。
+>
 > **`running` 与 `normal` 共用 `non-suspended` 措辞**:Lua 5.1 对"目标非 suspended"统一报
 > `cannot resume non-suspended coroutine`,只有 dead 单独报 `cannot resume dead coroutine`。**精确措辞
 > 待 [12](./12-testing-difftest.md) 差分核对**(冠词/标点),本文给骨架不编造(§9 呼应 09 的措辞纪律)。

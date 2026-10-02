@@ -768,11 +768,15 @@ func (vm *VM) callHandlerOnErrorStack(th *Thread, handler, errval value.Value) (
 > handler 自身的错误在它的出错点再调 handler,内层调用的结果就是 xpcall 的结果;内层也失败或进不去时给
 > `"error in error handling"`。另外 xpcall 只返回 handler 的**一个**结果(`luaD_call(L, ..., 1)`)。
 > C 调用深度也照 `luaD_call` 处理:到上限(200)时报 `C stack overflow`,而这个错误本身就要调 handler,所以
-> handler 可以越过上限继续运行，超过上限八分之一(225)才是 `LUA_ERRERR`;报错的那次调用在 5.1 里已经把深度加了一，
-> handler 比出错处深一层;`LUA_ERRERR` 的错误值是字面量，不带位置。望舒的 `State.cCallCheck` 是这条规则，宿主进入
-> Lua 的入口(`callLuaFromHostNamed`、gibbous 的调用 helper)都经过它。`coroutine.resume` 例外:`lua_resume` 的检查
-> 是不留余量的 `nCcalls >= LUAI_MAXCCALLS`,所以 handler 越过上限运行时调用 resume 仍然得到 `C stack overflow`。(深度的起点与 lua5.1 独立解释器差 3 层，是早已存在的差异，不在本轮
-> 范围内。)
+> handler 可以越过上限继续运行，超过上限八分之一(225)才是 `LUA_ERRERR`;报错的那次调用在 5.1 里已经把深度加了
+> 一，handler 比出错处深一层;`LUA_ERRERR` 的错误值是字面量，不带位置。望舒的 `State.cCallCheck` 是这条规则，宿主
+> 进入 Lua 的入口(`callLuaFromHostNamed`、gibbous 的调用 helper)都经过它。另外两处读同一个深度、但不留余量:
+> `lua_resume` 的检查是 `nCcalls >= LUAI_MAXCCALLS`,handler 越过上限运行时调用 resume 仍然得到
+> `C stack overflow`(没启动过的协程还会因此变成 dead,`resume_error` 把它的函数也清掉了);`lparser.c` 的
+> `enterlevel` 把语法层数也记在 `nCcalls` 上，所以在越深的调用里 `loadstring` 能嵌套的层数越少，handler 越过上限
+> 运行时连 `loadstring("return 1")` 都会报 `chunk has too many syntax levels`(望舒把当前深度传给
+> `parse.ParseAtCDepth`)。(深度的起点与 lua5.1 独立解释器差 3 层，语法层数上限差 2 层，都是早已存在的差异，登记为
+> 已知限制，见 implementation-progress 的对账表。)
 
 ---
 

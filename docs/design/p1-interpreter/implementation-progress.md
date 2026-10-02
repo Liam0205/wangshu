@@ -118,6 +118,8 @@
 | executeSignal 三态 | sigReturn/sigYield/sigError 枚举(08 §3.3) | 显式 *LuaError 返回 + errYieldSentinel 哨兵 | 同一冒泡通道,哨兵区分;08 §3.4 "yield↔error 对称"的最小实现 |
 | 协程对象 | Thread 对象住 arena(01 §5.6) | lightuserdata 句柄 + Go 注册表 | type() 返回 "thread" 语义一致;arena Thread 对象随值栈 arena 化一并做 |
 | xpcall handler 时机 | 栈展开前调用(09) | 出错点调用(2026-10-02 起) | **已对齐**(#279 本地审查补修):原先在捕获后调用、栈已回滚,`xpcall(f, debug.traceback)` 只看到调用 xpcall 的那一帧;现在按 5.1 的 `luaG_errormsg` 在出错点调用，见 09 §6.2 |
+| C 调用深度上限的起点 | `LUAI_MAXCCALLS` = 200,lua5.1 独立解释器进入主 chunk 前已用掉几层(lua.c 的 `docall`、`lua_pcall` 等) | 主 chunk 从深度 0 开始数 | **已知限制**(2026-10-02 #276-#279 本地审查登记):同样写法，望舒比 lua5.1 多走 3 层才报 `C stack overflow`(`__index` 自递归 199 对 196,master `0fdd72e` 相同)。上限本身一致，差的是独立解释器的启动开销；嵌入式使用没有 lua.c 那几层，不打算模仿。差分侧按 `SkipClassError` 的「实现常数类护栏」跳过 |
+| 语法层数上限 | `lparser.c` 的 `enterlevel` 记在 `nCcalls` 上，同一个 200 | `parse.maxParseDepth` = 200,减去当前 C 调用深度(`ParseAtCDepth`) | **已知限制**(同上登记):随调用深度的变化已对齐，但每个深度下望舒都比 lua5.1 多 2 层(顶层 198 对 196),来源与上一行相同(起点不同)加上解析器对块与表达式计层的位置不同。差分侧按「实现常数类护栏」跳过 |
 | ephemeron | 键活则值无条件活(07 §13.5 P1 简化,自带) | 同设计 | 一致(设计本身即简化) |
 
 ## 重要实现决策与差分修偏记录
@@ -557,8 +559,8 @@
   | 本地审查补修:`debug.traceback(co)` 与数字字符串 level | `internal/crescent/coroutine.go::CoTraceback`、`internal/stdlib/tablelib.go::debugFnTraceback` | 见 09 §13.1。原先把协程句柄当成非字符串 message 原样返回;level 只认数字 |
   | 本地审查补修：非字符串错误值不附 traceback | `internal/crescent/errors.go::wantsTraceback` | lua.c 的处理函数对非字符串错误值原样返回，未捕获的 `error({})` 不带 traceback |
   | 本地审查第二轮:handler 的 C 调用深度余量 | `internal/crescent/frame.go::cCallCheck`、`errors.go::runErrFunc` | handler 改在出错点调用后，`C stack overflow` 发生时深度已到上限，调 handler 的入口检查立刻失败，xpcall 一律得到 `error in error handling`。照 `luaD_call`:到上限报错，越过上限八分之一才是 `LUA_ERRERR`,中间只有 handler 能进入;为 C 深度错误调 handler 时深度加一(5.1 报错的那次调用已经加过) |
-  | 本地审查第三轮:resume 与 `LUA_ERRERR` | `internal/crescent/coroutine.go::Resume`、`frame.go::cCallCheck` | 第二轮把 `Resume` 也接到了 `cCallCheck`,但 `lua_resume` 的检查是不留余量的 `nCcalls >= LUAI_MAXCCALLS`:handler 越过上限运行时，协程不该被恢复。改回原来的写法。`LUA_ERRERR` 的错误值是 `luaD_seterrorobj` 的字面量，不带位置，构造时冻结。另补「调 handler 本身撞上上限」分支的两条用例 |
   | 本地审查第二轮:load 的 reader | `internal/stdlib/stdlib.go` 的 load、`meta.go::ProtectedCallKeepingHandler` / `RaiseCaughtInHost` | reader 原先经 `ProtectedCallDirect` 调用、在 Go 侧吞掉错误，出错点照样当作「协程将死」存了栈，协程正常结束后 `debug.traceback(co)` 显示 reader 出错时的栈。现在 reader 走不改 handler 的保护调用(`State.catchDepth` 计入),handler 的结果成为 load 返回的 msg;reader 返回非字符串时的错误补上调用方位置并经过出错点处理;数字片段照 `lua_isstring` 接受。见 10 §4.7 的补记 |
+  | 本地审查第三轮:resume 与 `LUA_ERRERR` | `internal/crescent/coroutine.go::Resume`、`frame.go::cCallCheck` | 第二轮把 `Resume` 也接到了 `cCallCheck`,但 `lua_resume` 的检查是不留余量的 `nCcalls >= LUAI_MAXCCALLS`:handler 越过上限运行时，协程不该被恢复。改回原来的写法;没启动过的协程在这里被拒时照 `resume_error` 变成 dead。`lparser.c` 的 `enterlevel` 也把语法层数记在同一个深度上，`loadstring` 改为把当前深度传给 `parse.ParseAtCDepth`(第四轮补)。`LUA_ERRERR` 的错误值是 `luaD_seterrorobj` 的字面量，不带位置，构造时冻结。另补「调 handler 本身撞上上限」分支的两条用例 |
 
   验证：四个 regression 文件(`issue276_*` / `issue277_*` / `issue278_*` / `issue279_*`)期望值逐条用 `lua5.1` 跑出;
   #279 的用例在 P1、P3、P4 下各跑一遍 force-all 与不升层，但这些用例调用 `debug.traceback` 等不在白名单里的函数，
