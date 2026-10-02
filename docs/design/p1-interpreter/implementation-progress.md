@@ -557,6 +557,7 @@
   | 本地审查补修:`debug.traceback(co)` 与数字字符串 level | `internal/crescent/coroutine.go::CoTraceback`、`internal/stdlib/tablelib.go::debugFnTraceback` | 见 09 §13.1。原先把协程句柄当成非字符串 message 原样返回;level 只认数字 |
   | 本地审查补修：非字符串错误值不附 traceback | `internal/crescent/errors.go::wantsTraceback` | lua.c 的处理函数对非字符串错误值原样返回，未捕获的 `error({})` 不带 traceback |
   | 本地审查第二轮:handler 的 C 调用深度余量 | `internal/crescent/frame.go::cCallCheck`、`errors.go::runErrFunc` | handler 改在出错点调用后，`C stack overflow` 发生时深度已到上限，调 handler 的入口检查立刻失败，xpcall 一律得到 `error in error handling`。照 `luaD_call`:到上限报错，越过上限八分之一才是 `LUA_ERRERR`,中间只有 handler 能进入;为 C 深度错误调 handler 时深度加一(5.1 报错的那次调用已经加过) |
+  | 本地审查第三轮:resume 与 `LUA_ERRERR` | `internal/crescent/coroutine.go::Resume`、`frame.go::cCallCheck` | 第二轮把 `Resume` 也接到了 `cCallCheck`,但 `lua_resume` 的检查是不留余量的 `nCcalls >= LUAI_MAXCCALLS`:handler 越过上限运行时，协程不该被恢复。改回原来的写法。`LUA_ERRERR` 的错误值是 `luaD_seterrorobj` 的字面量，不带位置，构造时冻结。另补「调 handler 本身撞上上限」分支的两条用例 |
   | 本地审查第二轮:load 的 reader | `internal/stdlib/stdlib.go` 的 load、`meta.go::ProtectedCallKeepingHandler` / `RaiseCaughtInHost` | reader 原先经 `ProtectedCallDirect` 调用、在 Go 侧吞掉错误，出错点照样当作「协程将死」存了栈，协程正常结束后 `debug.traceback(co)` 显示 reader 出错时的栈。现在 reader 走不改 handler 的保护调用(`State.catchDepth` 计入),handler 的结果成为 load 返回的 msg;reader 返回非字符串时的错误补上调用方位置并经过出错点处理;数字片段照 `lua_isstring` 接受。见 10 §4.7 的补记 |
 
   验证：四个 regression 文件(`issue276_*` / `issue277_*` / `issue278_*` / `issue279_*`)期望值逐条用 `lua5.1` 跑出;
