@@ -9,6 +9,7 @@ package stdlib
 import (
 	"fmt"
 	"math"
+	"os"
 	"strings"
 
 	"github.com/Liam0205/wangshu/internal/arena"
@@ -565,7 +566,23 @@ func baseFnPrint(st *crescent.State, args []value.Value) ([]value.Value, *cresce
 	if e != nil {
 		return nil, e
 	}
-	parts := make([]string, len(args))
+	// luaB_print writes each argument as soon as tostring has converted it (fputs per argument, the
+	// tab before every one after the first), so output from a __tostring handler interleaves with
+	// it and the arguments converted before a failing one are already written when the error is
+	// raised. Collecting everything first and printing at the end wrote nothing in that case.
+	//
+	// Embedded NULs are WRITTEN, not truncated -- a deliberate deviation.
+	//
+	// PUC's luaB_print uses fputs, which stops at the first NUL, so
+	// print("a\0b") emits just "a" and silently drops the rest. That is an
+	// artifact of the C string call, not a Lua semantic: 5.1 strings are
+	// explicitly 8-bit clean and may contain NULs, and PUC's own io.write uses
+	// fwrite WITH the length and does not truncate -- so the reference is
+	// internally inconsistent here. Matching the artifact would mean losing user
+	// data on purpose.
+	//
+	// The differential harness captures print through its own accumulator rather
+	// than a C FILE*, so this does not surface as a divergence there.
 	for i, a := range args {
 		res, e := st.ProtectedCallDirect(tostr, []value.Value{a})
 		if e != nil {
@@ -579,21 +596,12 @@ func baseFnPrint(st *crescent.State, args []value.Value) ([]value.Value, *cresce
 		if value.Tag(raw) != value.TagString && !value.IsNumber(raw) {
 			return nil, crescent.NewError("'tostring' must return a string to 'print'")
 		}
-		parts[i] = valueToString(st, raw)
+		if i > 0 {
+			_, _ = os.Stdout.WriteString("\t")
+		}
+		_, _ = os.Stdout.WriteString(valueToString(st, raw))
 	}
-	// Embedded NULs are WRITTEN, not truncated -- a deliberate deviation.
-	//
-	// PUC's luaB_print uses fputs, which stops at the first NUL, so
-	// print("a\0b") emits just "a" and silently drops the rest. That is an
-	// artifact of the C string call, not a Lua semantic: 5.1 strings are
-	// explicitly 8-bit clean and may contain NULs, and PUC's own io.write uses
-	// fwrite WITH the length and does not truncate -- so the reference is
-	// internally inconsistent here. Matching the artifact would mean losing user
-	// data on purpose.
-	//
-	// The differential harness captures print through its own accumulator rather
-	// than a C FILE*, so this does not surface as a divergence there.
-	fmt.Println(strings.Join(parts, "\t"))
+	_, _ = os.Stdout.WriteString("\n")
 	return nil, nil
 }
 
