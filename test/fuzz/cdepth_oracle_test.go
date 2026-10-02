@@ -20,35 +20,43 @@ import (
 // boundary itself. Standalone lua5.1 is one level shallower again (lua.c's lua_cpcall(pmain)), which
 // an embedded VM does not have.
 //
-// Each shape also runs force-promoted when the build has a compiled tier. CI runs this test, and
-// TestCDepthOfAPromotedFunctionCalledFromGo below, by name in the oracle-smoke job.
+// Each shape also runs force-promoted when the build has a compiled tier. Only the shapes marked
+// compiled promote their recursing function on both P3 and P4, and for those the test requires it. In
+// the others at least one tier leaves the work in the interpreter (the recursing function is not
+// promoted, it runs on a coroutine, which never enters compiled code, or, in the syntax-level search,
+// there is no function besides the main chunk), so there the force-all pass re-checks the interpreter
+// path. TestCDepthOfAPromotedFunctionCalledFromGo below covers the
+// compiled-tier entry from Go. CI runs both tests by name in the oracle-smoke job.
 func TestCDepthMatchesEmbeddedPUC(t *testing.T) {
 	keep := enumerateGlobals(t)
 	prelude := oracle.Prelude(keep)
-	for _, tc := range []struct{ name, src string }{
+	for _, tc := range []struct {
+		name, src string
+		compiled  bool
+	}{
 		{"__index recursion", `local n = 0
 local t = setmetatable({}, {})
 getmetatable(t).__index = function(t, k) n = n + 1 return t[k] end
 pcall(function() return t.x end)
-print(n)`},
+print(n)`, true},
 		{"pcall recursion", `local n = 0
 local function f() n = n + 1 pcall(f) end
 f()
-print(n)`},
+print(n)`, false},
 		{"sort comparator recursion", `local n = 0
 local function f() n = n + 1 table.sort({2, 1}, function(a, b) f() return a < b end) end
 pcall(f)
-print(n)`},
+print(n)`, true},
 		{"nested resume", `local n = 0
 local function f() n = n + 1 coroutine.resume(coroutine.create(f)) end
 f()
-print(n)`},
+print(n)`, false},
 		{"syntax levels at top level", `local lo, hi = 0, 400
 while lo < hi do
   local mid = math.floor((lo + hi + 1) / 2)
   if loadstring("return " .. string.rep("(", mid) .. "1" .. string.rep(")", mid)) then lo = mid else hi = mid - 1 end
 end
-print(lo)`},
+print(lo)`, false},
 		{"deepest level can compile and resume", `local last, rs
 local t = setmetatable({}, {})
 getmetatable(t).__index = function(t, k)
@@ -57,7 +65,7 @@ getmetatable(t).__index = function(t, k)
   return t[k]
 end
 pcall(function() return t.x end)
-print(last, rs)`},
+print(last, rs)`, false},
 	} {
 		or := oracle.Exec(tc.src, prelude, oracle.Limits{})
 		if or.Verdict != oracle.VerdictOK {
@@ -73,14 +81,16 @@ print(last, rs)`},
 		if !tieredBuild {
 			continue
 		}
-		tv, tout, terr, _ := runTieredSide(t, tc.src, prelude)
+		tv, tout, terr, promoted := runTieredSide(t, tc.src, prelude)
 		if tv != oracle.VerdictOK {
 			t.Fatalf("%s (force-all): wangshu %v: %s", tc.name, tv, terr)
+		}
+		if tc.compiled && !promoted {
+			t.Errorf("%s (force-all): nothing beyond the main chunk was promoted, so the compiled tier was not exercised", tc.name)
 		}
 		if or.Output != tout {
 			t.Errorf("%s (force-all): oracle %q, wangshu %q", tc.name, or.Output, tout)
 		}
-
 	}
 }
 

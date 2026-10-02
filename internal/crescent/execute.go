@@ -323,11 +323,11 @@ func (st *State) executeLoop(th *thread, entryDepth int) *LuaError {
 			// currentCI and continue execute() at the caller's next
 			// instruction after CALL.
 			//
-			// nCcalls watermark (gibbousReentryCCallCap): a gibbous tail
-			// callee that itself TAILCALLs re-enters Go per level (Run →
-			// host.TailCall → executeFrom → here → Run ...), so unbounded
-			// proper tail recursion — legal in PUC 5.1 — would trip
-			// maxCCallDepth. Past the watermark, keep interpreting: the
+			// Re-entry watermark (gibbousReentryCCallCap, taken against
+			// goDepth): a gibbous tail callee that itself TAILCALLs re-enters
+			// Go per level (Run → host.TailCall → executeFrom → here → Run
+			// ...), so unbounded proper tail recursion — legal in PUC 5.1 —
+			// would exhaust the Go-stack budget. Past the watermark, keep interpreting: the
 			// interp TAILCALL is O(1) depth with zero Go re-entry.
 			//
 			// Only after a LUA tail call (next != nil), which entered a fresh frame at pc 0.
