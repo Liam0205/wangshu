@@ -471,6 +471,38 @@ end
 pcall(function() return t.x end)
 OUT = tostring(last) .. " " .. tostring(rs)`,
 			`true true`},
+		{"a table error rethrown by a wrap function: [C] lines above the wrap call",
+			`local w2 = coroutine.wrap(function() table.foreach({[{}] = 1}, error) end)
+local function caller() w2() end
+OUT = select(2, xpcall(caller, function(m) return debug.traceback("T") end))`,
+			`T
+stack traceback:
+	x:3: in function <x:3>
+	[C]: in function 'w2'
+	x:2: in function <x:2>
+	[C]: in function 'xpcall'
+	x:3: in main chunk
+	[C]: ?`},
+		{"a table error rethrown by a wrap function called by xpcall itself",
+			`OUT = select(2, xpcall(coroutine.wrap(function() error({}) end), function() return debug.traceback("T") end))`,
+			`T
+stack traceback:
+	x:1: in function <x:1>
+	[C]: ?
+	[C]: in function 'xpcall'
+	x:1: in main chunk
+	[C]: ?`},
+		{"an outer coroutine killed by a table error from a wrap function keeps its frames",
+			`local outer = coroutine.create(function()
+  local w = coroutine.wrap(function() error({}) end)
+  w()
+end)
+local ok = coroutine.resume(outer)
+OUT = tostring(ok) .. "\n" .. debug.traceback(outer)`,
+			`false
+stack traceback:
+	[C]: in function 'w'
+	x:3: in function <x:1>`},
 	} {
 		for _, force := range []bool{false, true} {
 			st := runTracebackCase(t, tc.src, force)

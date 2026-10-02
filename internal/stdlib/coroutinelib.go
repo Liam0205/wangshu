@@ -99,9 +99,17 @@ func coFnWrap(st *crescent.State, args []value.Value) ([]value.Value, *crescent.
 // gets it from the same machinery that prefixes a luaL_error: the interpreter's CALL site adds the
 // caller's line, and a host caller such as pcall freezes it bare, which is what luaL_where gives
 // for a C frame.
+//
+// Any other value is rethrown unchanged, but in a fresh error object too: the coroutine's one
+// carries raise-point state about the coroutine's own stack (how many host frames sat above its
+// innermost Lua frame, whether the dying coroutine's frames were already kept), which on the
+// caller's thread would give an xpcall handler's traceback the wrong [C] lines and leave an outer
+// coroutine dying of this error with an empty traceback.
 func wrapError(st *crescent.State, e *crescent.LuaError) *crescent.LuaError {
 	if e.HasValue && value.Tag(e.Value) != value.TagString && !value.IsNumber(e.Value) {
-		return e
+		ne := crescent.NewErrorVal(e.Value, e.Msg)
+		ne.MarkAnnotated()
+		return ne
 	}
 	msg := e.Msg
 	if e.HasValue {
