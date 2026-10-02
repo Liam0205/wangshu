@@ -355,7 +355,7 @@ func (t *Trampoline) tailEnterGibbous(st *State, f *frame, i Instruction, cl val
     //   ★ 不 pushCallInfo —— 复用当前 ci(05 §7.5 step3 的 CallInfo 原地改写)。
     ci := th.curCI()
     ci.protoID = protoIDOf(cl)
-    ci.tailcall = true        // bit48 callStatus_tailcall(traceback 显示 (...tail calls...))
+    ci.tailcall = true        // bit48 callStatus_tailcall(traceback 里被替换的每一帧显示为 (tail call): ?,见 P1 09 §7.1)
     ci.gibbous = true         // ★ bit50 改写为 gibbous(本帧从此走 Wasm 路径)
     ci.cl = cl
 

@@ -1412,7 +1412,7 @@ debug.traceback(message, level):
 - **C stack overflow 的错误处理余量**:~~§10 给 `pcall` 保留 C 栈 buffer(`nCcalls` 超 200 但允许错误路径短暂超到
   ~220),精确余量值待 12 核对~~ **已核对并实现(2026-10-02,#279 本地审查)**:新深度到 200 报错，余量是到 225,只给
   xpcall handler,见 §10 订正与 §6.5 订正。
-- **`debug.traceback(co)` 跨协程**:§13.1/§13.3 P1 简化为只支持当前 thread,跨 co 回溯记缺口。
+- **`debug.traceback(co)` 跨协程**:~~§13.1/§13.3 P1 简化为只支持当前 thread,跨 co 回溯记缺口~~ **已实现(2026-10-02,#279)**:挂起、normal、出错死亡的协程都按 5.1 给出栈，见 §13.1
 - **`debug.getinfo` 的 `linedefined`/`lastlinedefined`**:§13.2 需 Proto 持久化函数定义起止行(类似 LineInfo
   的额外调试字段),是否回填 01 待定;P1 可缺(返回 -1 或省字段)。
 - **`LuaError.level` 字段冗余**:§1.1 指出 level 在构造位置前缀后即无意义,是否从 struct 移除待定(保留无害)。
