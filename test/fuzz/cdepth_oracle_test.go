@@ -20,43 +20,41 @@ import (
 // boundary itself. Standalone lua5.1 is one level shallower again (lua.c's lua_cpcall(pmain)), which
 // an embedded VM does not have.
 //
-// Each shape also runs force-promoted when the build has a compiled tier. Only the shapes marked
-// compiled promote their recursing function on both P3 and P4, and for those the test requires it. In
-// the others at least one tier leaves the work in the interpreter (the recursing function is not
-// promoted, it runs on a coroutine, which never enters compiled code, or, in the syntax-level search,
-// there is no function besides the main chunk), so there the force-all pass re-checks the interpreter
-// path. TestCDepthOfAPromotedFunctionCalledFromGo below covers the
-// compiled-tier entry from Go. CI runs both tests by name in the oracle-smoke job.
+// Each shape also runs force-promoted when the build has a compiled tier, and must still match the
+// oracle. That pass does not show the recursion ran compiled: force-all only lifts the promotion
+// threshold, several of these functions fail the compilability check (pcall, loadstring, coroutines),
+// and PromotionCount cannot tell which function was promoted (the prelude's own helpers count too).
+// Whether a compiled frame calling a Lua function costs a C level is checked per re-entry path by
+// TestCompiledLuaCallsAddNoCLevel (test/regression) and TestInlineFrameCalleeAddsNoCLevel
+// (internal/crescent); TestCDepthOfAPromotedFunctionCalledFromGo below covers a promoted function
+// entered from Go. CI runs both tests here by name in the oracle-smoke job.
 func TestCDepthMatchesEmbeddedPUC(t *testing.T) {
 	keep := enumerateGlobals(t)
 	prelude := oracle.Prelude(keep)
-	for _, tc := range []struct {
-		name, src string
-		compiled  bool
-	}{
+	for _, tc := range []struct{ name, src string }{
 		{"__index recursion", `local n = 0
 local t = setmetatable({}, {})
 getmetatable(t).__index = function(t, k) n = n + 1 return t[k] end
 pcall(function() return t.x end)
-print(n)`, true},
+print(n)`},
 		{"pcall recursion", `local n = 0
 local function f() n = n + 1 pcall(f) end
 f()
-print(n)`, false},
+print(n)`},
 		{"sort comparator recursion", `local n = 0
 local function f() n = n + 1 table.sort({2, 1}, function(a, b) f() return a < b end) end
 pcall(f)
-print(n)`, true},
+print(n)`},
 		{"nested resume", `local n = 0
 local function f() n = n + 1 coroutine.resume(coroutine.create(f)) end
 f()
-print(n)`, false},
+print(n)`},
 		{"syntax levels at top level", `local lo, hi = 0, 400
 while lo < hi do
   local mid = math.floor((lo + hi + 1) / 2)
   if loadstring("return " .. string.rep("(", mid) .. "1" .. string.rep(")", mid)) then lo = mid else hi = mid - 1 end
 end
-print(lo)`, false},
+print(lo)`},
 		{"deepest level can compile and resume", `local last, rs
 local t = setmetatable({}, {})
 getmetatable(t).__index = function(t, k)
@@ -65,7 +63,7 @@ getmetatable(t).__index = function(t, k)
   return t[k]
 end
 pcall(function() return t.x end)
-print(last, rs)`, false},
+print(last, rs)`},
 	} {
 		or := oracle.Exec(tc.src, prelude, oracle.Limits{})
 		if or.Verdict != oracle.VerdictOK {
@@ -81,12 +79,9 @@ print(last, rs)`, false},
 		if !tieredBuild {
 			continue
 		}
-		tv, tout, terr, promoted := runTieredSide(t, tc.src, prelude)
+		tv, tout, terr, _ := runTieredSide(t, tc.src, prelude)
 		if tv != oracle.VerdictOK {
 			t.Fatalf("%s (force-all): wangshu %v: %s", tc.name, tv, terr)
-		}
-		if tc.compiled && !promoted {
-			t.Errorf("%s (force-all): nothing beyond the main chunk was promoted, so the compiled tier was not exercised", tc.name)
 		}
 		if or.Output != tout {
 			t.Errorf("%s (force-all): oracle %q, wangshu %q", tc.name, or.Output, tout)
@@ -141,7 +136,10 @@ N = function() return n end`
 	run(prelude)
 	afterPrelude := st.PromotionCount()
 	run(src)
-	// The script's main chunk is one promotion; top has to be another.
+	// The script's main chunk is one promotion and top should be another. This is only a coarse guard:
+	// PromotionCount cannot say which function was promoted, so it would not notice top dropping out
+	// while some other function got promoted. That top does take the enterGibbous branch today was
+	// shown by mutation: with that branch not counting its C level, this test fails on P3 and P4.
 	if st.PromotionCount() < afterPrelude+2 {
 		t.Fatalf("top was not promoted before the Go-side call (promotions %d -> %d)", afterPrelude, st.PromotionCount())
 	}
