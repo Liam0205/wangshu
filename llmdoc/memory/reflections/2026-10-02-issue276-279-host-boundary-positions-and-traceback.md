@@ -7,7 +7,9 @@ description: >
   **位置和层级取决于调用方是 Lua 帧还是 C 帧，判断「与 lua5.1 一致」必须两种调用方都测**(#202 把 wrap 一项判为不成立，
   只测了经 pcall 的写法);**延迟消费「当前栈」的状态会被中途的截栈改掉，traceback 要在出错点取**(R3c-fix 之后第二个样本);
   **force-all 用例不等于升层路径被测到，要确认被测的帧真的升了层**;
-  **把某类错误统一冻结之前，先查有没有别的路径正好借这个错误拿到正确的位置**(本地审查发现 `__newindex = rawset` 因此回归)。
+  **把某类错误统一冻结之前，先查有没有别的路径正好借这个错误拿到正确的位置**(本地审查发现 `__newindex = rawset` 因此回归);
+  **用快捷路径省掉一次调用时，把被省掉的入口顺带做的检查逐项照做**(同分支顺带修的 `print` 逐个写出因此漏了 C 深度检查;
+  另一项顺带修的是语法错误里块名的截断长度)。
 metadata:
   type: reflection
   date: 2026-10-02
@@ -19,7 +21,10 @@ metadata:
 > `objname.go`、`call.go`、`execute.go`、`coroutine.go`、`state.go`、`gibbous_host.go` 与
 > `internal/stdlib/coroutinelib.go`;新测试 `test/regression/issue27{6,7,8,9}_*_test.go` 与
 > `internal/crescent/residual_test.go::TestTraceback_NotBuiltForCaughtErrors`;设计稿 08 / 09、P1 与 P3
-> implementation-progress。对账表在 P1 implementation-progress 的 #276-#279 条目，这里只记过程和教训。
+> implementation-progress。用户决定在本分支一起修的两项存量差异：语法错误里块名的截断长度
+> (`internal/bytecode/chunkid.go`、`internal/frontend/{lex,parse,compile}`)和 `print` 逐个写出参数
+> (`internal/stdlib/stdlib.go`、`internal/oracle/prelude.go`),测试在 `test/regression/syntax_error_chunkname_test.go`
+> 与 `print_partial_output_test.go`。对账表在 P1 implementation-progress 的 #276-#279 条目，这里只记过程和教训。
 
 ## 过程
 
@@ -79,7 +84,18 @@ metadata:
 15. **第二次全范围终审**(阻塞 1、小问题 2)。本地审查之前的最初修复(第 3 条，提交 `4801209`)就把 `DoCall` /
     `CallBaseline` / `TailCall` 改成写回调用方 `ci.pc = pc + 1`,同样实现「编译帧调 Lua」的两个 inline-frame
     helper 却没改，参数里也没有 pc。P4 的调用点要先成功一次才改走 `ExecutePlainCallInlineFrame`,而编译层回归
-    用例的预热调用每次都报错，所以十几轮都没测到。
+    用例的预热调用每次都报错，所以十几轮都没测到。之后的第十三到十五轮只剩注释和文档的小问题。
+16. **两项存量差异改在本分支修**。前两次终审的补充各记了一项与本分支无关、master 上就有的差异：语法错误里
+    `[string "..."]` 截到 60 字节，lua5.1 截到 80;`print` 后面参数的 `tostring` 出错时，lua5.1 已经写出了前面的参数，
+    望舒什么都不写。用户决定在本分支修。块名一项是 `luaX_lexerror` 用 `MAXSRC`(80)、其余用 `LUA_IDSIZE`(60)调
+    `luaO_chunkid`,于是 `ChunkIDN` 带上缓冲区长度;`print` 改为转换完一个就写出。
+17. **本地审查第十六轮**(重要 2、小问题 1)。一项是逐段直接写出让 `print` 在管道上慢了约 2.8 倍，改为缓冲，只在可能
+    运行 Lua 代码的转换之前写出。另一项是 `@file` 分支在运行期本来就多保留 4 个字节(按 `59-3` 算，5.1 是 `60-8`),
+    `ChunkIDN` 已经顺带改对，进度记录却写成运行期「仍用 60」、像是没有变化，测试注释和提交说明还把基线说成超过
+    52 就截断。**改一个与参照实现对齐的长度时，把参照实现每个分支的算式都写出来逐个对照**,别只核对引出问题的那个分支。
+18. **本地审查第十七轮**(重要 1、小问题 1)。缓冲版给「全局 `tostring` 是内置的、参数没有 `__tostring`」加了一条不调用
+    `tostring` 的快捷路径，结果连带省掉了这次调用本来会做的 C 调用深度检查，C 深度用尽时 lua5.1 报 `C stack overflow`,
+    望舒照常输出;字节记账的错误也没有冻结位置。第十八轮之后增量审查再无发现。
 
 ## 教训
 
@@ -139,6 +155,13 @@ metadata:
 P4 的 CALL 内联缓存只在调用成功后才填写，之后才改走 `ExecutePlainCallInlineFrame`。编译层用例为了让函数升层先跑几次，
 但这几次都报错，于是那条路径从没被执行。**写编译层的出错用例时，先让调用点正常返回几次，再让它出错**。
 
+### 9. 为了性能省掉一次调用时，把这次调用顺带做的事一项项照做
+
+`print` 的快捷路径省掉的是一次 `ProtectedCallDirect`,而这个入口除了调用本身，还做 C 调用深度检查、把错误冻结为不带
+位置。省掉调用时只想到了「结果一样」,没有列出入口里的其他副作用。**用快捷路径代替一次通用调用之前，读一遍被省掉的
+入口，把它做的检查、计数、错误标注逐项列出，在快捷路径里照做或写明为什么不需要**,并用调用深度用尽、预算用尽这类边界
+各测一次。
+
 ## 触发场景
 
 - 判断错误位置、层级、traceback 函数名的差异是否成立，或者写「已与 lua5.1 核对」之前。
@@ -146,3 +169,4 @@ P4 的 CALL 内联缓存只在调用成功后才填写，之后才改走 `Execut
 - 一个机制在事后读取栈、帧或 pc,而中间可能经过截栈、弹帧时。
 - 给 P3/P4 写 force-all 用例并据此声称编译层也覆盖到了时。
 - 把某个入口的错误改成「冻结、不带位置」之前，或者扫描「会回调 Lua 的宿主函数」时。
+- 给宿主函数加不经过通用调用入口的快捷路径，或修改与 `luaO_chunkid` 等参照实现对齐的长度时。
