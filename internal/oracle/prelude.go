@@ -198,11 +198,13 @@ function print(...)
   local n = __select("#", ...)
   for i = 1, n do
     local v = (__select(i, ...))
-    if i > 1 then __emit("\t") end
     local s = __tostring(v)
     if __type(s) ~= "string" then
       __error("'tostring' must return a string to 'print'")
     end
+    -- luaB_print converts first and writes the tab after, so a __tostring handler's own output
+    -- comes before the separator.
+    if i > 1 then __emit("\t") end
     __emit(s)
   end
   __emit("\n")
