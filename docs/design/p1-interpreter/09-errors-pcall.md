@@ -805,8 +805,8 @@ stack traceback:
 	<location>: in <what>
 ```
 
-> **实现现状(2026-10-02 订正,#279)**:上面的格式与 5.1 有出入。下面各条都按 `ldblib.c` 的
-> `db_errorfb` 与 `ldebug.c` 的 `getfuncname` 核对过,已逐字节对上 `lua5.1`:
+> **实现现状(2026-10-02 订正,#279)**:本节原定的格式(上面的代码块、这段订正之后的「逐部分定义」和 §7.2 伪码)
+> 与 5.1 有出入。下面各条都按 `ldblib.c` 的 `db_errorfb` 与 `ldebug.c` 的 `getfuncname` 核对过,已逐字节对上 `lua5.1`:
 >
 > - **尾调用**:5.1 不是 `(...tail calls...)`(那是 5.2 的写法),而是被尾调用替换掉的每一层各占一行
 >   `(tail call): ?`(`info_tailcall`:source 为 `=(tail call)`、无行号、what 为 `tail`),位置在被尾调用的帧之下。
@@ -825,7 +825,7 @@ stack traceback:
 > 实现在 `internal/crescent/errors.go`(`tracebackFrames` / `tracebackFuncName` / `renderTraceback`),
 > 回归 `test/regression/issue279_traceback_format_test.go`。
 
-逐部分定义:
+逐部分定义(P1 原计划的写法,`": in "` 一律加在名字前、尾调用打 `(...tail calls...)` 两点已被上面的订正取代):
 
 - **首行**:固定 `"stack traceback:"`(无缩进)。
 - **每帧一行**:`"\t" + <location> + ": in " + <what>`(**前导一个 tab**)。
@@ -876,6 +876,9 @@ func (vm *VM) traceback(th *Thread, msg string, startLevel int) string {
     return b.String()
 }
 ```
+
+> **订正(#279)**:这段伪码是 P1 原计划的写法,行的组成与尾调用一行以 §7.1 的订正为准;实现不遍历宿主帧,
+> 帧序列的拼法也见 §7.1 订正的最后一段。
 
 ### 7.3 traceback 何时生成(性能纪律)
 
