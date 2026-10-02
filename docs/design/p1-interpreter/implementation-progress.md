@@ -568,12 +568,13 @@
   | 本地审查第八、九轮:force-all 那一遍是否真的用到编译层 | `test/fuzz/cdepth_oracle_test.go` | force-all 只是放宽升层门槛，并不保证递归的那个函数被编译：用到 `pcall`、`loadstring`、协程的函数过不了可编译性检查。第八轮先给每种写法标上「要求升层」并断言 `runTieredSide` 的 promoted,第九轮审查指出这个值来自 `PromotionCount`,prelude 自带的辅助函数升层也会算进去(P4 上只要 `pcall` 接住过错误就为真),断言防不住「递归的函数没被编译」。现在去掉这条断言，注释写明 force-all 那一遍只是在升层开关打开时再与 oracle 比一次；编译帧调 Lua 是否多算 C 层，由下一行的两个测试按入口逐个检查。`TestCDepthOfAPromotedFunctionCalledFromGo` 的升层计数检查同样只是粗略的保护，注释里写明了这一点和变异的结果 |
   | 本地审查第八轮：五个重入入口各有测试 | `test/regression/issue276_279_reentry_depth_test.go`、`internal/crescent/reentry_inline_frame_p4_test.go` | 第七轮改动的五个入口里，原先只有 P3 的 `DoCall` 和 P4 的 `CallBaseline` 改回 `nCcalls` 时会有测试失败。新测试从 Go 调用五种编译过的调用方，在最深处用 `table.sort` 的 `__lt` 递归量出 C 调用深度，要求与直接调用一致。写法上要注意三点：调用方只能用局部函数和白名单库函数(`pcall` 也会让函数不升层);被调方用 vararg 让两个编译层都不编译它，否则编译码直接调用，不经过这些入口;前几次调用先让被调方正常返回,P4 要等调用点成功过一次才改走 `ExecutePlainCallInlineFrame`。`ExecuteCalleeFromInlineFrame` 没能找到经公共 API 走到它的写法，放在 `internal/crescent` 里按 SELF 专用模板的写法单独测。逐个把五个入口改回 `nCcalls`,每个都有测试失败 |
   | 全范围终审:wrap 传出非字符串错误 | `internal/stdlib/coroutinelib.go::wrapError` | 字符串和数字错误会重新包装，其他值原样返回协程里那个错误对象。对象上记的是协程那条栈上的出错点信息(出错点之上有几个宿主帧、协程的帧是否已保存),到了调用方线程会让 xpcall handler 拿到的 traceback 多一行或少一行 `[C]: ?`,外层协程因此死亡时 `debug.traceback(outer)` 只剩标题。改为用同一个错误值新建一个不加位置的错误对象，三种写法的期望值用 `lua5.1` 跑出 |
+  | 第二次全范围终审:P4 inline-frame helper 不写调用方 pc | `internal/crescent/gibbous_host.go`(`ExecutePlainCallInlineFrame` / `ExecuteCalleeFromInlineFrame`)、`internal/gibbous/jit` 两处调用点 | `DoCall` / `CallBaseline` / `TailCall` 都把调用方 `ci.pc` 写成 CALL 的 pc+1,traceback 靠它取调用方行号和被调方名字;这两个兄弟 helper 的参数里没有 pc,P4 的调用点成功过一次、改走 `ExecutePlainCallInlineFrame` 之后，被调方出错时调用方那一行变成 `x: in function 'mid'`、被调方没有名字。两个 helper 改为接收 CALL 的 pc(exit-reason 里本来就带着，SELF 专用模板用 `retPC-1`),进入被调方前写回 |
 
   验证：四个 regression 文件(`issue276_*` / `issue277_*` / `issue278_*` / `issue279_*`)期望值逐条用 `lua5.1` 跑出;
   #279 的用例在 P1、P3、P4 下各跑一遍 force-all 与不升层，但这些用例调用 `debug.traceback` 等不在白名单里的函数，
   force-all 下实际没有帧升层(本地审查用 `PromotionCount` 查出),只说明解释器路径正确;编译层由
   `issue276_279_compiled_callers_test.go` 覆盖，它的调用方只调用已知局部函数和白名单 stdlib,force-all 与阈值 1
-  的 auto 各跑一遍并断言 `PromotionCount` 非零，去掉 gibbous 调用 helper 的 `pc + 1` 修复后它会失败;
+  的 auto 各跑一遍并断言 `PromotionCount` 非零，去掉 gibbous 调用 helper 的 `pc + 1` 修复后它会失败。它原先的预热调用每次都报错，P4 的调用点从没成功过，走不到 `ExecutePlainCallInlineFrame`;第二次全范围终审查出这条路径不写调用方 pc,补了「调用点先成功、后出错」的两个用例(未捕获与 `xpcall(f, debug.traceback)`),`ExecuteCalleeFromInlineFrame` 的同一检查在 `internal/crescent` 的 `TestInlineFrameCalleeAddsNoCLevel` 里;
   `crescent` 内部测试 `TestTraceback_NotBuiltForCaughtErrors`
   钉住「被 pcall / resume 捕获的错误不生成 traceback」。各修复去掉后对应用例都会失败。`test/api` 里原先断言
   `[C]: in ?` 的用例改为断言 lua5.1 的完整输出。
