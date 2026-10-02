@@ -60,6 +60,10 @@ metadata:
     主 chunk 前的 2 层里，只有 `lua_cpcall(pmain)` 是 lua.c 独有的，另一层是宿主用 `lua_pcall` 运行 chunk 的那次调用，
     嵌入式 PUC 也有，望舒没计。于是让 `callOnStack` 计入这一层，并加了与 oracle 逐字节比较的测试。**判断「对方的差距
     来自参照实现的外壳」时，拿同一个参照实现去掉外壳的形式(这里是内嵌 oracle)再量一次**,别只和带外壳的二进制比。
+11. **本地审查第七轮**(重要 1、小问题 1)。新加的 oracle 深度测试在 CI 里根本不会执行:oracle-smoke 只跑 fuzz 目标和
+    点名的测试，而这是个普通测试。给它补 force-all 时又发现 P3 编译帧调 Lua 被调方时把 Go 重入记成了 C 层(master
+    上就有),于是拆出 `luaReentry`。**新增一个只在特定 build tag 下编译的测试时，要确认 CI 里有哪一步会点名跑它**;
+    能编译、本地能过，不等于有人在跑。
 
 ## 教训
 

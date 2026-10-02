@@ -778,7 +778,8 @@ func (vm *VM) callHandlerOnErrorStack(th *Thread, handler, errval value.Value) (
 > `parse.ParseAtCDepth`)。`cCallCheck` 与 `luaD_call` 一样先加一再比较，所以 Lua 函数最深跑在 199 层，这一层还能
 > 编译 chunk、恢复协程。宿主运行 chunk 的那次调用也算一层(`callOnStack`,对应嵌入宿主的 `lua_pcall`),所以起点与
 > 嵌入式 PUC 一致;独立解释器 lua.c 另有 `lua_cpcall(pmain)` 一层，同样的写法 lua5.1 少 1 层，登记为已知限制，见
-> implementation-progress 的对账表。
+> implementation-progress 的对账表。P3/P4 编译帧为执行 Lua 被调方而重新进入 Go 的那一次不计入 `nCcalls`(PUC 的 Lua 调
+> Lua 不是 C 层),另记在 `State.luaReentry` 上，只用来限制 Go 栈深度。
 
 ---
 
