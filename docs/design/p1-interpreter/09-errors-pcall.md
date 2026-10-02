@@ -385,7 +385,8 @@ Lua 5.1 把 `Proto.Source`(原始 chunk 名)转成 traceback/错误里显示的�
   `luaX_lexerror`,用 `llex.c` 的 `MAXSRC`(80)。所以同一个块名，语法错误里能多显示 20 个字节:`[string "..."]`
   首行最多 63 字节(运行期 43),`@file` 尾部最多 72 字节(运行期 52),`=name` 最多 79 字节(运行期 59)。
   实现是 `bytecode.ChunkIDN(source, bufflen)`,`ChunkID` 固定用 60,前端三种错误类型用 `bytecode.MaxSrc`。`@file`
-  减去的是 `sizeof(" '...' ")`(8 字节),望舒原来按 3 字节算，运行期多保留了 4 个字节，这次一起改正。
+  保留的长度是缓冲区长度减 `sizeof(" '...' ")`(8,含结尾 NUL),60 时是 52;望舒原来是 `59 - 3 = 56`,运行期多保留
+  了 4 个字节，这次一起改正。
 - **P1 实现位置**:`internal/crescent` 的 `chunkID(source []byte, isFromSource bool) string`,或放在 `bytecode`
   侧供 traceback 与 error 共用。Source 内容从 arena String 读([01](./01-value-object-model.md) §5.1)。
 
