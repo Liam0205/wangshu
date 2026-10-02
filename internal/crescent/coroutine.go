@@ -132,6 +132,11 @@ func (st *State) Resume(id uint64, args []value.Value) ([]value.Value, bool, *Lu
 	// a handler running past the limit still cannot resume a coroutine.
 	if st.nCcalls >= maxCCallDepth {
 		co.status = CoSuspended
+		if !co.started {
+			// resume_error resets the coroutine's top to its base, dropping the function a fresh
+			// coroutine still has to run: from then on costatus reports it dead.
+			co.status = CoDead
+		}
 		return nil, false, errf("C stack overflow")
 	}
 	st.nCcalls++
