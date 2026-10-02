@@ -1094,7 +1094,8 @@ var ErrRunNotImplemented = errors.New("internal/gibbous/jit: p4Code Run failed: 
 //  1. Read jitCtx.exitArg0 to route the helper request (per §9.20.9 (3) protocol
 //     status codes):
 //     - HelperRunCallee: call host.ExecuteCalleeFromInlineFrame(base, pc, callA,
-//     callArgCount, nresults) (commit-5l/5p/5q signature extension; pc is the CALL's)
+//     callArgCount, nresults) (callA/callArgCount/nresults: commit-5l/5p/5q signature
+//     extension; pc, the CALL's, was added later for the caller's traceback line)
 //     completes readCISegInto + luaReentry++ + executeFrom + popCallInfo
 //     - HelperGrowStack: future extension (arena grow trigger)
 //     - HelperGCBarrier: future extension (GC write barrier)
@@ -1120,9 +1121,11 @@ func (c *p4Code) runFrameInlineDispatcher(base int32) int32 {
 	switch helperCode {
 	case HelperRunCallee:
 		// run the callee Lua body (host completes readCISegInto + executeFrom + popCallInfo)
-		// **commit-5l/5p/5q signature extension**: the helper accepts (pc, callA, callArgCount, nresults)
-		//   - pc: the CALL's pc, retPC-1 (the spec template is SELF + CALL + RETURN); the helper
-		//     stores pc+1 as the caller's ci.pc for tracebacks taken inside the callee
+		// pc is the CALL's pc, retPC-1 (the spec template is SELF + CALL + RETURN); the helper
+		// stores pc+1 as the caller's ci.pc, so a traceback taken inside the callee has the
+		// caller's line and the callee's name.
+		//
+		// **commit-5l/5p/5q signature extension**: the helper accepts (callA, callArgCount, nresults)
 		//   - callA: CALL.A field (in the SELF + CALL shape the method is at R(callA))
 		//   - callArgCount: 0..7 user args
 		//   - nresults: callC - 1 (callC=1=0-return setter/2=1-return getter/3..16=N=2..15

@@ -772,15 +772,14 @@ func (vm *VM) callHandlerOnErrorStack(th *Thread, handler, errval value.Value) (
 > 一，handler 比出错处深一层;`LUA_ERRERR` 的错误值是字面量，不带位置。望舒的 `State.cCallCheck` 是这条规则，宿主
 > 进入 Lua 的入口 `callLuaFromHostNamed` 经过它(gibbous 的调用 helper 不经过它，见本段末尾)。5.1 里另外
 > 两处读同一个 C 调用深度、但不留余量:`lua_resume` 的检查是 `nCcalls >= LUAI_MAXCCALLS`,handler 越过上限
-> 运行时调用 resume 仍然得到
-> `C stack overflow`(没启动过的协程还会因此变成 dead,`resume_error` 把它的函数也清掉了);`lparser.c` 的
-> `enterlevel` 把语法层数也记在 `nCcalls` 上，所以在越深的调用里 `loadstring` 能嵌套的层数越少，handler 越过上限
-> 运行时连 `loadstring("return 1")` 都会报 `chunk has too many syntax levels`(望舒把当前深度传给
-> `parse.ParseAtCDepth`)。`cCallCheck` 与 `luaD_call` 一样先加一再比较，所以 Lua 函数最深跑在 199 层，这一层还能
-> 编译 chunk、恢复协程。宿主运行 chunk 的那次调用也算一层(`callOnStack`,对应嵌入宿主的 `lua_pcall`),所以起点与
-> 嵌入式 PUC 一致;独立解释器 lua.c 另有 `lua_cpcall(pmain)` 一层，同样的写法 lua5.1 少 1 层，登记为已知限制，见
-> implementation-progress 的对账表。P3/P4 编译帧为执行 Lua 被调方而重新进入 Go 的那一次不计入 `nCcalls`(PUC 的 Lua 调
-> Lua 不是 C 层),另记在 `State.luaReentry` 上，只用来限制 Go 栈深度。
+> 运行时调用 resume 仍然得到 `C stack overflow`(没启动过的协程还会因此变成 dead,`resume_error` 把它的函数也清掉
+> 了);`lparser.c` 的 `enterlevel` 把语法层数也记在 `nCcalls` 上，所以在越深的调用里 `loadstring` 能嵌套的层数越
+> 少，handler 越过上限运行时连 `loadstring("return 1")` 都会报 `chunk has too many syntax levels`(望舒把当前深度
+> 传给 `parse.ParseAtCDepth`)。`cCallCheck` 与 `luaD_call` 一样先加一再比较，所以 Lua 函数最深跑在 199 层，这一
+> 层还能编译 chunk、恢复协程。宿主运行 chunk 的那次调用也算一层(`callOnStack`,对应嵌入宿主的 `lua_pcall`),所以起
+> 点与嵌入式 PUC 一致;独立解释器 lua.c 另有 `lua_cpcall(pmain)` 一层，同样的写法 lua5.1 少 1 层，登记为已知限制，
+> 见 implementation-progress 的对账表。P3/P4 编译帧为执行 Lua 被调方而重新进入 Go 的那一次不计入 `nCcalls`(PUC
+> 的 Lua 调 Lua 不是 C 层),另记在 `State.luaReentry` 上，只用来限制 Go 栈深度。
 
 ---
 
