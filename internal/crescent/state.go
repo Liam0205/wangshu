@@ -111,7 +111,8 @@ type State struct {
 
 	// nCcalls is the host→Lua re-entry depth (real Go stack consumption;
 	// equivalent to 05 §7.4 LUAI_MAXCCALLS). callLuaFromHost does +1 on entry
-	// / -1 on return; exceeding maxCCallDepth raises "C stack overflow".
+	// / -1 on return; an entry whose new depth reaches maxCCallDepth raises
+	// "C stack overflow" (cCallCheck, as luaD_call does).
 	pendingTailDepth  uint8 // tail-call chain length for the frame about to be pushed
 	pendingHostFrames uint8 // host frames entered since the last Lua frame (error level walks)
 	nCcalls           int
@@ -1285,6 +1286,12 @@ func (st *State) callOnStack(cl arena.GCRef, args []value.Value, nresults int) (
 	}
 	st.runningThread = th
 	defer func() { st.runningThread = nil }()
+	// The host running a chunk is itself one C call: an embedder's lua_pcall goes through luaD_call
+	// like any other, so a chunk starts at C depth 1. Starting at 0 gave every script one more level
+	// of host->Lua nesting and of syntax depth than embedded PUC (lua.c adds one more of its own,
+	// lua_cpcall(pmain), which an embedder does not have).
+	st.nCcalls++
+	defer func() { st.nCcalls-- }()
 	// push callee + args to the stack bottom
 	th.push(value.MakeGC(value.TagFunction, cl))
 	for _, v := range args {
