@@ -116,6 +116,12 @@ type State struct {
 	pendingTailDepth  uint8 // tail-call chain length for the frame about to be pushed
 	pendingHostFrames uint8 // host frames entered since the last Lua frame (error level walks)
 	nCcalls           int
+	// luaReentry counts the Go re-entries a compiled frame makes to run a Lua callee for OP_CALL /
+	// OP_TAILCALL (executeFrom or enterGibbous under a gibbous helper). PUC runs a Lua-to-Lua call
+	// inside the same luaV_execute and counts nothing for it, so these must not land in nCcalls,
+	// which scripts can observe (C stack overflow, syntax levels); they still cost real Go stack, so
+	// the gibbous watermark gates on nCcalls+luaReentry and reentryCheck bounds them.
+	luaReentry int
 	// protectDepth counts the boundaries that will catch an error: pcall/xpcall (ProtectedCall) and
 	// coroutine.resume. While it is 0 an error is going to escape to the host, so its traceback is
 	// taken at the raise point, before any host boundary unwinds the frames it should show (09

@@ -1095,7 +1095,7 @@ var ErrRunNotImplemented = errors.New("internal/gibbous/jit: p4Code Run failed: 
 //     status codes):
 //     - HelperRunCallee: call host.ExecuteCalleeFromInlineFrame(base, callA,
 //     callArgCount, nresults) (commit-5l/5p/5q signature extension)
-//     completes readCISegInto + nCcalls++ + executeFrom + popCallInfo
+//     completes readCISegInto + luaReentry++ + executeFrom + popCallInfo
 //     - HelperGrowStack: future extension (arena grow trigger)
 //     - HelperGCBarrier: future extension (GC write barrier)
 //  2. If the helper returns 1=ERR, set ERR return 1 (error propagation)

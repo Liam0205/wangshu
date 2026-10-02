@@ -254,6 +254,14 @@ jobs:
         run: |
           CGO_ENABLED=1 go test -tags wangshu_oracle_cgo ./test/fuzz -run='^$' -list '^FuzzOracleDiff$' | grep -q '^FuzzOracleDiff$' \
             || { echo "FuzzOracleDiff missing under wangshu_oracle_cgo (build tag broken?)" >&2; exit 1; }
+      - name: C-call depth against the embedded oracle (p1, p3, p4)
+        # Plain tests rather than fuzz targets, so go-fuzz.sh (which runs with -run '^$') never reaches
+        # them; they only run if named here.
+        run: |
+          for tags in "wangshu_oracle_cgo" "wangshu_oracle_cgo wangshu_p3 wangshu_profile" "wangshu_oracle_cgo wangshu_p4 wangshu_profile"; do
+            CGO_ENABLED=1 go test -tags "$tags" ./test/fuzz -run '^TestCDepth' -count=1 \
+              || { echo "C-depth oracle tests failed under: $tags" >&2; exit 1; }
+          done
       - name: oracle diff fuzz smoke
         # FuzzOracleDiff filter: build tags are additive, so without it
         # the sweep re-runs every default-build target too (5 x 60s) --

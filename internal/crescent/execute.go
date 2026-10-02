@@ -338,7 +338,7 @@ func (st *State) executeLoop(th *thread, entryDepth int) *LuaError {
 			// f({k = 1})` counted the promotion call twice) and the re-run could index a
 			// table the first pass had already dropped.
 			if profileEnabled && next != nil && th == st.mainTh && !ci.Gibbous() &&
-				st.nCcalls < gibbousReentryCCallCap {
+				st.goDepth() < gibbousReentryCCallCap {
 				if gcode := st.bridge.GibbousCodeOf(proto); gcode != nil && isPJ10NativeCode(gcode) {
 					ci.SetGibbous(true)
 					th.reMirrorTop()

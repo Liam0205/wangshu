@@ -1041,7 +1041,7 @@ func (st *State) ExecutePlainCallInlineFrame(base, callA, nargs, nresults int32)
 	if int(calleePID) >= len(st.protos) || st.protos[calleePID] == nil {
 		return st.raiseGibbous(errf("ExecutePlainCallInlineFrame: invalid callee protoID %d", calleePID))
 	}
-	if e := st.cCallCheck(); e != nil {
+	if e := st.reentryCheck(); e != nil {
 		return st.raiseGibbous(e)
 	}
 	// nCcalls watermark (gibbousReentryCCallCap): each zero-cross level
@@ -1054,15 +1054,15 @@ func (st *State) ExecutePlainCallInlineFrame(base, callA, nargs, nresults int32)
 	// BEFORE the increment so all four gates (here, doCall,
 	// ExecuteCalleeFromInlineFrame, executeFrom's TAILCALL dispatch)
 	// switch at the same depth (PR #86 review).
-	underWatermark := st.nCcalls < gibbousReentryCCallCap
-	st.nCcalls++
+	underWatermark := st.goDepth() < gibbousReentryCCallCap
+	st.luaReentry++
 	// Zero-cross fast path: callee is also P4-promoted → skip
 	// executeFrom's interpreter loop entirely.
 	if profileEnabled && th == st.mainTh && underWatermark {
 		calleeCode := st.bridge.GibbousCodeOf(st.protos[calleePID])
 		if calleeCode != nil {
 			err := st.enterGibbous(th, calleeCode, funcIdx, int(nargs), int(nresults))
-			st.nCcalls--
+			st.luaReentry--
 			if err != nil {
 				return st.raiseGibbous(err)
 			}
@@ -1073,12 +1073,12 @@ func (st *State) ExecutePlainCallInlineFrame(base, callA, nargs, nresults int32)
 	// Interpreter fallback: enterLuaFrame + executeFrom, exactly like
 	// host.CallBaseline's doCall path, then callee RETURN pops itself.
 	if e := st.enterLuaFrame(th, funcIdx, int(nargs), int(nresults), false); e != nil {
-		st.nCcalls--
+		st.luaReentry--
 		return st.raiseGibbous(e)
 	}
 	entryDepth := th.ciDepth - 1
 	err := st.executeFrom(th, entryDepth)
-	st.nCcalls--
+	st.luaReentry--
 	if err != nil {
 		return st.raiseGibbous(err)
 	}
@@ -1329,18 +1329,18 @@ func (st *State) DoCall(base, pc, a, b, c int32) int64 {
 	}
 	if next != nil {
 		// Entering a new Lua frame (the callee is an un-promoted closure) —
-		// drive it to completion synchronously. nCcalls accounting: executeFrom
-		// is a new Go stack re-entry boundary, preventing alternating
-		// gibbous<->crescent recursion from blowing the Go stack (same guard as
-		// meta.go callLuaFromHost).
-		if e := st.cCallCheck(); e != nil {
+		// drive it to completion synchronously. executeFrom is a new Go stack
+		// re-entry, counted in luaReentry rather than nCcalls: PUC runs a
+		// Lua-to-Lua call in the same luaV_execute, so scripts must not see it as
+		// a C level, but it still has to be bounded against blowing the Go stack.
+		if e := st.reentryCheck(); e != nil {
 			st.raiseGibbous(e)
 			return -1
 		}
-		st.nCcalls++
+		st.luaReentry++
 		entryDepth := th.ciDepth - 1
 		e2 := st.executeFrom(th, entryDepth)
-		st.nCcalls--
+		st.luaReentry--
 		if e2 != nil {
 			st.raiseGibbous(e2)
 			return -1
@@ -1387,16 +1387,16 @@ func (st *State) CallBaseline(base, pc, a, b, c int32) int32 {
 	}
 	if next != nil {
 		// Entering a new Lua frame (the callee is an un-promoted closure or a
-		// no-slot gibbous) — drive it to completion synchronously. nCcalls
-		// accounting same as DoCall (same guard as meta.go callLuaFromHost).
-		if e := st.cCallCheck(); e != nil {
+		// no-slot gibbous) — drive it to completion synchronously. Re-entry
+		// accounting same as DoCall (luaReentry, not nCcalls).
+		if e := st.reentryCheck(); e != nil {
 			st.raiseGibbous(e)
 			return 1
 		}
-		st.nCcalls++
+		st.luaReentry++
 		entryDepth := th.ciDepth - 1
 		e2 := st.executeFrom(th, entryDepth)
-		st.nCcalls--
+		st.luaReentry--
 		if e2 != nil {
 			st.raiseGibbous(e2)
 			return 1
@@ -1444,14 +1444,14 @@ func (st *State) TailCall(base, pc, a, b, c int32) int32 {
 	}
 	// Lua tail call: G has been replaced by the callee frame. Drive the callee
 	// chain to completion synchronously.
-	if e := st.cCallCheck(); e != nil {
+	if e := st.reentryCheck(); e != nil {
 		st.raiseGibbous(e)
 		return 1
 	}
-	st.nCcalls++
+	st.luaReentry++
 	entryDepth := th.ciDepth - 1
 	e2 := st.executeFrom(th, entryDepth)
-	st.nCcalls--
+	st.luaReentry--
 	if e2 != nil {
 		st.raiseGibbous(e2)
 		return 1
@@ -1534,7 +1534,7 @@ func (st *State) ExecuteCalleeFromInlineFrame(base, callA, callArgCount, nresult
 	//    multi-ret.
 	nargs := 1 + int(callArgCount)
 	// 5. C stack depth check + nCcalls++
-	if e := st.cCallCheck(); e != nil {
+	if e := st.reentryCheck(); e != nil {
 		return st.raiseGibbous(e)
 	}
 	// nCcalls watermark mirrors ExecutePlainCallInlineFrame (see the
@@ -1542,8 +1542,8 @@ func (st *State) ExecuteCalleeFromInlineFrame(base, callA, callArgCount, nresult
 	// the interpreter fallback so deep recursion cannot exhaust the C
 	// stack budget. Sampled before the increment so all four gates
 	// switch at the same depth (PR #86 review).
-	underWatermark := st.nCcalls < gibbousReentryCCallCap
-	st.nCcalls++
+	underWatermark := st.goDepth() < gibbousReentryCCallCap
+	st.luaReentry++
 	// 6. **commit-5u real zero-cross optimization** (per §9.20.12 remaining
 	//    zero-cross engineering): if the callee Proto is also P4-promoted
 	//    (GibbousCodeOf non-nil and main thread), call enterGibbous directly
@@ -1556,7 +1556,7 @@ func (st *State) ExecuteCalleeFromInlineFrame(base, callA, callArgCount, nresult
 		calleeCode := st.bridge.GibbousCodeOf(st.protos[calleePID])
 		if calleeCode != nil {
 			err := st.enterGibbous(th, calleeCode, funcIdx, nargs, int(nresults))
-			st.nCcalls--
+			st.luaReentry--
 			if err != nil {
 				return st.raiseGibbous(err)
 			}
@@ -1568,13 +1568,13 @@ func (st *State) ExecuteCalleeFromInlineFrame(base, callA, callArgCount, nresult
 	}
 	// 6.b enterLuaFrame + executeFrom (the existing Spike 1-4 non-zero-cross fallback path)
 	if e := st.enterLuaFrame(th, funcIdx, nargs, int(nresults), false); e != nil {
-		st.nCcalls--
+		st.luaReentry--
 		return st.raiseGibbous(e)
 	}
 	// 7. Drive the callee Lua body to RETURN synchronously (with an embedded popCallInfo to pop the callee frame)
 	entryDepth := th.ciDepth - 1
 	err := st.executeFrom(th, entryDepth)
-	st.nCcalls--
+	st.luaReentry--
 	if err != nil {
 		return st.raiseGibbous(err)
 	}
