@@ -118,8 +118,8 @@
 | executeSignal 三态 | sigReturn/sigYield/sigError 枚举(08 §3.3) | 显式 *LuaError 返回 + errYieldSentinel 哨兵 | 同一冒泡通道,哨兵区分;08 §3.4 "yield↔error 对称"的最小实现 |
 | 协程对象 | Thread 对象住 arena(01 §5.6) | lightuserdata 句柄 + Go 注册表 | type() 返回 "thread" 语义一致;arena Thread 对象随值栈 arena 化一并做 |
 | xpcall handler 时机 | 栈展开前调用(09) | 出错点调用(2026-10-02 起) | **已对齐**(#279 本地审查补修):原先在捕获后调用、栈已回滚,`xpcall(f, debug.traceback)` 只看到调用 xpcall 的那一帧;现在按 5.1 的 `luaG_errormsg` 在出错点调用，见 09 §6.2 |
-| C 调用深度上限的起点 | `LUAI_MAXCCALLS` = 200,lua5.1 独立解释器进入主 chunk 前已用掉几层(lua.c 的 `docall`、`lua_pcall` 等) | 主 chunk 从深度 0 开始数 | **已知限制**(2026-10-02 #276-#279 本地审查登记):同样写法，望舒比 lua5.1 多走 3 层才报 `C stack overflow`(`__index` 自递归 199 对 196,master `0fdd72e` 相同)。上限本身一致，差的是独立解释器的启动开销；嵌入式使用没有 lua.c 那几层，不打算模仿。差分侧按 `SkipClassError` 的「实现常数类护栏」跳过 |
-| 语法层数上限 | `lparser.c` 的 `enterlevel` 记在 `nCcalls` 上，同一个 200 | `parse.maxParseDepth` = 200,减去当前 C 调用深度(`ParseAtCDepth`) | **已知限制**(同上登记):随调用深度的变化已对齐，但每个深度下望舒都比 lua5.1 多 2 层(顶层 198 对 196),来源与上一行相同(起点不同)加上解析器对块与表达式计层的位置不同。差分侧按「实现常数类护栏」跳过 |
+| C 调用深度的起点 | `LUAI_MAXCCALLS` = 200;lua5.1 独立解释器进入主 chunk 前已用掉 2 层(`lua_cpcall(pmain)` 与 `docall` → `lua_pcall` 各一次 `luaD_call`) | 主 chunk 从深度 0 开始数 | **已知限制**(2026-10-02 #276-#279 本地审查登记):同样写法，望舒比 lua5.1 独立解释器多走 2 层才报 `C stack overflow`(`__index` 自递归 198 对 196)。上限和检查方式一致(`cCallCheck` 照 `luaD_call` 先加一再比较),差的只是 lua.c 的启动开销；嵌入式使用没有这 2 层，不打算模仿。差分侧按 `SkipClassError` 的「实现常数类护栏」跳过 |
+| 语法层数的起点 | `lparser.c` 的 `enterlevel` 记在 `nCcalls` 上，同一个 200 | `parse.maxParseDepth` = 200,减去当前 C 调用深度(`ParseAtCDepth`) | **已知限制**(同上登记):计层位置一致(块与子表达式各一层),随调用深度的变化也一致;每个深度下多出的 2 层(顶层 198 对 196)就是上一行的 lua.c 启动开销 |
 | ephemeron | 键活则值无条件活(07 §13.5 P1 简化,自带) | 同设计 | 一致(设计本身即简化) |
 
 ## 重要实现决策与差分修偏记录

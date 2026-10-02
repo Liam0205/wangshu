@@ -184,7 +184,8 @@ resume 本身是 protected 边界,§5.2):
 | `running` | `cannot resume non-suspended coroutine` | 不能 resume 正在跑的协程(它就是当前在跑的,resume 自己无意义) |
 | `normal` | `cannot resume non-suspended coroutine` | 它在 resume 链上(已被更外层 resume),再 resume 会形成环 |
 
-> **订正(2026-10-02 与 `lua5.1` 核对)**:下面这段的说法不对。lua5.1 按 `lbaselib.c` 的 `statnames` 区分，
+> **订正(2026-10-02 与 `lua5.1` 核对)**:上面表格里 running / normal 两行的措辞和下面这段的说法都不对，本文
+> §7.1、§7.2、§10 第 8 条、§11 里同样的说法也以这里为准。lua5.1 按 `lbaselib.c` 的 `statnames` 区分，
 > 报 `cannot resume running coroutine` / `cannot resume normal coroutine`;`non-suspended` 是 5.2 的措辞。
 > 望舒目前仍报 `non-suspended`,代码与本节一起在 #281 修正。
 >
@@ -843,7 +844,7 @@ resume 链示例:
     coA.status  = normal,  coA.resumeFrom  = main
     coB.status  = running, coB.resumeFrom  = coA
   链:coB.resumeFrom → coA.resumeFrom → main.resumeFrom → 0
-  - 若 coB 试图 resume(coA):coA 是 normal(在链上)→ 报 "cannot resume non-suspended coroutine"(防环)
+  - 若 coB 试图 resume(coA):coA 是 normal(在链上)→ 报 "cannot resume non-suspended coroutine"(防环)(5.1 的实际措辞见 §2.3 订正,#281)
   - coB yield:控制权回 coA(coB.resumeFrom),coA 变 running,coB 变 suspended,coB.resumeFrom 清 0
 ```
 
@@ -853,7 +854,7 @@ resume 链示例:
 
 - resume 链上的每个协程(coA)是 `normal`(它 resume 了下游,在等)。
 - resume 一个 `normal` 协程 = 试图 resume 一个"还在调用栈上的祖先"= 形成环。§2.3 的状态检查(normal 不可
-  resume)直接拦下,报 `cannot resume non-suspended coroutine`。
+  resume)直接拦下,报 `cannot resume non-suspended coroutine`。(5.1 的实际措辞见 §2.3 订正,#281)
 - **为什么不需要显式遍历 resumeFrom 链查环**:因为"在 resume 链上"等价于"status==normal"(§2.1)。任何被
   更外层 resume 的协程必是 normal。所以**一次 status 检查(normal?)就等价于查环**,无需遍历链——`normal`
   态的设计就是为了把"查环"降为"查状态"。`resumeFrom` 链保留用于 running()/调试/未来跨协程 traceback
@@ -1087,7 +1088,7 @@ coroutine.wrap(f):
 7. **主线程不能 yield**(§8.2):→ `attempt to yield across metamethod/C-call boundary`(5.1 只有这一种措辞)。主线程是 Thread(R3)但无
    resumer(resumeFrom=0)。
 8. **resume 状态检查**(§2.3):仅 suspended 可 resume;dead → `cannot resume dead coroutine`;running/normal →
-   `cannot resume non-suspended coroutine`。
+   `cannot resume non-suspended coroutine`。(5.1 的实际措辞见 §2.3 订正,#281)
 9. **状态转移**(§2.2):create→suspended;resume:suspended→running(resumer→normal);yield:running→suspended
    (resumer normal→running);结束/出错→dead。
 10. **跨 Thread 值搬运**(§4):首次 resume 参数→主函数参数;后续 resume 参数→yield 返回值;yield 参数→resume
@@ -1127,7 +1128,7 @@ coroutine.wrap(f):
   对象池(复用 dead Thread 的值栈/CallInfo 容量)待评估,记缺口。
 - **错误措辞精确格式**(§2.3/§5.2/§8.2):`cannot resume dead coroutine`、`cannot resume non-suspended
   coroutine` 的精确冠词/标点,**待 [12](./12-testing-difftest.md) 差分核对**与官方 Lua 5.1 逐字节对齐(呼应 09 §9.3
-  措辞纪律,本文给骨架不编造)。yield 越界的措辞**已核对(2026-10-01,#272)**:只有
+  措辞纪律,本文给骨架不编造)。resume 的措辞已核对(2026-10-02):5.1 报 `cannot resume running coroutine` / `cannot resume normal coroutine`,见 §2.3 订正与 #281。yield 越界的措辞**已核对(2026-10-01,#272)**:只有
   `attempt to yield across metamethod/C-call boundary` 一种,主线程也是它,不带位置前缀。
 - **5.2+ 可恢复性(*k continuation)是否提供**(§5.1):P1 锁 5.1,跨 C 边界 yield 一律报错。若宿主生态需要
   5.2 的"pcall 内 yield / 协程式迭代器穿 host"能力(如 `coroutine.wrap` 包装的 stdlib 迭代器需 yield),是否
