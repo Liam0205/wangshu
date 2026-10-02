@@ -107,7 +107,7 @@ type State struct {
 	// compileFn is the compile callback for loadstring/load (injected by the
 	// wangshu facade to avoid a reverse crescent → frontend dependency).
 	// Returns (mainID, protos, err).
-	compileFn func(src []byte, chunkname string) (uint32, []*bytecode.Proto, error)
+	compileFn func(src []byte, chunkname string, cDepth int) (uint32, []*bytecode.Proto, error)
 
 	// nCcalls is the host→Lua re-entry depth (real Go stack consumption;
 	// equivalent to 05 §7.4 LUAI_MAXCCALLS). callLuaFromHost does +1 on entry
@@ -390,7 +390,10 @@ type State struct {
 
 // SetCompileFn injects the compile callback (assembled at wangshu.NewState;
 // used by loadstring).
-func (st *State) SetCompileFn(fn func(src []byte, chunkname string) (uint32, []*bytecode.Proto, error)) {
+//
+// cDepth is the C-call depth in use at the call (State.nCcalls): the parser's syntax levels count
+// against the same limit, as lparser.c's enterlevel does.
+func (st *State) SetCompileFn(fn func(src []byte, chunkname string, cDepth int) (uint32, []*bytecode.Proto, error)) {
 	st.compileFn = fn
 }
 
@@ -408,7 +411,7 @@ func (st *State) CompileAndLoad(src []byte, chunkname string) (value.Value, erro
 	if st.compileFn == nil {
 		return value.Nil, errf("loadstring: compiler not available")
 	}
-	mainID, protos, err := st.compileFn(src, chunkname)
+	mainID, protos, err := st.compileFn(src, chunkname, st.nCcalls)
 	if err != nil {
 		return value.Nil, err
 	}

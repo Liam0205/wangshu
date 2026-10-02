@@ -112,9 +112,9 @@ func NewState(opts Options) *State {
 	st.core.SetAllowFileLoad(opts.AllowFileLoad)
 	// loadstring's compile callback (injected via the facade to avoid a
 	// crescent → frontend reverse dependency)
-	st.core.SetCompileFn(func(src []byte, chunkname string) (uint32, []*bytecode.Proto, error) {
+	st.core.SetCompileFn(func(src []byte, chunkname string, cDepth int) (uint32, []*bytecode.Proto, error) {
 		lx := lex.New(src, chunkname)
-		block, err := parse.Parse(lx, chunkname)
+		block, err := parse.ParseAtCDepth(lx, chunkname, cDepth)
 		if err != nil {
 			return 0, nil, err
 		}

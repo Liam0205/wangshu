@@ -428,6 +428,38 @@ n = 0
 local _, m = xpcall(function() return t.x end, function(m) return "H:" .. tostring(m) end)
 OUT = m`,
 			`H:C stack overflow`},
+		{"a handler past the C limit cannot compile a chunk",
+			`local t = setmetatable({}, {})
+getmetatable(t).__index = function(t, k) return t[k] end
+local _, m = xpcall(function() return t.x end, function(m) local f, e = loadstring("return 1") return tostring(f) .. " " .. tostring(e) end)
+OUT = m`,
+			`nil [string "return 1"]:1: chunk has too many syntax levels`},
+		{"syntax levels count the C calls already in use",
+			`local function maxlevels()
+  local lo, hi = 0, 400
+  while lo < hi do
+    local mid = math.floor((lo + hi + 1) / 2)
+    if loadstring("return " .. string.rep("(", mid) .. "1" .. string.rep(")", mid)) then lo = mid else hi = mid - 1 end
+  end
+  return lo
+end
+local top = maxlevels()
+local function nest(n) if n == 0 then return maxlevels() end local ok, r = pcall(nest, n - 1) return r end
+OUT = tostring(top - nest(50))`,
+			`50`},
+		{"a resume refused at the C limit kills a coroutine that never started",
+			`local t = setmetatable({}, {})
+getmetatable(t).__index = function(t, k) return t[k] end
+local fresh = coroutine.create(function() return "ran" end)
+local y = coroutine.create(function() coroutine.yield(1) return "ran2" end)
+coroutine.resume(y)
+local _, m = xpcall(function() return t.x end, function(m)
+  local a = tostring(select(2, coroutine.resume(fresh)))
+  local b = tostring(select(2, coroutine.resume(y)))
+  return a .. " " .. coroutine.status(fresh) .. " | " .. b .. " " .. coroutine.status(y)
+end)
+OUT = m .. " | " .. tostring(select(2, coroutine.resume(fresh))) .. " | " .. tostring(select(2, coroutine.resume(y)))`,
+			`C stack overflow dead | C stack overflow suspended | cannot resume dead coroutine | ran2`},
 	} {
 		for _, force := range []bool{false, true} {
 			st := runTracebackCase(t, tc.src, force)

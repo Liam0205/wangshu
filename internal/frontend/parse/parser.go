@@ -53,6 +53,9 @@ type Parser struct {
 	// "no loop to break" at parse time (reference breakstat).
 	// Saved/reset at function-body boundaries (break does not cross functions).
 	loopDepth int
+	// depthLimit is the depth at which enterDepth trips: maxParseDepth, minus the C-call depth
+	// already in use when the parse is a loadstring/load (see ParseAtCDepth).
+	depthLimit int
 }
 
 // maxParseDepth is the syntax nesting cap (5.1's 200 is conservative; Go stack
@@ -63,7 +66,7 @@ const maxParseDepth = 200
 // same wording as 5.1.
 func (p *Parser) enterDepth() error {
 	p.depth++
-	if p.depth > maxParseDepth {
+	if p.depth > p.depthLimit {
 		return p.errorf("chunk has too many syntax levels")
 	}
 	return nil
@@ -76,7 +79,15 @@ func (p *Parser) leaveDepth() { p.depth-- }
 // The top-level chunk is equivalent to a vararg function body (a Lua 5.1 main
 // chunk accepts `...`), so insideVararg starts out true.
 func Parse(lx *lex.Lexer, source string) (*ast.Block, error) {
-	p := &Parser{lx: lx, source: source, insideVararg: true}
+	return ParseAtCDepth(lx, source, 0)
+}
+
+// ParseAtCDepth parses with cDepth C calls already in use. lparser.c's enterlevel counts syntax levels
+// on L->nCcalls itself (`++L->nCcalls > LUAI_MAXCCALLS`), so a chunk loaded from deep inside nested
+// calls -- or from an xpcall handler running past the C limit -- has that much less room, and fails
+// with "chunk has too many syntax levels" where a top-level load would not.
+func ParseAtCDepth(lx *lex.Lexer, source string, cDepth int) (*ast.Block, error) {
+	p := &Parser{lx: lx, source: source, insideVararg: true, depthLimit: maxParseDepth - cDepth}
 	if err := p.next(); err != nil {
 		return nil, err
 	}
