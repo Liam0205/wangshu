@@ -23,7 +23,8 @@ type Error struct {
 }
 
 func (e *Error) Error() string {
-	return fmt.Sprintf("%s:%d: %s", bytecode.ChunkID(e.Source), e.Line, e.Msg)
+	// luaX_syntaxerror goes through luaX_lexerror, which formats the chunk name with MAXSRC.
+	return fmt.Sprintf("%s:%d: %s", bytecode.ChunkIDN(e.Source, bytecode.MaxSrc), e.Line, e.Msg)
 }
 
 // Parser holds the lexer + a one-token lookahead (04 §4.1, 03 §2).

@@ -403,7 +403,8 @@ type CompileError struct {
 }
 
 func (e *CompileError) Error() string {
-	return fmt.Sprintf("%s:%d: %s", bytecode.ChunkID(e.Source), e.Line, e.Msg)
+	// lcode.c / lparser.c report these through luaX_syntaxerror too, so MAXSRC applies.
+	return fmt.Sprintf("%s:%d: %s", bytecode.ChunkIDN(e.Source, bytecode.MaxSrc), e.Line, e.Msg)
 }
 
 // raise throws via panic(*CompileError); the top-level Compile catches it with recover.
