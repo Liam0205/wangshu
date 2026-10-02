@@ -565,6 +565,7 @@
   | 本地审查第六轮：主 chunk 的起点 | `internal/crescent/state.go::callOnStack` | 宿主运行 chunk 的那次调用在 5.1 里本身就是一层(`lua_pcall` → `luaD_call`),望舒原先不计，主 chunk 从 0 开始，比嵌入式 PUC 多走 1 层。改为计入(解释器与 `enterGibbous` 顶层入口都在这一层之内),并用内嵌 oracle 钉住 |
   | 本地审查第七轮:P3/P4 编译帧调 Lua 被调方的重入 | `internal/crescent/gibbous_host.go`(`DoCall` / `CallBaseline` / `TailCall` 的回退路径与两个 inline-frame helper)、`frame.go::reentryCheck` | 编译帧要执行一个 Lua 被调方时会重新进入 Go(`executeFrom` 或 `enterGibbous`),原先把这一次记在 `nCcalls` 上。PUC 的 Lua 调 Lua 在同一个 `luaV_execute` 里完成，不算 C 层，所以 P3 force-all 下经一个 Lua 包装函数递归 `table.sort` 只到 149 层(lua5.1 197,master 上是 151 对 200)。改为记在单独的 `State.luaReentry` 上：脚本看不到它，但它仍然限制 Go 栈深度，gibbous 的水位线按 `nCcalls + luaReentry` 判断 |
   | 本地审查第七轮：深度测试接进 CI | `.github/workflows/ci.yml` oracle-smoke、`Makefile` fuzz-oracle | `TestCDepth*` 是普通测试，而 oracle-smoke 只跑 fuzz 目标(`-run '^$'`)和点名的测试，原先根本不执行。现在两处都按 P1/P3/P4 三套 oracle 标签点名运行;测试本身每种写法加一遍 force-all,并新增从 Go 直接调用已升层函数的用例，覆盖 `enterGibbous` 顶层入口 |
+  | 本地审查第八轮:force-all 那一遍是否真的用到编译层 | `test/fuzz/cdepth_oracle_test.go` | force-all 并不保证递归的那个函数被编译:pcall 递归在 P3、P4 上都没有主 chunk 以外的函数升层，协程里的函数在两个编译层上都不进编译码，语法层数那个写法除主 chunk 外没有函数，最后一种写法只在 P4 上升层。这些写法的 force-all 那一遍只是把解释器再跑一次。现在每种写法标明是否要求升层，只有 `__index` 递归和 sort 比较函数递归两种在 P3、P4 上都会升层，对它们断言确实升层;其余写法在注释里说明原因 |
 
   验证：四个 regression 文件(`issue276_*` / `issue277_*` / `issue278_*` / `issue279_*`)期望值逐条用 `lua5.1` 跑出;
   #279 的用例在 P1、P3、P4 下各跑一遍 force-all 与不升层，但这些用例调用 `debug.traceback` 等不在白名单里的函数，
