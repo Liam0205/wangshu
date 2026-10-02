@@ -267,7 +267,7 @@ P1 [05 §6](../p1-interpreter/05-interpreter-loop.md) IC 机制本文 inline 与
 | 维度 | 设计文档(04-trampoline) | 实现现状(PW6) | 完成于 |
 |---|---|---|---|
 | h_call 返回值 | §3.1 返回 status i32(0/1) | **返回 i64 新 base / 负哨兵**——被调帧深递归 growStack 使值栈段在 arena 重定位(stackBaseW 变),本帧陈旧 `$base` 指向已 Free 旧段 = UAF。h_call 返回时按当前 stackBaseW+ci.base 重算新 base,gibbous `local.set $base` 刷新。`$base` 是可写 wasm param,函数中途无法自刷新故必须助手返回时给 | `6546e45` |
-| 三向分派实现 | §3.2 hCall 内 switch 被调者类型 | **复用 doCall 统一分派**(已含 host/__call/gibbous 升层/普通 Lua 四向);普通 Lua closure 用 executeFrom 同步驱动到完成(与 callLuaFromHost 相同的 nCcalls 守卫,非 copyOut——结果留共见栈槽) | `6546e45` |
+| 三向分派实现 | §3.2 hCall 内 switch 被调者类型 | **复用 doCall 统一分派**(已含 host/__call/gibbous 升层/普通 Lua 四向);普通 Lua closure 用 executeFrom 同步驱动到完成(非 copyOut——结果留共见栈槽);深度守卫当时与 callLuaFromHost 一样记在 nCcalls 上，后来改记 `luaReentry`,不再占脚本可见的 C 调用层数(#276–#279 本地审查第七轮，见 P1 implementation-progress) | `6546e45` |
 | TAILCALL 复用帧 | §2.5 改写当前 CallInfo + 再 fn.Call | **复用 doTailCall + executeFrom**:Lua 尾调用链在解释器内 O(1) 栈迭代(proper TCO);status 三态 0=完成/1=ERR/2=host(落尾随 RETURN)。gibbous→gibbous 尾调用降级在解释器跑(byte-equal,gibbous 仅是优化) | `5a86294` |
 | 单 BB TAILCALL | (未区分) | TAILCALL 后仅死代码 RETURN 时 reachableBlocks==1 → 单 BB 直线路径,emitOpcode 须含 TAILCALL 分支(否则落 default error)——PW6-c 的 tail-shaped 测试暴露 | 本提交 |
 | 多值窗口 | §4.7 B=0/C=0 经 h_return moveResults | CALL B=0/C=0、TAILCALL B=0(参数/返回到 top)依赖 th.top 跨 opcode 维护 → SupportsAllOpcodes 拒(定参定返放行) | 留后续 |

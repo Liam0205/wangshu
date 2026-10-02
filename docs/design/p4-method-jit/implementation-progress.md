@@ -1537,7 +1537,7 @@ mmap 段**禁直接写 Go 堆指针**(违反三色不变式):
 //
 // **流程**:
 //   1. readCISegInto(th.ciDepth-1, &th.cur) 重载 caller-perspective callee 字段
-//   2. nCcalls++ 计费(防 C stack overflow)
+//   2. nCcalls++ 计费(防 C stack overflow;现已改为 luaReentry++,见 P1 implementation-progress #276–#279 第七轮)
 //   3. executeFrom(th, th.ciDepth-1) 同步驱动 callee Lua 体完成
 //   4. popCallInfo(th) 弹帧,readCISegInto 重载 caller th.cur
 //
