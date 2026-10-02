@@ -14,10 +14,14 @@ import (
 // about the compiled call helpers (whose pc convention the traceback names are read from) or about
 // raiseGibbous, where a compiled frame's errors get their raise-point processing. Here the frames
 // under test are local functions that call only known locals or whitelisted stdlib, each run under
-// force-all and under auto promotion at threshold 1, and PromotionCount must be non-zero so that a
-// pass is not a pass through the interpreter. The caller of table.sort without a comparator is marked
-// forceOnly: under P3, auto promotion at threshold 1 leaves it in the interpreter, so only force-all
-// is required to compile it. Expectations are lua5.1's, from the same source run as a file named "x".
+// force-all and under auto promotion at threshold 1, and PromotionCount must be non-zero. That is
+// only a coarse guard: the count cannot say which function was promoted, so it would not notice the
+// caller under test staying in the interpreter while some other function got promoted. That the
+// compiled paths are covered was shown by mutation: storing the CALL pc instead of pc + 1 in the
+// gibbous call helpers, or dropping raiseGibbous's raise-point processing, makes cases here fail on
+// both P3 and P4. The caller of table.sort without a comparator is marked forceOnly: under P3, auto
+// promotion at threshold 1 leaves it in the interpreter, so only force-all is required to compile it.
+// Expectations are lua5.1's, from the same source run as a file named "x".
 func TestHostBoundaryErrorsInCompiledCallers(t *testing.T) {
 	for _, tc := range []struct {
 		name, src, want string
