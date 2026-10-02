@@ -305,6 +305,24 @@ func (st *State) ResetGlobalsToBaseline() {
 // diagnostics/testing).
 func (st *State) BaselineSize() int { return len(st.baseline) }
 
+// HostFnOf returns the Go function behind a host closure value, or nil for anything else. stdlib
+// uses it to recognize its own builtins (print checks whether the global tostring is still the
+// builtin, which runs no Lua code for a value without __tostring).
+func (st *State) HostFnOf(v value.Value) HostFn {
+	if value.Tag(v) != value.TagFunction {
+		return nil
+	}
+	cl := value.GCRefOf(v)
+	if !object.IsHostClosure(st.arena, cl) {
+		return nil
+	}
+	hid := object.ClosureProtoID(st.arena, cl)
+	if int(hid) >= len(st.hostFns.fns) {
+		return nil
+	}
+	return st.hostFns.fns[hid]
+}
+
 // callHost synchronously calls a host closure (05 §7.5).
 //
 // funcIdx: the host closure's index on the stack; arguments follow immediately;
