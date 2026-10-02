@@ -22,6 +22,11 @@ import (
 // compiles, so a caller cannot call it inside compiled code; the first calls run with probe unarmed
 // and returning normally, because P4 only switches a call site to ExecutePlainCallInlineFrame once a
 // call through it has completed; and rec recurses far enough to pass P4's in-segment call depth.
+// The promotion check below is only a coarse guard, since it cannot say which function was promoted;
+// that the entries named above are taken and guarded here was shown by instrumenting them and by
+// mutation: counting any one of them as a C level makes this test fail under each tier that has it.
+// The fifth entry, ExecuteCalleeFromInlineFrame, is guarded by internal/crescent's
+// TestInlineFrameCalleeAddsNoCLevel.
 func TestCompiledLuaCallsAddNoCLevel(t *testing.T) {
 	const src = `local n = 0
 local mt = {}
@@ -85,7 +90,7 @@ CALLERS = {plain = plain, ret = ret, method = method, tail = tail, rec = rec}`
 			}
 		}
 		if st.PromotionCount() == before {
-			t.Errorf("%s: the caller was not promoted, so the compiled path went untested", tc.name)
+			t.Errorf("%s: nothing was promoted while the caller ran, so the compiled path went untested", tc.name)
 		}
 	}
 }
