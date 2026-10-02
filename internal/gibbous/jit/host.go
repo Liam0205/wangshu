@@ -498,7 +498,7 @@ type P4HostState interface {
 	//   5. nargs=1 + nresults=0 (the Spike 1 SELF + CALL 0-user-arg setter
 	//      form: SELF already wrote R(callA+1)=self, caller CALL.B=2 = 1
 	//      nargs (self only), enterLuaFrame expects nargs=1)
-	//   6. nCcalls++/enterLuaFrame/executeFrom/popCallInfo
+	//   6. luaReentry++/enterLuaFrame/executeFrom/popCallInfo
 	//   7. on exit ciDepth++ to balance PopVoid0Arg (commit-5m syncs the Go
 	//      field ciDepth from the mirror at entry first, to avoid the mmap
 	//      CIDepthInc being out of sync with the Go field)

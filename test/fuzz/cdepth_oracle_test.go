@@ -3,18 +3,25 @@
 package fuzz_test
 
 import (
+	"strconv"
+	"strings"
 	"testing"
 
+	"github.com/Liam0205/wangshu"
 	"github.com/Liam0205/wangshu/internal/oracle"
 )
 
 // TestCDepthMatchesEmbeddedPUC pins the C-call depth a chunk starts at against the in-process PUC
 // oracle, which runs a chunk the way an embedder does: one lua_pcall, nothing of lua.c's around it.
-// Everything a script can observe about the C-call and syntax-level limits -- how deep host->Lua
-// nesting goes before "C stack overflow", how many syntax levels loadstring still has -- is measured
-// from that starting point, so a chunk that started at depth 0 (as wangshu's did) reached one level
-// further than embedded PUC on every one of these shapes. Standalone lua5.1 is one more level
-// shallower again (lua.c's lua_cpcall(pmain)), which is not something an embedded VM has.
+// How deep host->Lua nesting goes before "C stack overflow" and how many syntax levels loadstring
+// still has are both measured from that starting point; with the chunk started at depth 0 (as wangshu
+// did), the first five shapes below reached one level further than embedded PUC. The sixth (the
+// deepest reachable level can still compile and resume) prints the same either way; it pins the
+// boundary itself. Standalone lua5.1 is one level shallower again (lua.c's lua_cpcall(pmain)), which
+// an embedded VM does not have.
+//
+// Each shape also runs force-promoted when the build has a compiled tier. CI runs this test, and
+// TestCDepthOfAPromotedFunctionCalledFromGo below, by name in the oracle-smoke job.
 func TestCDepthMatchesEmbeddedPUC(t *testing.T) {
 	keep := enumerateGlobals(t)
 	prelude := oracle.Prelude(keep)
@@ -63,5 +70,79 @@ print(last, rs)`},
 		if or.Output != wout {
 			t.Errorf("%s: oracle %q, wangshu %q", tc.name, or.Output, wout)
 		}
+		if !tieredBuild {
+			continue
+		}
+		tv, tout, terr, _ := runTieredSide(t, tc.src, prelude)
+		if tv != oracle.VerdictOK {
+			t.Fatalf("%s (force-all): wangshu %v: %s", tc.name, tv, terr)
+		}
+		if or.Output != tout {
+			t.Errorf("%s (force-all): oracle %q, wangshu %q", tc.name, or.Output, tout)
+		}
+
+	}
+}
+
+// TestCDepthOfAPromotedFunctionCalledFromGo covers the other way a chunk-level call starts: the host
+// calling an already-promoted Lua function directly (State.Call), which callOnStack sends straight to
+// enterGibbous rather than the interpreter. In PUC that is one lua_pcall, the same single C level as
+// running a chunk, so the function must see the depth the oracle's main chunk gives the same call.
+func TestCDepthOfAPromotedFunctionCalledFromGo(t *testing.T) {
+	if !tieredBuild {
+		t.Skip("needs a compiled tier")
+	}
+	keep := enumerateGlobals(t)
+	prelude := oracle.Prelude(keep)
+	// top must itself be promoted for State.Call to take the enterGibbous branch; force-all promotes it on
+	// its first call (pcall(top) in the chunk). table.sort's C stack overflow escapes top, and N reads how
+	// deep the __lt recursion got. The oracle can only call top through pcall from its main chunk, which
+	// puts top one C level deeper than a host call straight from Go (main chunk lua_pcall, then pcall's
+	// luaD_call, versus State.Call's single level), so wangshu must reach exactly one level further.
+	const src = `local n = 0
+local mt = {}
+mt.__lt = function(a, b) n = n + 1 table.sort({a, b}) return false end
+local A, B = setmetatable({}, mt), setmetatable({}, mt)
+local function top() n = 0 table.sort({A, B}) return n end
+pcall(top)
+TOP = top
+N = function() return n end`
+	or := oracle.Exec(src+"\npcall(top) print(n)", prelude, oracle.Limits{})
+	if or.Verdict != oracle.VerdictOK {
+		t.Fatalf("oracle %v: %s", or.Verdict, or.Err)
+	}
+	viaPcall, err := strconv.Atoi(strings.TrimSpace(or.Output))
+	if err != nil {
+		t.Fatalf("oracle output %q", or.Output)
+	}
+	want := strconv.Itoa(viaPcall + 1)
+
+	st := wangshu.NewState(wangshu.Options{})
+	st.SetForceAllPromote(true)
+	run := func(chunk string) {
+		prog, err := wangshu.Compile([]byte(chunk), "@x")
+		if err != nil {
+			t.Fatalf("compile: %v", err)
+		}
+		if _, err := prog.Run(st); err != nil {
+			t.Fatalf("run: %v", err)
+		}
+	}
+	run(prelude)
+	afterPrelude := st.PromotionCount()
+	run(src)
+	// The script's main chunk is one promotion; top has to be another.
+	if st.PromotionCount() < afterPrelude+2 {
+		t.Fatalf("top was not promoted before the Go-side call (promotions %d -> %d)", afterPrelude, st.PromotionCount())
+	}
+	if _, err := st.Call(st.GetGlobal("TOP")); err == nil {
+		t.Fatalf("Call(TOP) did not overflow")
+	}
+	res, err := st.Call(st.GetGlobal("N"))
+	if err != nil || len(res) != 1 || !res[0].IsNumber() {
+		t.Fatalf("Call(N) = %v, %v", res, err)
+	}
+	if got := strconv.FormatFloat(res[0].Number(), 'g', -1, 64); got != want {
+		t.Errorf("depth reached from a Go-side call: oracle %s, wangshu %s", want, got)
 	}
 }

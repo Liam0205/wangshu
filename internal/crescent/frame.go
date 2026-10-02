@@ -19,9 +19,10 @@ const (
 	// same, which is why LUAI_MAXCALLS is 20000), but every native-tier
 	// call level is a real Go re-entry chain (Run -> dispatcher ->
 	// ExecutePlainCallInlineFrame -> enterGibbous -> Run ...), each
-	// burning one nCcalls. Deep recursion on a promoted proto would
-	// therefore hit maxCCallDepth (200) and raise "C stack overflow"
-	// where the interpreter succeeds — an auto-mode-only divergence
+	// burning one luaReentry (it used to be nCcalls, which made the
+	// compiled tier hit the script-visible C limits early). Deep recursion
+	// on a promoted proto would therefore exhaust that budget and raise
+	// "C stack overflow" where the interpreter succeeds — an auto-mode-only divergence
 	// (found by FuzzAutoPromote: `fib(1000)` self-recursion). Past this
 	// watermark, gibbous entry points fall back to the interpreter: the
 	// remaining descent runs on the CI chain with NO further Go
@@ -54,6 +55,20 @@ func (st *State) cCallCheck() *LuaError {
 	e.cOverflow = true
 	return e
 }
+
+// reentryCheck bounds luaReentry (see State.luaReentry). The gibbous watermark keeps it near
+// gibbousReentryCCallCap, so this is a backstop against Go stack exhaustion rather than a limit
+// scripts are expected to reach.
+func (st *State) reentryCheck() *LuaError {
+	if st.luaReentry >= maxCCallDepth {
+		return errf("C stack overflow")
+	}
+	return nil
+}
+
+// goDepth is the total Go re-entry depth: the C calls scripts can observe plus the compiled
+// frames' Lua re-entries. The gibbous watermark is taken against it.
+func (st *State) goDepth() int { return st.nCcalls + st.luaReentry }
 
 // enterLuaFrame prepares a frame and pushes its CallInfo (05 §1.4).
 //

@@ -80,7 +80,7 @@ func (st *State) doCall(th *thread, ci *callInfo, i bytecode.Instruction) (*call
 	// bytecode, so the remaining recursion interprets flat inside this
 	// executeFrom loop with zero further Go re-entry, byte-equal to P1
 	// semantics (see the constant's doc in frame.go).
-	if profileEnabled && th == st.mainTh && st.nCcalls < gibbousReentryCCallCap {
+	if profileEnabled && th == st.mainTh && st.goDepth() < gibbousReentryCCallCap {
 		pid := object.ClosureProtoID(st.arena, cl)
 		if code := st.bridge.GibbousCodeOf(st.protos[pid]); code != nil {
 			return nil, st.enterGibbous(th, code, funcIdx, nargs, nresults)
