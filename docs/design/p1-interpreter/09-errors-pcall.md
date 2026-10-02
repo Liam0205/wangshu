@@ -688,11 +688,12 @@ handler):在边界捕获后、返回前调用 handler(可能再 reentry execute)
 > (`ProtectedCallWithHandler`)设为 handler,pcall 与 `coroutine.resume` 设为 nil 并在返回时恢复，所以内层 pcall
 > 接住的错误、协程内部的错误都不会调外层 xpcall 的 handler;`table.sort` 比较器、gsub 替换函数这些 `lua_call`
 > 不改变它。handler 直接从出错处调用，中间不插 C 帧;宿主函数抛出的错误，宿主帧数随 `LuaError.hostAbove` 传给
-> handler,所以 `debug.traceback` 第一行是 `[C]: in function 'error'`。handler 的结果只取一个，存进 `LuaError`
-> (另经 `State.errFuncResult` 作 GC 根),xpcall 返回它。handler 运行期间 CallInfo 深度上限放宽一倍，对应 5.1
-> 在报 `stack overflow` 时 CallInfo 数组已经翻倍、handler 还有空间。实现在 `internal/crescent/errors.go`
-> (`atRaisePoint` / `runErrFunc`)与 `meta.go::ProtectedCallWithHandler`,回归在
-> `test/regression/issue279_traceback_format_test.go` 与 `issue276_279_compiled_callers_test.go`。
+> handler,所以 `debug.traceback` 第一行是 `[C]: in function 'error'`。handler 的结果只取一个，存进 `LuaError`,
+> xpcall 返回它;错误传回 xpcall 的途中它经 `State.errFuncResult` 作 GC 根,xpcall 返回时这个根恢复成进入时的值，
+> 结果不会一直留着。handler 运行期间 CallInfo 深度上限放宽一倍，对应 5.1 在报 `stack overflow` 时 CallInfo
+> 数组已经翻倍、handler 还有空间。实现在 `internal/crescent/errors.go`(`atRaisePoint` / `runErrFunc`)与
+> `meta.go::ProtectedCallWithHandler`,回归在 `test/regression/issue279_traceback_format_test.go`、
+> `issue276_279_compiled_callers_test.go` 与 `issue279_xpcall_handler_result_test.go`。
 
 ### 6.3 `xpcall` 实现
 
