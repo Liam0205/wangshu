@@ -776,8 +776,9 @@ func (vm *VM) callHandlerOnErrorStack(th *Thread, handler, errval value.Value) (
 > `enterlevel` 把语法层数也记在 `nCcalls` 上，所以在越深的调用里 `loadstring` 能嵌套的层数越少，handler 越过上限
 > 运行时连 `loadstring("return 1")` 都会报 `chunk has too many syntax levels`(望舒把当前深度传给
 > `parse.ParseAtCDepth`)。`cCallCheck` 与 `luaD_call` 一样先加一再比较，所以 Lua 函数最深跑在 199 层，这一层还能
-> 编译 chunk、恢复协程。(独立解释器 lua.c 进入主 chunk 前已用掉 2 层，所以同样的写法 lua5.1 少 2 层，登记为已知限制，
-> 见 implementation-progress 的对账表。)
+> 编译 chunk、恢复协程。宿主运行 chunk 的那次调用也算一层(`callOnStack`,对应嵌入宿主的 `lua_pcall`),所以起点与
+> 嵌入式 PUC 一致;独立解释器 lua.c 另有 `lua_cpcall(pmain)` 一层，同样的写法 lua5.1 少 1 层，登记为已知限制，见
+> implementation-progress 的对账表。
 
 ---
 
@@ -1101,7 +1102,7 @@ type Proto struct {
 | 维度 | `stack overflow` | `C stack overflow` |
 |---|---|---|
 | 含义 | **Lua 调用深度**超限(CallInfo 数 / 值栈深度) | **host↔Lua 重入深度**超限(实际的 Go 栈消耗) |
-| 触发点 | `enterLuaFrame` / `ensureStack`(05 §1.4) 超 `ciCap`/栈上限 | `callLuaFromHost` 时 `nCcalls` 超 `LUAI_MAXCCALLS`(=200,05 §7.4) |
+| 触发点 | `enterLuaFrame` / `ensureStack`(05 §1.4) 超 `ciCap`/栈上限 | `callLuaFromHost` 时 `nCcalls` 加一后达到 `LUAI_MAXCCALLS`(=200,05 §7.4;订正见下) |
 | 物理资源 | arena 内的 CallInfo 数组 / 值栈(**不是 Go 栈**) | 实际的 Go 栈(host→Lua 每层加一个 execute Go 帧,05 §7.3) |
 | 典型触发 | `local function f() return 1+f() end f()`(深 Lua 递归,非尾) | `pcall` 套 `pcall` 套...无限,或元方法无限互调经 host | 
 | 可恢复? | ✅ 可被 `pcall` 捕获(它是普通 Lua 错误) | ✅ 可被 `pcall` 捕获,但**保护边界自身也在消耗 C 栈**(见下) |
@@ -1119,6 +1120,11 @@ type Proto struct {
 > Lua 5.1 给 `pcall`/错误处理**保留一小段 C 栈余量**(`LUAI_MAXCCALLS` 之上还有约 200 的 buffer),让错误能被
 > 处理而不立即再次溢出。P1 应同样保留余量(`nCcalls` 超 200 报错,但允许错误处理路径短暂超到 ~220)。
 > **待 12 核对**精确余量值。记 doc-gap(§14)。
+>
+> **订正(2026-10-02 与 `lua5.1` 核对,#279 本地审查)**:5.1 的余量不是约 200,而是 `LUAI_MAXCCALLS` 的八分之一。
+> `luaD_call` 先加一再比较：新深度到 200 报 `C stack overflow`(所以 Lua 函数最深跑在 199),到 225 才是
+> `LUA_ERRERR`,中间只有为这个错误调用的 xpcall handler 能进入;`pcall` 本身不享有余量。望舒按此实现，见 §6.5 订正
+> 与 `State.cCallCheck`。
 
 ---
 
@@ -1402,8 +1408,9 @@ debug.traceback(message, level):
   `error in error handling`、`'__tostring' must return a string`、`cannot resume dead coroutine` 等的精确文案,
   **待 12 差分核对**与官方 Lua 5.1 逐字节对齐。本文给骨架,不编造。
 - **`chunkID` 截断规则**:§3.4 的 `LUA_IDSIZE`(=60)、`[string "..."]` 截断位置/省略号,**待 12 核对**逐字节一致。
-- **C stack overflow 的错误处理余量**:§10 给 `pcall` 保留 C 栈 buffer 让错误能被处理(`nCcalls` 超 200 但允许
-  错误路径短暂超到 ~220),精确余量值待 12 核对(对齐 Lua 5.1 `LUAI_MAXCCALLS` 之上的处理余量)。
+- **C stack overflow 的错误处理余量**:~~§10 给 `pcall` 保留 C 栈 buffer(`nCcalls` 超 200 但允许错误路径短暂超到
+  ~220),精确余量值待 12 核对~~ **已核对并实现(2026-10-02,#279 本地审查)**:新深度到 200 报错，余量是到 225,只给
+  xpcall handler,见 §10 订正与 §6.5 订正。
 - **`debug.traceback(co)` 跨协程**:§13.1/§13.3 P1 简化为只支持当前 thread,跨 co 回溯记缺口。
 - **`debug.getinfo` 的 `linedefined`/`lastlinedefined`**:§13.2 需 Proto 持久化函数定义起止行(类似 LineInfo
   的额外调试字段),是否回填 01 待定;P1 可缺(返回 -1 或省字段)。
