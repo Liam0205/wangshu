@@ -52,7 +52,7 @@
 |---|---|---|---|
 | **嵌入式 hardening 阈值** | **主动偏离对位 backend**,fail-fast 返 Lua 错误(可被 pcall 兜住);因为对位行为是**不可恢复 runtime 崩溃**(`out of memory` / stack overflow,`defer recover` 都兜不住) | **宿主进程不可崩优先于字节一致**(roadmap §0 / `12-testing-difftest.md §4.9`);仅性能/效率差异不触发 hardening | `string.rep` / `string.format` 等阻断;阈值取值为分配类 1 GiB、循环类 1<<24;commit message 与 godoc 写明背景 |
 | **豁免** | **合法的不比对**——某点本质不可比(地址脱敏 / random / locale / GC 数值 / libc 文本) | 差分 fuzz 不应对这些点失败(`12-testing-difftest.md §4.3-§4.7`) | `test/difftest/exemptions.go` 集中维护,15 项显式登记 |
-| **设计差异**(已知微差) | **语义上有意不同**,行为偏离对位但不算 bug(如 lua5.1 独立解释器进入主 chunk 前已用掉 2 层 C 调用深度，望舒从 0 开始数;xpcall handler 时机原先也在此列，2026-10-02 起已对齐) | 接受为永久差异,登记对账 | `docs/design/p1-interpreter/implementation-progress.md` 对账表 |
+| **设计差异**(已知微差) | **语义上有意不同**,行为偏离对位但不算 bug(如 lua5.1 独立解释器的 `lua_cpcall(pmain)` 比嵌入式使用多占 1 层 C 调用深度;xpcall handler 时机原先也在此列，2026-10-02 起已对齐) | 接受为永久差异,登记对账 | `docs/design/p1-interpreter/implementation-progress.md` 对账表 |
 
 **易混点**:hardening 与豁免的边界——hardening 是「我们主动偏离,因为对位的不防御不可接受」(底线优先级冲突),豁免是「不比对,因为该点本来就不可比」。前者主动改变行为(fail-fast 报错),后者从差分检查中剔除该比较点。详细背景见 [[drift-audit-and-fuzz-hardening-round]] 教训 5。
 

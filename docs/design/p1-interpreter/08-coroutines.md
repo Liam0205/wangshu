@@ -185,8 +185,8 @@ resume 本身是 protected 边界,§5.2):
 | `normal` | `cannot resume non-suspended coroutine` | 它在 resume 链上(已被更外层 resume),再 resume 会形成环 |
 
 > **订正(2026-10-02 与 `lua5.1` 核对)**:上面表格里 running / normal 两行的措辞和下面这段的说法都不对，本文
-> §7.1、§7.2、§10 第 8 条、§11 里同样的说法也以这里为准。lua5.1 按 `lbaselib.c` 的 `statnames` 区分，
-> 报 `cannot resume running coroutine` / `cannot resume normal coroutine`;`non-suspended` 是 5.2 的措辞。
+> §3.5 的伪代码注释、§7.1、§7.2、§11.1 第 8 条、§11.2 里同样的说法也以这里为准。lua5.1 按 `lbaselib.c` 的
+> `statnames` 区分，报 `cannot resume running coroutine` / `cannot resume normal coroutine`;`non-suspended` 是 5.2 的措辞。
 > 望舒目前仍报 `non-suspended`,代码与本节一起在 #281 修正。
 >
 > **`running` 与 `normal` 共用 `non-suspended` 措辞**:Lua 5.1 对"目标非 suspended"统一报
@@ -450,7 +450,7 @@ func hostCoroutineResume(vm *VM, th *Thread) int {
     // ① 状态检查(§2.3):co 必须 suspended
     if co.status != statusSuspended {
         th.pushBool(false)
-        th.push(vm.internString(resumeErrMsg(co.status)))  // "cannot resume dead/non-suspended coroutine"
+        th.push(vm.internString(resumeErrMsg(co.status)))  // "cannot resume dead/non-suspended coroutine" (5.1 的实际措辞见 §2.3 订正)
         return 2
     }
     // ② 搬 resume 的参数(arg(2..))到 co 的值栈(§4.2,跨 Thread 拷贝)
