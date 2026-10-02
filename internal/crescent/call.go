@@ -73,9 +73,10 @@ func (st *State) doCall(th *thread, ci *callInfo, i bytecode.Instruction) (*call
 	// h_return, returning (nil, e) the same as the host path — the execute main
 	// loop reloads ci=currentCI and keeps interpreting the caller frame.
 	//
-	// nCcalls watermark (gibbousReentryCCallCap): every gibbous call
-	// level is a real Go re-entry chain, so deep recursion would trip
-	// maxCCallDepth long before maxLuaCallDepth. Past the watermark,
+	// Re-entry watermark (gibbousReentryCCallCap, taken against goDepth):
+	// every gibbous call level is a real Go re-entry chain, so deep
+	// recursion would exhaust the Go-stack budget long before
+	// maxLuaCallDepth. Past the watermark,
 	// fall through to enterLuaFrame below — a promoted proto keeps its
 	// bytecode, so the remaining recursion interprets flat inside this
 	// executeFrom loop with zero further Go re-entry, byte-equal to P1
