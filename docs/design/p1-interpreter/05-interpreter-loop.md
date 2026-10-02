@@ -725,7 +725,7 @@ func (vm *VM) doTailCall(f *frame, i Instruction) callResult {
 }
 ```
 
-**关键差异 vs CALL**:CALL 压**新** CallInfo(深度 +1);TAILCALL **原地改写当前** CallInfo(深度不变),所以 `for i=1,1e9 do return f() end` 式尾递归**栈深度恒定**。`ci.tailcall=true` 标志影响错误回溯([09](./09-errors-pcall.md):尾调用帧在 traceback 里显示为 `(...tail calls...)`)。
+**关键差异 vs CALL**:CALL 压**新** CallInfo(深度 +1);TAILCALL **原地改写当前** CallInfo(深度不变),所以 `for i=1,1e9 do return f() end` 式尾递归**栈深度恒定**。`ci.tailcall=true` 标志影响错误回溯([09](./09-errors-pcall.md):被尾调用替换掉的帧在 traceback 里各显示为一行 `(tail call): ?`,`(...tail calls...)` 是 5.2 的写法，见 09 §7.1 订正)。
 
 ### 7.6 host function 调用约定(本文给接口,细节见 [10](./10-stdlib.md))
 
