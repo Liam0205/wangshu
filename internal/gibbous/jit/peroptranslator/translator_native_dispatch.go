@@ -242,7 +242,7 @@ func (c *nativeCode) dispatchHelper(base int32) bool {
 		// truncate CALLs expecting >= 16 fixed results (PR #62 review
 		// finding).
 		nresults := cc
-		if st := c.host.ExecutePlainCallInlineFrame(base, callA, nargs, nresults); st != 0 {
+		if st := c.host.ExecutePlainCallInlineFrame(base, pc, callA, nargs, nresults); st != 0 {
 			return false
 		}
 	case jit.HelperGetGlobal:

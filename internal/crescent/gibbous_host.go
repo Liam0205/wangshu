@@ -1020,7 +1020,7 @@ func (st *State) TForLoop(base, pc, a, c int32) int64 {
 //     symmetric.
 //
 // Return: 0=OK / 1=ERR (raiseGibbous already set state.pendingErr).
-func (st *State) ExecutePlainCallInlineFrame(base, callA, nargs, nresults int32) int32 {
+func (st *State) ExecutePlainCallInlineFrame(base, pc, callA, nargs, nresults int32) int32 {
 	_ = base
 	th := st.runningThread
 	// The segment guard already validated R(callA) is a mono Lua
@@ -1030,6 +1030,9 @@ func (st *State) ExecutePlainCallInlineFrame(base, callA, nargs, nresults int32)
 	// ciDepth is unchanged. funcIdx addresses the callee closure in
 	// the caller's frame exactly like host.CallBaseline / doCall.
 	ci := st.gibCI(th)
+	// The caller's pc, as DoCall / CallBaseline leave it: a traceback taken while the callee runs
+	// reads the caller's line and the callee's name from the CALL at ci.pc-1.
+	ci.pc = pc + 1
 	funcIdx := ci.base + int(callA)
 	callee := th.slot(funcIdx)
 	if value.Tag(callee) != value.TagFunction {
@@ -1505,7 +1508,7 @@ func (st *State) TailCall(base, pc, a, b, c int32) int32 {
 //   - 0=OK (callee complete + returns landed in R(callA..callA+nresults-1))
 //   - 1=ERR (state.pendingErr set, the Run-side dispatcher returns 1 and the
 //     error bubbles up)
-func (st *State) ExecuteCalleeFromInlineFrame(base, callA, callArgCount, nresults int32) int32 {
+func (st *State) ExecuteCalleeFromInlineFrame(base, pc, callA, callArgCount, nresults int32) int32 {
 	_ = base // the base arg is the R0 byte offset computed by jitContext.valueStackBase, unread by the Spike 1 helper
 	th := st.runningThread
 	// **commit-5m fixes the ciDepth Go-vs-mirror desync bug**
@@ -1526,6 +1529,9 @@ func (st *State) ExecuteCalleeFromInlineFrame(base, callA, callArgCount, nresult
 	}
 	// 2. ciDepth-- to cancel out the BuildVoid0Arg side effect
 	th.setCIDepth(th.ciDepth - 1)
+	// th.cur is the caller again: record its pc as DoCall / CallBaseline do, so a traceback taken
+	// while the callee runs names the callee and gives the caller's line (CALL at ci.pc-1).
+	th.cur.pc = pc + 1
 	// 3. funcIdx = th.cur.base + callA (under the SELF + CALL form the method is in R(callA))
 	funcIdx := th.cur.base + int(callA)
 	// 4. nargs = 1 + callArgCount (self + N user args, Spike 2); nresults is

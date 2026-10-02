@@ -163,6 +163,40 @@ stack traceback:
 	x:9: in function 's5'
 	x:13: in main chunk
 	[C]: ?`, true, false},
+		{"#279: uncaught error in a compiled callee after its call site has succeeded",
+			`local function leaf(n) local t = nil if n > 3 then return t.x end return n end
+local function mid(n)
+  local s = 0
+  for i = 1, n do s = s + i end
+  leaf(n)
+  return s
+end
+for i = 1, 3 do mid(i) end
+mid(5)`,
+			`x:1: attempt to index local 't' (a nil value)
+stack traceback:
+	x:1: in function 'leaf'
+	x:5: in function 'mid'
+	x:9: in main chunk
+	[C]: ?`, true, false},
+		{"#279: xpcall(f, debug.traceback) over a compiled call site that has succeeded",
+			`local function leaf(n) local t = nil if n > 3 then return t.x end return n end
+local function mid(n)
+  local s = 0
+  for i = 1, n do s = s + i end
+  local v = leaf(n)
+  return s + v
+end
+for i = 1, 3 do mid(i) end
+OUT = select(2, xpcall(function() local r = mid(5) return r end, debug.traceback))`,
+			`x:1: attempt to index local 't' (a nil value)
+stack traceback:
+	x:1: in function 'leaf'
+	x:5: in function 'mid'
+	x:9: in function <x:9>
+	[C]: in function 'xpcall'
+	x:9: in main chunk
+	[C]: ?`, false, false},
 	} {
 		for _, mode := range []string{"force", "auto"} {
 			prog, err := wangshu.Compile([]byte(tc.src), "@x")
