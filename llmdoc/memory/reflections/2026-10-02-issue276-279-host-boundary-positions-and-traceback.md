@@ -76,8 +76,8 @@ metadata:
     原样传给调用方线程，对象上记的出错点状态(`hostAbove`、`coSnap`)描述的是协程那条栈，于是 xpcall handler 的
     traceback 多或少一行 `[C]: ?`,外层协程死后 traceback 为空。改为同一个错误值新建错误对象。之后的第十一、十二轮
     只剩文档小问题(提交说明里节号写错、少句号)。
-15. **第二次全范围终审**(阻塞 1、小问题 2)。第一轮就把 `DoCall` / `CallBaseline` / `TailCall` 改成写回调用方
-    `ci.pc = pc + 1`,同样实现「编译帧调 Lua」的两个 inline-frame helper 却没改，参数里也没有 pc。P4 的调用点要先成功
+15. **第二次全范围终审**(阻塞 1、小问题 2)。本地审查之前的最初修复(第 3 条，提交 `4801209`)就把 `DoCall` /
+    `CallBaseline` / `TailCall` 改成写回调用方 `ci.pc = pc + 1`,同样实现「编译帧调 Lua」的两个 inline-frame helper 却没改，参数里也没有 pc。P4 的调用点要先成功
     一次才改走 `ExecutePlainCallInlineFrame`,而编译层回归用例的预热调用每次都报错，所以十几轮都没测到。
 
 ## 教训
@@ -123,7 +123,7 @@ metadata:
 
 ### 6. 改一个 helper 的约定时，把实现同一接口的兄弟 helper 一起列出来
 
-第七轮把五个重入入口的计数一起从 `nCcalls` 换到 `luaReentry`,是按「谁实现了编译帧调 Lua」列的清单;第一轮改
+第七轮把五个重入入口的计数一起从 `nCcalls` 换到 `luaReentry`,是按「谁实现了编译帧调 Lua」列的清单;最初修复(第 3 条)改
 `pc + 1` 时却只改了出现在 traceback 问题里的三个，漏了两个 inline-frame helper。**改调用约定(写回 pc、计数、
 错误标注)时，按接口(这里是 `P4HostState` 里所有执行被调方的方法)列出全部实现，逐个确认**,而不是只改报错样例走到的那个。
 

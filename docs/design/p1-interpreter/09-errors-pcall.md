@@ -770,8 +770,9 @@ func (vm *VM) callHandlerOnErrorStack(th *Thread, handler, errval value.Value) (
 > C 调用深度也照 `luaD_call` 处理:到上限(200)时报 `C stack overflow`,而这个错误本身就要调 handler,所以
 > handler 可以越过上限继续运行，超过上限八分之一(225)才是 `LUA_ERRERR`;报错的那次调用在 5.1 里已经把深度加了
 > 一，handler 比出错处深一层;`LUA_ERRERR` 的错误值是字面量，不带位置。望舒的 `State.cCallCheck` 是这条规则，宿主
-> 进入 Lua 的入口 `callLuaFromHostNamed` 经过它;gibbous 的调用 helper 走的是另一个只限制 Go 栈深度的 `reentryCheck`(见本段末尾)。另外两处读同一个深度、但不留余量:
-> `lua_resume` 的检查是 `nCcalls >= LUAI_MAXCCALLS`,handler 越过上限运行时调用 resume 仍然得到
+> 进入 Lua 的入口 `callLuaFromHostNamed` 经过它(gibbous 的调用 helper 不经过它，见本段末尾)。5.1 里另外
+> 两处读同一个 C 调用深度、但不留余量:`lua_resume` 的检查是 `nCcalls >= LUAI_MAXCCALLS`,handler 越过上限
+> 运行时调用 resume 仍然得到
 > `C stack overflow`(没启动过的协程还会因此变成 dead,`resume_error` 把它的函数也清掉了);`lparser.c` 的
 > `enterlevel` 把语法层数也记在 `nCcalls` 上，所以在越深的调用里 `loadstring` 能嵌套的层数越少，handler 越过上限
 > 运行时连 `loadstring("return 1")` 都会报 `chunk has too many syntax levels`(望舒把当前深度传给
