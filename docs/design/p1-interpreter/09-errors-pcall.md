@@ -380,6 +380,11 @@ Lua 5.1 把 `Proto.Source`(原始 chunk 名)转成 traceback/错误里显示的�
 - **字符串 chunk 的截断**:取源码首行,若过长截断并加 `...`,包进 `[string "..."]`。换行符在首行处截断。
   这套规则细节(`LUA_IDSIZE`=60、截断位置)**待 12 差分核对**与官方逐字节对齐——traceback 里的 `[string ...]`
   形式是高频差分点。
+  **已核对(2026-10-02,#276-#279 第三次全范围终审前)**:`luaO_chunkid` 的缓冲区长度随调用方不同。运行期错误位置、
+  traceback 和 `debug.getinfo` 的 `short_src` 用 `LUA_IDSIZE`(60);词法、语法和代码生成的错误都经过
+  `luaX_lexerror`,用 `llex.c` 的 `MAXSRC`(80)。所以同一个块名，语法错误里能多显示 20 个字节:`[string "..."]`
+  首行最多 63 字节(运行期 43),`@file` 尾部最多 72 字节(运行期 52),`=name` 最多 79 字节(运行期 59)。
+  实现是 `bytecode.ChunkIDN(source, bufflen)`,`ChunkID` 固定用 60,前端三种错误类型用 `bytecode.MaxSrc`。
 - **P1 实现位置**:`internal/crescent` 的 `chunkID(source []byte, isFromSource bool) string`,或放在 `bytecode`
   侧供 traceback 与 error 共用。Source 内容从 arena String 读([01](./01-value-object-model.md) §5.1)。
 
@@ -1408,7 +1413,8 @@ debug.traceback(message, level):
 - **错误措辞精确格式**:§9.3 所有内在错误的冠词(`a`/`an`)/复数/标点,以及 `assertion failed!`、
   `error in error handling`、`'__tostring' must return a string`、`cannot resume dead coroutine` 等的精确文案,
   **待 12 差分核对**与官方 Lua 5.1 逐字节对齐。本文给骨架,不编造。
-- **`chunkID` 截断规则**:§3.4 的 `LUA_IDSIZE`(=60)、`[string "..."]` 截断位置/省略号,**待 12 核对**逐字节一致。
+- **`chunkID` 截断规则**:~~§3.4 的 `LUA_IDSIZE`(=60)、`[string "..."]` 截断位置/省略号,**待 12 核对**逐字节一致~~
+  **已核对(2026-10-02)**:运行期用 60、语法错误用 `MAXSRC` 80,见 §3.4 的补记。空块名显示为 `?` 的差异另见 #284。
 - **C stack overflow 的错误处理余量**:~~§10 给 `pcall` 保留 C 栈 buffer(`nCcalls` 超 200 但允许错误路径短暂超到
   ~220),精确余量值待 12 核对~~ **已核对并实现(2026-10-02,#279 本地审查)**:新深度到 200 报错，余量是到 225,只给
   xpcall handler,见 §10 订正与 §6.5 订正。
