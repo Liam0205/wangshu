@@ -51,7 +51,8 @@ type Error struct {
 }
 
 func (e *Error) Error() string {
-	return fmt.Sprintf("%s:%d: %s", bytecode.ChunkID(e.Source), e.Line, e.Msg)
+	// luaX_lexerror formats the chunk name with MAXSRC, not LUA_IDSIZE.
+	return fmt.Sprintf("%s:%d: %s", bytecode.ChunkIDN(e.Source, bytecode.MaxSrc), e.Line, e.Msg)
 }
 
 func (l *Lexer) errorf(format string, args ...any) *Error {
