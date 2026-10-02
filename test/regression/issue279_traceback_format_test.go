@@ -460,6 +460,17 @@ local _, m = xpcall(function() return t.x end, function(m)
 end)
 OUT = m .. " | " .. tostring(select(2, coroutine.resume(fresh))) .. " | " .. tostring(select(2, coroutine.resume(y)))`,
 			`C stack overflow dead | C stack overflow suspended | cannot resume dead coroutine | ran2`},
+		{"the deepest reachable level can still compile a chunk and resume a coroutine",
+			`local last, rs
+local t = setmetatable({}, {})
+getmetatable(t).__index = function(t, k)
+  last = loadstring("") ~= nil
+  rs = coroutine.resume(coroutine.create(function() end))
+  return t[k]
+end
+pcall(function() return t.x end)
+OUT = tostring(last) .. " " .. tostring(rs)`,
+			`true true`},
 	} {
 		for _, force := range []bool{false, true} {
 			st := runTracebackCase(t, tc.src, force)
