@@ -775,8 +775,9 @@ func (vm *VM) callHandlerOnErrorStack(th *Thread, handler, errval value.Value) (
 > `C stack overflow`(没启动过的协程还会因此变成 dead,`resume_error` 把它的函数也清掉了);`lparser.c` 的
 > `enterlevel` 把语法层数也记在 `nCcalls` 上，所以在越深的调用里 `loadstring` 能嵌套的层数越少，handler 越过上限
 > 运行时连 `loadstring("return 1")` 都会报 `chunk has too many syntax levels`(望舒把当前深度传给
-> `parse.ParseAtCDepth`)。(深度的起点与 lua5.1 独立解释器差 3 层，语法层数上限差 2 层，都是早已存在的差异，登记为
-> 已知限制，见 implementation-progress 的对账表。)
+> `parse.ParseAtCDepth`)。`cCallCheck` 与 `luaD_call` 一样先加一再比较，所以 Lua 函数最深跑在 199 层，这一层还能
+> 编译 chunk、恢复协程。(独立解释器 lua.c 进入主 chunk 前已用掉 2 层，所以同样的写法 lua5.1 少 2 层，登记为已知限制，
+> 见 implementation-progress 的对账表。)
 
 ---
 
