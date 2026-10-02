@@ -128,9 +128,11 @@ func (st *State) Resume(id uint64, args []value.Value) ([]value.Value, bool, *Lu
 
 	// resume starts a new layer of execute (Go stack +1); the nested resume
 	// chain and host→Lua reentry share the same limit (05 §7.4).
-	if e := st.cCallCheck(); e != nil {
+	// lua_resume's own check is a plain >= with no handler room (resume_error, not luaD_call), so
+	// a handler running past the limit still cannot resume a coroutine.
+	if st.nCcalls >= maxCCallDepth {
 		co.status = CoSuspended
-		return nil, false, e
+		return nil, false, errf("C stack overflow")
 	}
 	st.nCcalls++
 	defer func() { st.nCcalls-- }()
