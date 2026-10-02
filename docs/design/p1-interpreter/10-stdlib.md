@@ -627,9 +627,13 @@ func hostPrint(vm *VM, th *Thread) int {
   全局 `tostring` 为 nil 时 print 报 `attempt to call a nil value`;返回值不是字符串或数字时报
   `'tostring' must return a string to 'print'`;`__tostring` 处理函数运行在 `tostring`、`print` 两层 C 帧之上，
   这决定了处理函数里 `error(m, level)` 的层级和 traceback 的行。`internal/stdlib/stdlib.go::baseFnPrint` 照此实现。
+  **补记(2026-10-02)**:`luaB_print` 转换完一个参数就 `fputs` 写出(之后的参数前先写制表符),不是全部转换完再一次写。
+  所以 `__tostring` 处理函数自己的输出落在参数之间，后面某个参数转换失败时前面的参数已经写出。望舒原来先收集再写，
+  失败时什么都不写，现在逐个写出。
 - **`__tostring` 重入**:若某参数有 `__tostring`,`vm.tostring` 内部 `callLuaFromHost`(07 §11 / §1.4)→ 重入 +
   可能 GC。`print` 用 Go 缓冲 `buf` 累积(脱离 arena,§3.3),已写入 buf 的内容安全;每个参数的 `tostring` 结果
-  立即 `buf.Write`,不跨下一次重入持有 arena 串。**安全,无需 Pin**。
+  立即 `buf.Write`,不跨下一次重入持有 arena 串。**安全,无需 Pin**。(现在是每个参数直接写到标准输出，见上一条补记;
+  结论不变：转换结果当场变成 Go 字符串写出，不跨下一次重入持有 arena 串。)
 - **默认格式的差分豁免**:`tostring({})`/`tostring(print)` 含对象地址(`table: 0x...`),与官方/gopher-lua 必然
   不同(arena 偏移 vs C 指针)——07 §11 已标「含地址的 tostring 输出差分需豁免」,本文 `print` 同此口径,指向
   [12](./12-testing-difftest.md) 定脱敏比较。**脱敏只管地址的值,地址的宽度是另一件事**:`0x%08x` 的 8 位是
