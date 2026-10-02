@@ -143,7 +143,11 @@ func baseFnDofile(st *crescent.State, args []value.Value) ([]value.Value, *cresc
 		if len(r) >= 2 && value.Tag(r[1]) == value.TagString {
 			msg = string(object.StringBytes(st.Arena(), value.GCRefOf(r[1])))
 		}
-		return nil, crescent.NewError(msg)
+		// luaB_dofile raises loadfile's message with a bare lua_error: it already names the file
+		// (and line, for a syntax error), and no position of dofile's caller is added (#278).
+		e := crescent.NewError(msg)
+		e.MarkAnnotated()
+		return nil, e
 	}
 	return st.ProtectedCallDirect(r[0], nil)
 }
