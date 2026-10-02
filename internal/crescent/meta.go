@@ -509,6 +509,18 @@ func (st *State) ProtectedCallDirect(fn value.Value, args []value.Value) ([]valu
 	return st.callLuaFromHost(th, fn, args)
 }
 
+// HostCallCheck is the C-depth check of a call a host function makes (luaD_call's ++nCcalls), for
+// host code that computes a call's result itself instead of making it: print formats a value the
+// builtin tostring would only format, but in lua5.1 that is still a lua_call, which raises
+// "C stack overflow" at the limit. The error is the one ProtectedCallDirect would return.
+func (st *State) HostCallCheck() *LuaError {
+	e := st.cCallCheck()
+	if e != nil {
+		e.MarkAnnotated()
+	}
+	return e
+}
+
 // MetaOf exposes metaOf (used by stdlib getmetatable).
 func (st *State) MetaOf(t arena.GCRef) arena.GCRef { return st.metaOf(t) }
 

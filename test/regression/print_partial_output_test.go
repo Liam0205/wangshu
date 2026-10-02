@@ -61,6 +61,58 @@ io.write(tostring == nil and select(2, pcall(print, 1)) or "?", "\n")`
 	}
 }
 
+// TestPrintKeepsTheChecksOfItsToStringCalls covers print's shortcut for values the builtin tostring
+// would only format: it skips the call, but not what the call checks. In lua5.1 each argument is a
+// lua_call, so print at the deepest C level raises "C stack overflow" before writing anything; the
+// shortcut wrote the line and returned. The step-budget charge for a string argument is wangshu's
+// own, so its expectation is the text print gave before the shortcut (frozen, no position).
+func TestPrintKeepsTheChecksOfItsToStringCalls(t *testing.T) {
+	const src = `local hit, msg
+local function probe(n)
+  local ok, err = pcall(probe, n + 1)
+  if not ok and not hit then
+    hit = n
+    print("x")
+    io.write("after print\n")
+  elseif not ok and not msg then
+    msg = err
+  end
+end
+pcall(probe, 0)
+io.write(tostring(msg), "\n")`
+	got := captureStdout(t, func() {
+		st := wangshu.NewState(wangshu.Options{})
+		prog, err := wangshu.Compile([]byte(src), "@x")
+		if err != nil {
+			t.Fatalf("compile: %v", err)
+		}
+		if _, err := prog.Run(st); err != nil {
+			t.Fatalf("run: %v", err)
+		}
+	})
+	if want := "C stack overflow\n"; got != want {
+		t.Errorf("at the C limit: got %q, want %q (lua5.1)", got, want)
+	}
+
+	const budget = `local s = string.rep("a", 200000)
+local ok, e = pcall(function() print(s) end)
+OUT = e`
+	_ = captureStdout(t, func() {
+		st := wangshu.NewState(wangshu.Options{})
+		st.SetStepBudget(5000)
+		prog, err := wangshu.Compile([]byte(budget), "@budget.lua")
+		if err != nil {
+			t.Fatalf("compile: %v", err)
+		}
+		if _, err := prog.Run(st); err != nil {
+			t.Fatalf("run: %v", err)
+		}
+		if got, want := st.GetGlobal("OUT").Str(), "instruction budget exceeded"; got != want {
+			t.Errorf("budget: got %q, want %q", got, want)
+		}
+	})
+}
+
 // captureStdout runs f with os.Stdout redirected to a pipe and returns what was written. print and
 // io.write write to os.Stdout directly, so this is the only way to observe their interleaving.
 func captureStdout(t *testing.T, f func()) string {

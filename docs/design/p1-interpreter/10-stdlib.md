@@ -631,7 +631,9 @@ func hostPrint(vm *VM, th *Thread) int {
   不是全部转换完再一次写。所以 `__tostring` 处理函数自己的输出落在参数之间，后面某个参数转换失败时前面的参数已经
   写出。望舒原来先收集再写，失败时什么都不写。现在仍先写进缓冲，但在每次可能运行 Lua 代码的转换之前(全局
   `tostring` 不是内置的那个，或参数带 `__tostring`)、报错返回之前和结尾把缓冲写出，所以写出顺序与 5.1 相同，
-  普通的 print 仍然只有一次写操作。
+  普通的 print 仍然只有一次写操作。不调用内置 `tostring` 的那些参数，调用本身会做的检查照做：每个参数一次 C 调用
+  深度检查(5.1 里每个参数都是一次 `lua_call`,在 C 调用深度用尽的那一层 print 报 `C stack overflow`),字符串参数
+  的字节记账也照扣，出错时的错误文本与调用 `tostring` 时一样，不带位置。
 - **`__tostring` 重入**:若某参数有 `__tostring`,`vm.tostring` 内部 `callLuaFromHost`(07 §11 / §1.4)→ 重入 +
   可能 GC。`print` 用 Go 缓冲 `buf` 累积(脱离 arena,§3.3),已写入 buf 的内容安全;每个参数的 `tostring` 结果
   立即 `buf.Write`,不跨下一次重入持有 arena 串。**安全,无需 Pin**。(缓冲在重入之前会先写出，见上一条补记;

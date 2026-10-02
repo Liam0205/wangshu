@@ -600,9 +600,17 @@ func baseFnPrint(st *crescent.State, args []value.Value) ([]value.Value, *cresce
 	for i, a := range args {
 		if builtin && !hasToStringMeta(st, a) {
 			// What the builtin tostring would return, without the call: it runs no Lua code here.
-			// Strings keep its byte charge (see baseFnToString).
+			// What the call itself would check still applies: the C-depth check of lua_call, and
+			// the byte charge baseFnToString makes for a string. Errors come back with the text
+			// the call would give, position-frozen (a host function raised them); an uncaught
+			// one's traceback has no tostring frame above print, since no call is made.
+			if ce := st.HostCallCheck(); ce != nil {
+				flush()
+				return nil, ce
+			}
 			if value.Tag(a) == value.TagString {
 				if ce := st.ChargeBulkWork(len(object.StringBytes(st.Arena(), value.GCRefOf(a)))); ce != nil {
+					ce.MarkAnnotated()
 					flush()
 					return nil, ce
 				}
