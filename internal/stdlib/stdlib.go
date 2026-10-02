@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"reflect"
 	"strings"
 
 	"github.com/Liam0205/wangshu/internal/arena"
@@ -569,7 +570,12 @@ func baseFnPrint(st *crescent.State, args []value.Value) ([]value.Value, *cresce
 	// luaB_print writes each argument as soon as tostring has converted it (fputs per argument, the
 	// tab before every one after the first), so output from a __tostring handler interleaves with
 	// it and the arguments converted before a failing one are already written when the error is
-	// raised. Collecting everything first and printing at the end wrote nothing in that case.
+	// raised. Converting everything first and writing at the end wrote nothing in that case.
+	//
+	// The observable order only matters when a conversion can run Lua code. So text is collected
+	// in buf and written out before any conversion that might (the global tostring is not the
+	// builtin, or the value has a __tostring), before returning an error, and at the end: one
+	// write per print call in the common case, as before, instead of one per fragment.
 	//
 	// Embedded NULs are WRITTEN, not truncated -- a deliberate deviation.
 	//
@@ -583,7 +589,31 @@ func baseFnPrint(st *crescent.State, args []value.Value) ([]value.Value, *cresce
 	//
 	// The differential harness captures print through its own accumulator rather
 	// than a C FILE*, so this does not surface as a divergence there.
+	builtin := isBuiltinToString(st, tostr)
+	var buf strings.Builder
+	flush := func() {
+		if buf.Len() > 0 {
+			_, _ = os.Stdout.WriteString(buf.String())
+			buf.Reset()
+		}
+	}
 	for i, a := range args {
+		if builtin && !hasToStringMeta(st, a) {
+			// What the builtin tostring would return, without the call: it runs no Lua code here.
+			// Strings keep its byte charge (see baseFnToString).
+			if value.Tag(a) == value.TagString {
+				if ce := st.ChargeBulkWork(len(object.StringBytes(st.Arena(), value.GCRefOf(a)))); ce != nil {
+					flush()
+					return nil, ce
+				}
+			}
+			if i > 0 {
+				buf.WriteString("\t")
+			}
+			buf.WriteString(valueToString(st, a))
+			continue
+		}
+		flush()
 		res, e := st.ProtectedCallDirect(tostr, []value.Value{a})
 		if e != nil {
 			return nil, e
@@ -596,13 +626,32 @@ func baseFnPrint(st *crescent.State, args []value.Value) ([]value.Value, *cresce
 		if value.Tag(raw) != value.TagString && !value.IsNumber(raw) {
 			return nil, crescent.NewError("'tostring' must return a string to 'print'")
 		}
+		// luaB_print writes the tab only once this argument has converted, so a handler's own
+		// output comes before it and a failed conversion leaves no trailing tab.
 		if i > 0 {
-			_, _ = os.Stdout.WriteString("\t")
+			buf.WriteString("\t")
 		}
-		_, _ = os.Stdout.WriteString(valueToString(st, raw))
+		buf.WriteString(valueToString(st, raw))
 	}
-	_, _ = os.Stdout.WriteString("\n")
+	buf.WriteString("\n")
+	flush()
 	return nil, nil
+}
+
+// isBuiltinToString reports whether fn is this package's tostring, which for a value without
+// __tostring only formats it.
+func isBuiltinToString(st *crescent.State, fn value.Value) bool {
+	h := st.HostFnOf(fn)
+	return h != nil && reflect.ValueOf(h).Pointer() == reflect.ValueOf(crescent.HostFn(baseFnToString)).Pointer()
+}
+
+// hasToStringMeta mirrors valueToStringMeta's lookup: the types that can carry a __tostring.
+func hasToStringMeta(st *crescent.State, v value.Value) bool {
+	switch value.Tag(v) {
+	case value.TagTable, value.TagString, value.TagUserdata:
+		return value.Tag(st.MetaFieldOf(v, "__tostring")) != value.TagNil
+	}
+	return false
 }
 
 func baseFnToString(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {

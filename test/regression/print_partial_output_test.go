@@ -13,6 +13,9 @@ import (
 // lands between the arguments, and when a later conversion fails the arguments before it are
 // already written. print used to convert everything first and write once at the end, which put a
 // handler's output before the whole line and wrote nothing at all when a conversion failed.
+// print now buffers and writes out before any conversion that can run Lua code, so the cases
+// cover each way that can happen: a __tostring on a table, a redefined global tostring (including
+// one that fails part way), a __tostring on the shared string metatable, and tostring removed.
 // Expectations are lua5.1's stdout.
 func TestPrintWritesEachArgumentAsConverted(t *testing.T) {
 	const src = `local o = setmetatable({}, {__tostring = function() io.write("[X]") return "obj" end})
@@ -22,12 +25,27 @@ io.write(tostring(select(2, pcall(print, "a", "b", bad, "c"))), "\n")
 local boom = setmetatable({}, {__tostring = function() error("boom") end})
 io.write(tostring(select(2, pcall(print, 1, boom))), "\n")
 print()
-print(1, nil, true)`
+print(1, nil, true)
+local real = tostring
+tostring = function(v) io.write("<") return real(v) end
+print("p", 2)
+tostring = function(v) if v == 3 then return {} end return real(v) end
+io.write(tostring(select(2, pcall(print, 1, 2, 3, 4))), "\n")
+tostring = real
+getmetatable("").__tostring = function(s) io.write("{s}") return s end
+print("m", 5)
+getmetatable("").__tostring = nil
+tostring = nil
+io.write(tostring == nil and select(2, pcall(print, 1)) or "?", "\n")`
 	const want = "a[X]\tobj\tb\n" +
 		"a\tb'tostring' must return a string to 'print'\n" +
 		"1x:5: boom\n" +
 		"\n" +
-		"1\tnil\ttrue\n"
+		"1\tnil\ttrue\n" +
+		"<p<\t2\n" +
+		"1\t2'tostring' must return a string to 'print'\n" +
+		"{s}m\t5\n" +
+		"attempt to call a nil value\n"
 	got := captureStdout(t, func() {
 		st := wangshu.NewState(wangshu.Options{})
 		prog, err := wangshu.Compile([]byte(src), "@x")
