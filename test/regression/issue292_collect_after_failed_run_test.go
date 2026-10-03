@@ -13,6 +13,9 @@ import (
 // reused that memory. lua_pcall closes them before returning (luaD_pcall's luaF_close), so the closure
 // keeps the value it saw. Each entry point is paired with a forced Collect, MaybeCollectNow with GC
 // stress mode on (the threshold-gated entry, made to collect), and no collection at all as the control.
+// Since #291 the collector also marks the value an open upvalue points at, which keeps the closure's
+// values alive by itself, so this test fails only when both are gone; the close is pinned on its own by
+// internal/crescent's TestCallOnStackErrorClosesUpvalues.
 func TestCollectAfterAFailedRunKeepsEscapedUpvalues(t *testing.T) {
 	const fail = `local x = {name = "kept"} local s = "str" .. tostring(#"kept")
 function g() return x.name, s end
