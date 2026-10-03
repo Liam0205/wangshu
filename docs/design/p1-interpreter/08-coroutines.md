@@ -778,6 +778,15 @@ yield 经 `hostCoroutineYield`(host)触发,而 host 调用本身会 `nCcalls`...
 §6.3)——即使它逻辑上"还能被 resume"(但没人能 resume 它了,因为没引用)。这是 Lua 5.1 语义:**无引用的
 挂起协程会被 GC**(它代表的"暂停的计算"被丢弃)。
 
+> **实现(2026-10-04,#291)**:协程的 Lua 值是 arena 里的一个 Thread 头(`TagThread`,`object.AllocThreadHandle`),
+> word7 存协程在 State 注册表里的下标;协程的值栈和 CallInfo 仍是 runtime 自己的 arena 段，记在 Go 侧的
+> `coroutine` 记录里。收集器扫到这个 Thread 头时经 `Roots.ScanThread`(`State.scanCoroutine`)扫它的栈、主函数和
+> xfer 区，所以挂起协程只在被引用时存活。根里只放 running 和 normal 的协程(`visitExtraRefs`)。标记结束后
+> `Roots.ReleaseThreads`(`State.releaseCoroutines`)对没被标记的协程先 `closeUpvals(co.th, 0)`,再把两个栈段还给
+> arena,清掉注册表项，下标留给下一个协程复用。此前(到 #291 为止)协程句柄是 lightuserdata,所有非 dead 协程都是根，
+> 没有引用的挂起协程一直不被回收，弱表里以它为键的项也不被清。回归测试见
+> `test/regression/issue291_unreferenced_coroutines_test.go`。
+
 ### 6.2 mark 要扫所有 thread 的值栈 + CallInfo(06 §5.2 Thread 行)
 
 06 §5.2 的 Thread 行规定了"标记一个 Thread 时要扫的字段"。对**每个可达的协程 Thread**(不只 running,还有
@@ -819,8 +828,9 @@ suspended/normal),mark 要扫:
 ```
 
 > **与 06 §5.2 的衔接**:挂起协程的开放 upvalue 链(`openUpvalRef`)被 mark 扫到(§6.2),开放 upvalue 对象本身
-> 存活;它指向的栈槽由 co 的栈扫描(§6.2)覆盖,**不在 upvalue 处重复扫**(06 §5.2 Upvalue 行:"开放态其指向
-> 的栈槽不在此扫,随 Thread 栈扫到")。这避免重复标记,且保证开放 upvalue 与它指的栈槽都活。
+> 存活;它指向的栈槽由 co 的栈扫描(§6.2)覆盖。但闭包可以比协程活得久:协程没有引用、闭包还被引用时，协程的栈
+> 不会被扫。所以标记开放 upvalue 时也标记它所指栈槽里的值(`Roots.OpenUpvalue`,与 `lgc.c` `reallymarkobject`
+> 一样),协程被回收前再关闭这些 upvalue,闭包读到的仍是原来的值(#291)。
 
 ---
 

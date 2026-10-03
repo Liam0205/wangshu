@@ -110,6 +110,22 @@ type Roots struct {
 	// GCRef, such as open upvalues on a thread).
 	ExtraRefs func(visit func(arena.GCRef))
 
+	// ScanThread marks what the runtime keeps outside the arena for a thread object it is
+	// reached through (a coroutine's stack, main function and transfer values live in its
+	// Go-side record), so that state is kept exactly as long as the thread is reachable.
+	ScanThread func(th arena.GCRef, visit func(value.Value), visitRef func(arena.GCRef))
+
+	// OpenUpvalue returns the current value of an open upvalue, which lives in its owner
+	// thread's stack. Marking an open upvalue marks that value, as lgc.c's reallymarkobject
+	// does, because the owner may be a coroutine nothing else reaches.
+	OpenUpvalue func(uv arena.GCRef) value.Value
+
+	// ReleaseThreads runs once marking is final, before weak tables are cleared and objects
+	// swept. isDead tells whether a thread object went unreached; the runtime closes and
+	// frees what it keeps for those, as luaE_freethread closes the thread's upvalues before
+	// freeing it.
+	ReleaseThreads func(isDead func(arena.GCRef) bool)
+
 	// R7 shadow stack is held by the Collector itself; R8 temporary roots fall under
 	// R5/R7 and need no separate field.
 }
@@ -302,6 +318,12 @@ func (c *Collector) Collect() {
 	defer func() { c.collecting = false }()
 	c.markRoots()
 	c.markAll()
+	if c.roots.ReleaseThreads != nil {
+		dead := c.deadWhite()
+		c.roots.ReleaseThreads(func(th arena.GCRef) bool {
+			return object.ColorOf(object.HeaderOf(c.a, th)) == dead
+		})
+	}
 	c.separateFinalizers()
 	c.clearWeakTables()
 	c.sweep()

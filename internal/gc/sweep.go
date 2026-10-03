@@ -65,8 +65,9 @@ func (c *Collector) unlinkSweep(prev, ref, next arena.GCRef) {
 //   - Closure: a host closure notifies the registry to release its slot reference.
 //   - Userdata: clear the hasFinalizer entry (prevents a stale record from blocking the __gc
 //     registration of a new userdata after block reuse).
-//   - Thread: header + value-stack/CallInfo attachment blocks (P1 runtime coroutines live on
-//     the Go side, so this type is only reached by tests).
+//   - Thread: header + value-stack/CallInfo attachment blocks. A coroutine's thread object has
+//     neither (its stacks are the runtime's own segments, freed through ReleaseThreads), so
+//     only the head is freed.
 func (c *Collector) freeObject(ref arena.GCRef, ot object.OBJType) {
 	switch ot {
 	case object.OBJ_STRING:

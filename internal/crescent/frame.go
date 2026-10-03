@@ -279,12 +279,6 @@ func errf(format string, args ...any) *LuaError {
 }
 
 // typeName returns the Lua type name (for error messages).
-//
-// Coroutine-handle caveat: wangshu models coroutines as lightuserdata
-// handles (TagLightUD); without State context this function can only
-// say "userdata". Error-message paths must use st.typeNameOf instead:
-// PUC reports "thread" for thread values (cgo oracle diff fuzz catch:
-// "attempt to call a thread value").
 func typeName(v value.Value) string {
 	if value.IsNumber(v) {
 		return "number"

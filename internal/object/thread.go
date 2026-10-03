@@ -17,7 +17,7 @@
 //	word4: callInfoRef
 //	word5: ciTop | ciCap
 //	word6: openUpvalRef
-//	word7: errorJmp / state-machine field
+//	word7: errorJmp / state-machine field (a handle thread: the runtime's coroutine id)
 //	word8: resumeFrom
 package object
 
@@ -137,6 +137,25 @@ func AllocThread(a *arena.Arena, stackCap, ciCap uint32) arena.GCRef {
 	setWordAt(a, ref, threadErrorJmpIdx, 0)
 	setWordAt(a, ref, threadResumeFromIdx, 0)
 	return ref
+}
+
+// AllocThreadHandle reserves a Thread head with no value stack or CallInfo array of its own: the
+// object a coroutine value refers to, while the runtime keeps the coroutine's stacks in its own
+// segments under id (word7). Its null stack/CallInfo refs make the collector scan and free only
+// the head.
+func AllocThreadHandle(a *arena.Arena, id uint64) arena.GCRef {
+	ref := allocateRaw(a, OBJ_THREAD, threadHeadWords, 0)
+	for i := uint32(1); i < threadHeadWords; i++ {
+		setWordAt(a, ref, i, 0)
+	}
+	setWordAt(a, ref, threadStatusIdx, uint64(StatusSuspended))
+	setWordAt(a, ref, threadErrorJmpIdx, id)
+	return ref
+}
+
+// ThreadHandleID returns the coroutine id an AllocThreadHandle head carries.
+func ThreadHandleID(a *arena.Arena, th arena.GCRef) uint64 {
+	return wordAt(a, th, threadErrorJmpIdx)
 }
 
 func ThreadStatusOf(a *arena.Arena, th arena.GCRef) ThreadStatus {

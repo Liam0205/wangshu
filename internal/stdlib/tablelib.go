@@ -513,8 +513,8 @@ type heldPin struct {
 }
 
 // hold roots v in slot, releasing whatever the slot held before. Two kinds of value are left
-// unpinned. Values that cannot be collected at all: numbers, nil, booleans and light userdata
-// (coroutine handles are light userdata, and the coroutine registry never shrinks). And strings,
+// unpinned. Values that cannot be collected at all: numbers, nil, booleans and light userdata.
+// (A coroutine is a thread object and is pinned like any other.) And strings,
 // under the default `<` only: they CAN be collected while a comparison runs -- a handler may drop
 // them and collect -- but are never used afterwards. The default `<` runs Lua code only through
 // __lt, which strings never reach, and no Go local holding a string is used after a comparison
@@ -1857,10 +1857,10 @@ var debugFns = []entry{
 func debugFnTraceback(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
 	// A coroutine first argument selects that thread's stack (db_errorfb's getthread), and the
 	// message and level shift one place right.
-	var coID uint64
+	var co value.Value
 	onCo := len(args) >= 1 && st.IsCoroutineHandle(args[0])
 	if onCo {
-		coID = value.AsLightUD(args[0])
+		co = args[0]
 		args = args[1:]
 	}
 	// The optional level SKIPS that many leading frames, so traceback("m", 2) starts at the
@@ -1885,7 +1885,7 @@ func debugFnTraceback(st *crescent.State, args []value.Value) ([]value.Value, *c
 	var tb string
 	if onCo {
 		var ok bool
-		if tb, ok = st.CoTraceback(coID, level, hasLevel); !ok {
+		if tb, ok = st.CoTraceback(co, level, hasLevel); !ok {
 			// The running coroutine's own handle: the current thread, as without one.
 			tb = st.TracebackFrom(level)
 		}

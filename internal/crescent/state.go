@@ -97,7 +97,7 @@ type State struct {
 	hostFns       hostFnRegistry    // host function registry (M12)
 	stringLib     arena.GCRef       // string library table (per-type __index for string values, 07 §1.2)
 	stringMeta    arena.GCRef       // shared metatable for string values {__index = string} (PUC parity; getmetatable("") returns it)
-	cos           coRegistry        // coroutine registry (08; coID = lightuserdata handle)
+	cos           coRegistry        // coroutine registry (08; coID = the index a thread object carries)
 
 	// uvOwner records which thread's stack each [open] upvalue belongs to (the
 	// Go-side form of the (threadRef, stackIdx) pair in 01 §5.4; once the value
@@ -551,6 +551,9 @@ func (st *State) installRoots() {
 		ProgramStringRefs: st.visitProgramStringRefs,
 		ExtraValues:       st.visitExtraValues,
 		ExtraRefs:         st.visitExtraRefs,
+		ScanThread:        st.scanCoroutine,
+		OpenUpvalue:       st.openUpvalueValue,
+		ReleaseThreads:    st.releaseCoroutines,
 	})
 }
 
@@ -570,10 +573,11 @@ func (st *State) visitProgramStringRefs(visit func(arena.GCRef)) {
 //
 // After the freelist reuses memory, a missed root is a use-after-free: besides
 // runningThread, the suspended caller threads on the resume chain
-// (threadChain), the stacks of all non-dead coroutines, the coroutine main
-// function (held only by the Go struct before the first resume) and the xfer
-// transfer area must all be reachable. The compound values of the globals
-// baseline (the root for issue #6 ResetGlobalsToBaseline) are scanned here too.
+// (threadChain) must be reachable. A suspended coroutine is not a root: its
+// stack, main function and xfer transfer area are reached through its thread
+// object (scanCoroutine), so it lives as long as something refers to it (#291).
+// The compound values of the globals baseline (the root for issue #6
+// ResetGlobalsToBaseline) are scanned here too.
 func (st *State) visitExtraValues(visit func(value.Value)) {
 	// globals baseline: compound values without a root → the next Reset writes an already-dead GCRef into _G
 	for i := range st.baseline {
@@ -583,7 +587,7 @@ func (st *State) visitExtraValues(visit func(value.Value)) {
 	// fast path (the vast majority of loads): no coroutines, no resume chain →
 	// scan runningThread directly, zero map allocation (every Collect round does a
 	// root scan, and the slow path's seen map is GC self-harm).
-	if len(st.cos.cos) == 0 && len(st.threadChain) == 0 {
+	if st.cos.live == 0 && len(st.threadChain) == 0 {
 		st.visitThreadValues(st.runningThread, nil, visit)
 		return
 	}
@@ -594,16 +598,6 @@ func (st *State) visitExtraValues(visit func(value.Value)) {
 	seen := st.visitThreadValues(st.runningThread, st.gcSeen, visit)
 	for _, th := range st.threadChain {
 		seen = st.visitThreadValues(th, seen, visit)
-	}
-	for _, co := range st.cos.cos {
-		if co.status == CoDead {
-			continue
-		}
-		seen = st.visitThreadValues(co.th, seen, visit)
-		visit(co.fn)
-		for _, v := range co.xfer {
-			visit(v)
-		}
 	}
 }
 
@@ -658,7 +652,7 @@ func (st *State) visitExtraRefs(visit func(arena.GCRef)) {
 			visit(r)
 		}
 	}
-	if len(st.cos.cos) == 0 && len(st.threadChain) == 0 {
+	if st.cos.live == 0 && len(st.threadChain) == 0 {
 		st.visitThreadRefs(st.runningThread, nil, visit)
 		return
 	}
@@ -670,11 +664,12 @@ func (st *State) visitExtraRefs(visit func(arena.GCRef)) {
 	for _, th := range st.threadChain {
 		seen = st.visitThreadRefs(th, seen, visit)
 	}
+	// The running coroutine and the normal ones it was resumed from are in use whether or not a
+	// value still refers to them: root their thread objects, which keeps the rest of their state.
 	for _, co := range st.cos.cos {
-		if co.status == CoDead {
-			continue
+		if co != nil && (co.status == CoRunning || co.status == CoNormal) {
+			visit(co.ref)
 		}
-		seen = st.visitThreadRefs(co.th, seen, visit)
 	}
 }
 
@@ -1116,21 +1111,11 @@ func (st *State) StdinUnlock() { stdinMu.Unlock() }
 
 func TypeNameOf(v value.Value) string { return typeName(v) }
 
-// TypeName is the State-aware type name: unlike package-level
-// TypeNameOf it recognizes coroutine handles (lightuserdata present
-// in the registry -> "thread", matching PUC). Error messages and
-// type() should both go through here; the package-level form only
-// serves contexts without a State.
+// TypeName is the Lua type name of v (exported for stdlib).
 func (st *State) TypeName(v value.Value) string { return st.typeNameOf(v) }
 
-// typeNameOf is the State-aware internal form of typeName (the single
-// entry point for error-message paths).
-func (st *State) typeNameOf(v value.Value) string {
-	if st.IsCoroutineHandle(v) {
-		return "thread"
-	}
-	return typeName(v)
-}
+// typeNameOf is the internal form of TypeName (the entry point for error-message paths).
+func (st *State) typeNameOf(v value.Value) string { return typeName(v) }
 
 // NewLibTable provides a new table to stdlib (for hanging the stdlib namespace).
 func (st *State) NewLibTable(approxFields uint32) arena.GCRef {
@@ -1500,6 +1485,13 @@ func (st *State) newThread() *thread {
 	th.ciBaseW = uint32(ciRef) >> 3
 	th.ciCap = initialCISlots
 	return th
+}
+
+// freeThread gives a thread's value stack and CallInfo segments back to the arena (a collected
+// coroutine's; the thread must not be used afterwards).
+func (st *State) freeThread(th *thread) {
+	st.arena.Free(arena.GCRef(th.stackBaseW)<<3, uint32(th.stackCap)*8)
+	st.arena.Free(arena.GCRef(th.ciBaseW)<<3, uint32(th.ciCap*ciWords)*8)
 }
 
 // --- CallInfo arena segment writes (PW10 R2b-1: cold fields write only the mirror) ---

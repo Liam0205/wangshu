@@ -55,6 +55,18 @@ func (st *State) upvalSet(th *thread, uv arena.GCRef, v value.Value) {
 	owner.setSlot(int(idx), v)
 }
 
+// openUpvalueValue is the collector's OpenUpvalue hook: the value in the owner's stack slot. The
+// owner may be a coroutine nothing else reaches, whose stack is then never scanned. A slot at or
+// above the owner's top is not live (the stack scan clears it), so it is not marked either.
+func (st *State) openUpvalueValue(uv arena.GCRef) value.Value {
+	owner := st.uvOwnerOf(uv, nil)
+	idx := int(object.UpvalStackIdx(st.arena, uv))
+	if owner == nil || idx >= owner.liveTop() {
+		return value.Nil
+	}
+	return owner.slot(idx)
+}
+
 func (st *State) uvOwnerOf(uv arena.GCRef, fallback *thread) *thread {
 	if st.uvOwner != nil {
 		if o, ok := st.uvOwner[uv]; ok {

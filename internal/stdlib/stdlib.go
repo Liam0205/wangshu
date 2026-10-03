@@ -127,10 +127,9 @@ func valueToString(st *crescent.State, v value.Value) string {
 	case value.TagTable:
 		return fmt.Sprintf("table: 0x%08x", uint64(value.GCRefOf(v)))
 	case value.TagLightUD:
-		if st.IsCoroutineHandle(v) {
-			return fmt.Sprintf("thread: 0x%08x", value.AsLightUD(v))
-		}
 		return fmt.Sprintf("userdata: 0x%08x", value.AsLightUD(v))
+	case value.TagThread:
+		return fmt.Sprintf("thread: 0x%08x", uint64(value.GCRefOf(v)))
 	case value.TagUserdata:
 		return fmt.Sprintf("userdata: 0x%08x", uint64(value.GCRefOf(v)))
 	}
@@ -893,9 +892,6 @@ func crescentToNumber(st *crescent.State, v value.Value) (float64, bool) {
 func baseFnType(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
 	if len(args) == 0 {
 		return nil, crescent.NewArgError(1, "value expected")
-	}
-	if st.IsCoroutineHandle(args[0]) {
-		return []value.Value{intern(st, "thread")}, nil
 	}
 	return []value.Value{intern(st, st.TypeName(args[0]))}, nil
 }
