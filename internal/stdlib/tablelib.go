@@ -39,7 +39,8 @@ func tableFnForeach(st *crescent.State, args []value.Value) ([]value.Value, *cre
 		return nil, e
 	}
 	if len(args) < 2 || value.Tag(args[1]) != value.TagFunction {
-		return nil, crescent.NewArgError(2, "function expected")
+		// luaL_checktype -> tag_error: "function expected, got <type>" (#286).
+		return nil, crescent.NewArgError(2, "function expected, got "+argTypeName(args, 1))
 	}
 	t := value.GCRefOf(tv)
 	key := value.Nil
@@ -71,7 +72,8 @@ func tableFnForeachi(st *crescent.State, args []value.Value) ([]value.Value, *cr
 		return nil, e
 	}
 	if len(args) < 2 || value.Tag(args[1]) != value.TagFunction {
-		return nil, crescent.NewArgError(2, "function expected")
+		// luaL_checktype -> tag_error: "function expected, got <type>" (#286).
+		return nil, crescent.NewArgError(2, "function expected, got "+argTypeName(args, 1))
 	}
 	t := value.GCRefOf(tv)
 	n := int(st.RawBorder(t))
