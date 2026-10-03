@@ -15,7 +15,7 @@
 | `test/language/` | `language_test` | 语言与标准库语义:stdlib、table / table_puc51、meta、coroutine、global、register、getinfo、os.time isdst、baseline,以及 concurrency / longevity 压力测试 | 默认 |
 | `test/tiering/` | `tiering_test` | 分层与晋升:tier 开关、promotion 计数、P2 bridge 端到端与阈值校准 | `wangshu_profile` 系列(p1 / p3 / p4 各有专属文件) |
 | `test/regression/` | `regression` | issue 回归:某个 crasher / 分歧被修好后用来固定行为的显式测试。命名 `issueNNN_*_test.go`;2026-09-09 从根目录并入的 5 个仍叫 `fuzz_NNN_test.go`,内容同类 | 按 issue 所在层各异 |
-| `test/fuzz/` | `fuzz_test` | 五个 `Fuzz*` harness + `raceEnabled` 常量 + `main_test.go`(`TestMain`)+ **`testdata/fuzz/` 语料** | 每个 harness 一族,见下 |
+| `test/fuzz/` | `fuzz_test` | 五个 `Fuzz*` harness + 与内嵌 oracle 比 C 调用深度的普通测试 `TestCDepth*`(`cdepth_*_test.go`)+ `raceEnabled` 常量 + `main_test.go`(`TestMain`)+ **`testdata/fuzz/` 语料** | 每个 harness 一族,见下 |
 | `test/testutil/` | `testutil` | 跨包共用的测试辅助函数。**只有第二个包需要时才进这里**,单消费者的辅助函数留在自己包内 | 无 |
 | `test/conformance/` `test/difftest/` `test/luasuite/` | 各自 | 迁移前就在这里,未动 | 各自 |
 | `internal/fuzzforensics/` | `fuzzforensics` | fuzz worker 静默死亡的取证:fd 2 崩溃栈迹 + 飞行记录仪。**非测试代码**,用内部测试包做单元测试 | 无 |
@@ -31,8 +31,15 @@ fuzz_auto_test.go           (wangshu_p3 || wangshu_p4) && wangshu_profile
 fuzz_p4_test.go             wangshu_p4 && wangshu_profile
 fuzz_oracle_test.go         wangshu_oracle_cgo && cgo
 fuzz_oracle_tiered_test.go  wangshu_oracle_cgo && cgo && (wangshu_p3 || wangshu_p4)
+cdepth_oracle_test.go       wangshu_oracle_cgo && cgo,TestCDepth*(普通测试，不是 Fuzz 靶点)
+cdepth_tier_off_test.go     wangshu_oracle_cgo && cgo && !(wangshu_p3 || wangshu_p4),tieredBuild = false 与占位的 runTieredSide
+cdepth_tier_on_test.go      wangshu_oracle_cgo && cgo && (wangshu_p3 || wangshu_p4),tieredBuild = true(runTieredSide 用 fuzz_oracle_tiered 里的)
 race_on/off_test.go         race / !race,只定义 raceEnabled,供 fuzz_auto / fuzz_p4 跳过 -race 下的 mmap 路径
 ```
+
+这个包里的普通 `Test*` 不会被 fuzz 流程顺带跑到:`scripts/go-fuzz.sh` 用 `-run '^$'` 只跑靶点。所以
+`TestCDepth*` 要靠 `.github/workflows/ci.yml` 的 oracle-smoke 和 `Makefile` 的 `fuzz-oracle` 按名字点到,在 P1、
+P3、P4 三套 oracle 标签下各跑一次。以后在这里加普通测试，要在这两处一起点名，否则它只是能编译，不会有人跑。
 
 `test/regression/` 也有自己的一份 `race_on/off_test.go`,同样只定义 `raceEnabled`。两份互不可见,按包各定义一份
 是既有做法。
