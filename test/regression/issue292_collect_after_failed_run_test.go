@@ -11,8 +11,8 @@ import (
 // closed only when the next Run started, and between the two the main thread's stack is no GC root, so a
 // host Collect() there freed what an escaped closure still referenced; the next Run then read whatever
 // reused that memory. lua_pcall closes them before returning (luaD_pcall's luaF_close), so the closure
-// keeps the value it saw. Each entry point is paired with a forced Collect, the threshold-gated
-// MaybeCollectNow after a GC stress allocation, and no collection at all as the control.
+// keeps the value it saw. Each entry point is paired with a forced Collect, MaybeCollectNow with GC
+// stress mode on (the threshold-gated entry, made to collect), and no collection at all as the control.
 func TestCollectAfterAFailedRunKeepsEscapedUpvalues(t *testing.T) {
 	const fail = `local x = {name = "kept"} local s = "str" .. tostring(#"kept")
 function g() return x.name, s end
@@ -61,7 +61,11 @@ return g()`
 	}{
 		{"no collection", func(*wangshu.State) {}},
 		{"Collect", func(st *wangshu.State) { st.Collect() }},
-		{"MaybeCollectNow", func(st *wangshu.State) { st.Collect(); st.MaybeCollectNow() }},
+		{"MaybeCollectNow", func(st *wangshu.State) {
+			st.SetGCStressMode(true)
+			st.MaybeCollectNow()
+			st.SetGCStressMode(false)
+		}},
 	}
 	for _, e := range entries {
 		for _, c := range collects {
