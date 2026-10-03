@@ -832,6 +832,14 @@ STW §7.3)。本文只列 opt 字符串 → 行为映射(对齐 Lua 5.1):
 | `require(modname)` | **❌/△ 缺口**:5.1 module 系统(`package.loaders`/`package.path`/`package.loaded`/`package.cpath`) | package 库 + 文件查找 | **P1 缺口或极简**:见下 |
 | `module(name, ...)` | **❌ 缺口** | package 系统 | P1 不做 |
 
+> **`loadfile` 的错误文本与首行(2026-10-03 与 `lua5.1` 核对,#288)**:打不开或读不了文件时，消息照 `lauxlib.c` 的
+> `errfile` 写成 `cannot <what> <文件名>: <strerror>`:`fopen` 失败是 `open`,能打开但读失败(比如目录)是 `read`;
+> 最后一段是 C 库对 errno 的说明，望舒取 Go 的 `syscall.Errno` 文本、首字母改大写，与 glibc / macOS 的 `strerror`
+> 一致(其他平台、没有 errno 的错误保留 Go 的文本)。文件第一个字节是 `#` 时，跟 `luaL_loadfile` 一样跳过第一行
+> (`#!` 行),保留换行，行号不变;`loadstring` 不跳。`dofile` 加载失败时原样抛出这条消息，不加调用方位置。实现在
+> `internal/stdlib/baseenv.go`(`baseFnLoadfile` / `fileErrorMessage`),回归在
+> `test/regression/issue288_loadfile_error_text_test.go`。
+
 > **`load` 的 reader 与错误(2026-10-02 与 `lua5.1` 核对,#279 本地审查补修)**:5.1 在 `luaD_protectedparser`
 > 里调 reader,这是一层**不改 message handler 的保护调用**。所以 reader 抛出的错误被 load 接住、作为
 > `(nil, msg)` 返回，但外层 xpcall 的 handler 照样会在出错点运行，返回的 msg 就是 handler 的结果;顶层运行时
