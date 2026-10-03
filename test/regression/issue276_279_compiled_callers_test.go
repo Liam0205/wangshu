@@ -21,7 +21,9 @@ import (
 // gibbous call helpers, or dropping raiseGibbous's raise-point processing, makes cases here fail on
 // both P3 and P4. The caller of table.sort without a comparator is marked forceOnly: under P3, auto
 // promotion at threshold 1 leaves it in the interpreter, so only force-all is required to compile it.
-// Expectations are lua5.1's, from the same source run as a file named "x".
+// The promotion check is skipped where compiledCallersPromote is false (P4 off amd64, whose
+// native-only translator leaves most of these callers in the interpreter); there the cases only
+// compare the output. Expectations are lua5.1's, from the same source run as a file named "x".
 func TestHostBoundaryErrorsInCompiledCallers(t *testing.T) {
 	for _, tc := range []struct {
 		name, src, want string
@@ -230,7 +232,7 @@ stack traceback:
 			if got != tc.want {
 				t.Errorf("%s (%s):\n got %q\nwant %q", tc.name, mode, got, tc.want)
 			}
-			if st.PromotionCount() == 0 && (mode == "force" || !tc.forceOnly) {
+			if compiledCallersPromote && st.PromotionCount() == 0 && (mode == "force" || !tc.forceOnly) {
 				t.Errorf("%s (%s): nothing was promoted, so the compiled path went untested", tc.name, mode)
 			}
 		}
