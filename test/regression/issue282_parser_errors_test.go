@@ -1,6 +1,7 @@
 package regression
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -24,6 +25,15 @@ import (
 // internal/oracle, which runs a chunk at the depth wangshu's Run does (the standalone lua5.1 runs it
 // one C call deeper, inside lua_cpcall, and reports one less).
 func TestParserErrorsMatchLua51(t *testing.T) {
+	// 61 locals, and a function that has already taken a1..a60 as upvalues.
+	var decl, sum []string
+	for i := 1; i <= 61; i++ {
+		decl = append(decl, "local a"+strconv.Itoa(i))
+		if i <= 60 {
+			sum = append(sum, "a"+strconv.Itoa(i))
+		}
+	}
+	over60Upvalues := strings.Join(decl, " ") + " function f() local z = " + strings.Join(sum, "+")
 	for _, tc := range []struct{ name, src, want string }{
 		{"name followed by a name", "x x",
 			"[string \"x x\"]:1: '=' expected near 'x'"},
@@ -153,6 +163,14 @@ func TestParserErrorsMatchLua51(t *testing.T) {
 			"[string \"do do a,a,a,a,a,a,a,a,a,a,a,a,a,a,a,a,a,a,a,a,a,a,a,a,a,a,a,a,a...\"]:1: main function has more than 196 variables in assignment"},
 		{"assignment target limit inside a function", "local function f()\n" + strings.Repeat("a,", 198) + "a = 1 end",
 			"[string \"local function f()...\"]:2: function at line 1 has more than 197 variables in assignment"},
+		// funcname's singlevar resolves the name after reading it, so the error is on the line the
+		// scanner reached past the name.
+		{"function statement name past the upvalue limit, then a field", over60Upvalues + "\n function\n a61\n\n.x() end end",
+			"[string \"local a1 local a2 local a3 local a4 local a5 local a6 local a7 ...\"]:5: function at line 1 has more than 60 upvalues"},
+		{"function statement name past the upvalue limit, then a method", over60Upvalues + "\n function\n a61\n\n:x() end end",
+			"[string \"local a1 local a2 local a3 local a4 local a5 local a6 local a7 ...\"]:5: function at line 1 has more than 60 upvalues"},
+		{"function statement name past the upvalue limit, then the body", over60Upvalues + "\n function\n a61\n\n() end end",
+			"[string \"local a1 local a2 local a3 local a4 local a5 local a6 local a7 ...\"]:5: function at line 1 has more than 60 upvalues"},
 	} {
 		if got := loadMessage(t, tc.src); got != tc.want {
 			t.Errorf("%s:\n got %q\nwant %q", tc.name, got, tc.want)
