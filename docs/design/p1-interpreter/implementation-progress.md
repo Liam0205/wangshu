@@ -116,7 +116,7 @@
 | host closure 从 Go 端 Call | 任意 closure 一视同仁可被 `state.Call` 调起(11 §1.5) | internal `State.Call` 见 host closure 直接报错(`call.go:hostCheck`) | **有意裁剪、不影响主线**:`Register` 注册的 host fn 仍可由 Lua 内调用正常工作;Go 端「state.Call(hostFn,…)」用法未开,等真有需求时补 callHost 入口的脚手架(临时栈帧) |
 | 开放 upvalue 链 | 按 stackIdx 降序单链(05 §8.3) | Go map(stackIdx → uvRef)+ uvOwner(uv → thread) | 共享语义等价(同槽同 uv);降序链是值栈 arena 化的配套,一并留 P3 |
 | executeSignal 三态 | sigReturn/sigYield/sigError 枚举(08 §3.3) | 显式 *LuaError 返回 + errYieldSentinel 哨兵 | 同一冒泡通道,哨兵区分;08 §3.4 "yield↔error 对称"的最小实现 |
-| 协程对象 | Thread 对象住 arena(01 §5.6) | lightuserdata 句柄 + Go 注册表 | type() 返回 "thread" 语义一致;arena Thread 对象随值栈 arena 化一并做 |
+| 协程对象 | Thread 对象住 arena(01 §5.6) | arena 里只有头的 Thread 对象(word7 = 注册表下标)+ Go 注册表记录(值栈 / CallInfo 是 runtime 自己的 arena 段) | **回收语义已对齐**(#291,2026-10-04):原先是 lightuserdata 句柄，所有非 dead 协程都是 GC 根;现在没有引用的协程被回收，弱表照常清，见 08 §6.1。栈仍不放进 Thread 对象自己的字段 |
 | xpcall handler 时机 | 栈展开前调用(09) | 出错点调用(2026-10-02 起) | **已对齐**(#279 本地审查补修):原先在捕获后调用、栈已回滚,`xpcall(f, debug.traceback)` 只看到调用 xpcall 的那一帧;现在按 5.1 的 `luaG_errormsg` 在出错点调用，见 09 §6.2 |
 | C 调用深度的起点 | `LUAI_MAXCCALLS` = 200;宿主运行 chunk 的 `lua_pcall` 本身是一层 `luaD_call`,lua5.1 独立解释器另外还有 `lua_cpcall(pmain)` 一层 | 宿主运行 chunk(`callOnStack`)计一层，与嵌入式 PUC 一致 | **已知限制，只剩 lua.c 独有的 1 层**(2026-10-02 #276-#279 本地审查):原先主 chunk 从深度 0 开始，比嵌入式 PUC 多走 1 层;第六轮审查用内嵌 oracle 查出后改为计入宿主那一层，`test/fuzz/cdepth_oracle_test.go::TestCDepthMatchesEmbeddedPUC` 在六种写法上与 oracle 逐字节一致。与 lua5.1 独立解释器相比仍浅 1 层(`__index` 自递归 197 对 196),那是 lua.c 自己的 `lua_cpcall(pmain)`,嵌入式 VM 没有，不模仿。差分侧按 `SkipClassError` 的「实现常数类护栏」跳过 |
 | 语法层数的起点 | `lparser.c` 的 `enterlevel` 记在 `nCcalls` 上，同一个 200 | `parse.maxParseDepth` = 200,减去当前 C 调用深度(`ParseAtCDepth`) | **已知限制，同上一行**:计层位置一致(块与子表达式各一层),随调用深度的变化一致，与嵌入式 PUC 逐字节一致;与 lua5.1 独立解释器相比多 1 层(顶层 197 对 196),来源就是上一行 lua.c 的那 1 层 |
@@ -606,12 +606,24 @@
   取 codegen 手里的行;常量超过 262143 个或局部变量调试表超过 32767 条时，lua5.1 按运行期错误抛出，望舒按编译错误
   处理。详见 [04](./04-frontend-parser-codegen.md) §9。
 
-  **另开的 issue**:#290(P4 构建下 `go vet` 的 `unsafe.Pointer` 警告)、#291(没有引用的挂起协程永远不被回收)、#292(顶层 Run 出错后、下一次 Run 之前调用 `Collect()`,逃逸闭包读到已回收的对象)。
+  **另开的 issue**:#290(P4 构建下 `go vet` 的 `unsafe.Pointer` 警告)、#291(没有引用的挂起协程永远不被回收)、#292(顶层 Run 出错后、下一次 Run 之前调用 `Collect()`,逃逸闭包读到已回收的对象)。三个都已在下一条修好。
 
   验证:#284 的用例加在已有的 `syntax_error_chunkname_test.go`,其余每个 issue 一个 regression 文件(`issue281_*` 到 `issue288_*`,#282 有词法、语法、块名、寄存器上限四个),
   期望值逐条用 `lua5.1` 跑出;赋值目标上限三条依赖 C 调用深度，取自内嵌的 5.1.5(`internal/oracle`),理由见
   `issue282_parser_errors_test.go` 头注。探针在 P1、P3、P4 的不升层 / force-all / auto 七种配置下都与 lua5.1 一致。
   #285 的三处改动和 #282 的词法改动各自去掉后，对应用例都会失败。
+
+- **#281-#288 一轮另开的三个 issue(2026-10-04,#290 / #291 / #292)**:
+
+  | 问题 | 位置 | 根因与修法 |
+  |---|---|---|
+  | P4 构建下 `go vet` 报 `possible misuse of unsafe.Pointer`(#290) | `internal/gibbous/jit/peroptranslator/emit_shim_amd64.go` | 报警的是没有调用方的 `funcEntryPC` / `uintptrToPtr`,直接删掉。默认、P3、P4 三种构建的 `go vet` 都干净 |
+  | 顶层 Run 出错后、下一次 Run 之前 `Collect()`,逃逸闭包读到已回收的对象(#292) | `internal/crescent/state.go::callOnStack` | 出错展开的帧没有执行 RETURN,upvalue 一直开着，等到下一次 Run 才关;两次 Run 之间主线程的栈不是根，于是闭包引用的值被回收。改为出错返回前、`runningThread` 还指着主线程时 `closeUpvals(th, 0)`,与 `luaD_pcall` 的 `luaF_close` 一样。`Run`、`Call`、`CallInto` 都经过这里，见 [05](./05-interpreter-loop.md) §9.3 |
+  | 没有引用的挂起协程永远不被回收(#291) | `internal/crescent/coroutine.go`、`internal/gc` | 协程句柄是 lightuserdata,所有非 dead 协程都是根。现在协程的 Lua 值是 arena 里只有头的 Thread 对象，收集器经 `Roots.ScanThread` 扫它的栈;根里只放 running 和 normal 的协程;开放 upvalue 标记它所指的栈槽值(同 `reallymarkobject`),没被标记的协程在清扫前关闭 upvalue、归还栈段，注册表下标复用。`coroutine.wrap` 返回的函数把协程放在宿主闭包的 upvalue 里，与 `auxwrap` 一样让函数持有协程。`type` / `tostring` / 报错里的类型名不再查注册表，直接按 `TagThread` 判断。见 [08](./08-coroutines.md) §6.1、[06](./06-memory-gc.md) §5.2 |
+
+  验证:#291、#292 各一个 regression 文件(`issue291_unreferenced_coroutines_test.go`、`issue292_collect_after_failed_run_test.go`),
+  期望值用 `lua5.1` 跑出;#291 的第二组用例在 GC 压力模式下也跑一遍。探针在 P1、P3、P4 的不升层 / force-all / auto
+  七种配置下都与 lua5.1 一致，打开 GC 压力模式也一致。去掉修复后两个文件的用例都会失败。
 
 ## 相关
 
