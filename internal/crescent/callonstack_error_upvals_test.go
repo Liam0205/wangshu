@@ -11,8 +11,8 @@ import (
 // every upvalue of the frames it unwound closed (lua_pcall's luaF_close), not left open until the next
 // call. test/regression's issue292 test checks what a host Collect() then does, but an escaped closure
 // survives there also through the collector marking open upvalues' values (#291), so only this test
-// fails when the close itself goes missing. Both CallOnStack (Run / CallInto) and Call go through
-// callOnStack.
+// fails when the close itself goes missing. CallOnStack (CallInto) and Call (Run, State.Call) both go
+// through callOnStack.
 func TestCallOnStackErrorClosesUpvalues(t *testing.T) {
 	for _, entry := range []string{"CallOnStack", "Call"} {
 		st := New()
