@@ -361,6 +361,11 @@ func (vm *VM) indexMeta(f *frame, dst int32, t value.Value, key value.Value, slo
 - **不用「访问集合去环」**:那会改变报错语义(官方是「链太长」而非「检测到环」),且要分配集合(慢路径也不该分配集合)。固定上限计数是零分配的。
 
 > **doc-gap**:`maxIndexChain` 的精确值需与 Lua 5.1 `MAXTAGLOOP`(=100)对齐并由 [12](./12-testing-difftest.md) 核对报错措辞。本文倾向 100。
+>
+> **已核对(2026-10-03,#287)**:上限是 100,与 `MAXTAGLOOP` 一致(99 张表的链仍能走到末端的处理函数)。措辞上面写的
+> `'__index' chain too long; possible loop` 是 5.2 的;5.1 的 `luaV_gettable` / `luaV_settable` 报 `loop in gettable` /
+> `loop in settable`。本节和 §4 伪码里的措辞以此为准。实现在 `internal/crescent/meta.go`(`indexWithMeta` /
+> `setIndexWithMeta`),回归在 `test/regression/issue287_index_loop_wording_test.go`。
 
 ### 3.4 string 的 `s:upper()` 经 string metatable
 
@@ -1116,7 +1121,7 @@ sweep 阶段(06 §8):
 ## 16. 文档缺口 / 待决(记入 memory/doc-gaps)
 
 - **错误措辞精确格式**:§14 所有 `*Error` helper 的措辞(冠词/复数/标点/变量名增强)以 Lua 5.1 参考实现为准,**待 12 差分核对**。本文给骨架,不编造精确标点。变量名层(`field 'x'` 等)在 [09](./09-errors-pcall.md) 定稿。
-- **`maxIndexChain` 值**:§3.3 `__index`/`__newindex`/`__call` 链的上限,**倾向对齐 Lua 5.1 `MAXTAGLOOP=100`**,报错措辞(`"'__index' chain too long; possible loop"`)待 12 核对。
+- ~~**`maxIndexChain` 值**:§3.3 `__index`/`__newindex`/`__call` 链的上限,**倾向对齐 Lua 5.1 `MAXTAGLOOP=100`**,报错措辞(`"'__index' chain too long; possible loop"`)待 12 核对。~~ **已核对(2026-10-03,#287)**:上限 100;措辞是 `loop in gettable` / `loop in settable`,见 §3.3 补记。
 - **`__unm` arity**:§6 定 `__unm` 传 `(a, a)`(5.1 `call_binTM` 对一元传两次操作数),**待 12 核对**;`__len` on userdata 定 `(a)` 单参(§7),亦待核对。
 - ~~**`__le→__lt` 回退的 `__lt` 查找顺序**:§9.3 回退里再找 `__lt` 的「先 a 后 b」顺序与官方 `lessequal` 对齐,待 12 核对。~~
   **已核对(2026-10-01,#271)**:不是「先 a 后 b」,而是 `call_orderTM(b, a, __lt)`——以 b 为左操作数取 `__lt`,且 a 的

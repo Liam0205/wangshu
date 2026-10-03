@@ -1080,7 +1080,7 @@ type Proto struct {
 | 13 | 数值 for 步长非数字 | `'for' step must be a number` | FORPREP | 05 §10.1 | ✗ |
 | 14 | Lua 调用深度超限 | `stack overflow` | enterLuaFrame / CALL | 05 §7.4 §1.4 | ✗ |
 | 15 | host↔Lua 重入超限 | `C stack overflow` | callLuaFromHost | 05 §7.4 | ✗ |
-| 16 | `__index`/`__newindex`/`__call` 链过长 | `'__index' chain too long; possible loop` 等 | 元方法链 | 07 §3.3(MAXTAGLOOP=100) | ✗ |
+| 16 | `__index`/`__newindex` 链过长 | `loop in gettable` / `loop in settable`(5.1;`'__index' chain too long` 是 5.2 的,#287) | 元方法链 | 07 §3.3(MAXTAGLOOP=100) | ✗ |
 | 17 | `string.format`/`unpack` 等参数越界 | `'n' too large` / `bad argument #n to '<fn>' (...)` | stdlib host | 10 | ✗(host 自构) |
 | 18 | `__tostring` 返回非 string | `'__tostring' must return a string` | tostring | 07 §11 | ✗ |
 

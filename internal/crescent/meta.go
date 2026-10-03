@@ -136,7 +136,8 @@ func (st *State) indexWithMeta(th *thread, obj, key value.Value) (value.Value, *
 		}
 		return value.Nil, errf("attempt to index a %s value", st.typeNameOf(obj))
 	}
-	return value.Nil, errf("'__index' chain too long; possible loop")
+	// luaV_gettable after MAXTAGLOOP (100) steps; the "'__index' chain too long" wording is 5.2's (#287).
+	return value.Nil, errf("loop in gettable")
 }
 
 // setIndexWithMeta implements the full SETTABLE semantics: raw set → __newindex chain (07 §4).
@@ -185,7 +186,8 @@ func (st *State) setIndexWithMeta(th *thread, obj, key, val value.Value) *LuaErr
 		}
 		obj = h
 	}
-	return errf("'__newindex' chain too long; possible loop")
+	// luaV_settable after MAXTAGLOOP (100) steps (#287).
+	return errf("loop in settable")
 }
 
 // arithMeta is the arithmetic slow path: called when either b or c carries an __add etc.
