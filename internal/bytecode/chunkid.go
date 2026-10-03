@@ -22,10 +22,10 @@ func ChunkID(source string) string { return ChunkIDN(source, IDSize) }
 //   - otherwise → [string "first line"], with "..." when the source has more than its first line
 //     or that line is longer than bufflen - sizeof(" [string \"...\"] ").
 //
-// An empty source still shows as "?" (lua5.1 gives [string ""]; tracked as #284).
+// An empty source takes the [string] branch like any other, giving [string ""] (#284).
 func ChunkIDN(source string, bufflen int) string {
 	if source == "" {
-		return "?"
+		return `[string ""]`
 	}
 	switch source[0] {
 	case '=':

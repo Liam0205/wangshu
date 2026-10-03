@@ -386,7 +386,8 @@ Lua 5.1 把 `Proto.Source`(原始 chunk 名)转成 traceback/错误里显示的�
   首行最多 63 字节(运行期 43),`@file` 尾部最多 72 字节(运行期 52),`=name` 最多 79 字节(运行期 59)。
   实现是 `bytecode.ChunkIDN(source, bufflen)`,`ChunkID` 固定用 60,前端三种错误类型用 `bytecode.MaxSrc`。`@file`
   保留的长度是缓冲区长度减 `sizeof(" '...' ")`(8,含结尾 NUL),60 时是 52;望舒原来是 `59 - 3 = 56`,运行期多保留
-  了 4 个字节，这次一起改正。
+  了 4 个字节，这次一起改正。空块名不以 `=` 或 `@` 开头，所以和其他字符串一样走 `[string "..."]` 分支，显示为
+  `[string ""]`;望舒原来显示 `?`,#284 改正。
 - **P1 实现位置**:`internal/crescent` 的 `chunkID(source []byte, isFromSource bool) string`,或放在 `bytecode`
   侧供 traceback 与 error 共用。Source 内容从 arena String 读([01](./01-value-object-model.md) §5.1)。
 
@@ -1420,7 +1421,7 @@ debug.traceback(message, level):
   `error in error handling`、`'__tostring' must return a string`、`cannot resume dead coroutine` 等的精确文案,
   **待 12 差分核对**与官方 Lua 5.1 逐字节对齐。本文给骨架,不编造。
 - **`chunkID` 截断规则**:~~§3.4 的 `LUA_IDSIZE`(=60)、`[string "..."]` 截断位置/省略号,**待 12 核对**逐字节一致~~
-  **已核对(2026-10-02)**:运行期用 60、语法错误用 `MAXSRC` 80,见 §3.4 的补记。空块名显示为 `?` 的差异另见 #284。
+  **已核对(2026-10-02)**:运行期用 60、语法错误用 `MAXSRC` 80,见 §3.4 的补记。空块名显示为 `[string ""]`(#284)。
 - **C stack overflow 的错误处理余量**:~~§10 给 `pcall` 保留 C 栈 buffer(`nCcalls` 超 200 但允许错误路径短暂超到
   ~220),精确余量值待 12 核对~~ **已核对并实现(2026-10-02,#279 本地审查)**:新深度到 200 报错，余量是到 225,只给
   xpcall handler,见 §10 订正与 §6.5 订正。
