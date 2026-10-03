@@ -316,6 +316,9 @@ GC 根 = **不经其它对象就能被程序直接触达的 arena 对象**。漏
   所有活跃寄存器值 = `valueStack[base..top)` 的槽,**它们已经在 arena 里**。GC 标记 Thread(R3/R4)时,
   顺着 valueStackRef 遍历栈槽(§5.2),自然覆盖所有活跃寄存器——**无需 shadow stack**。
   这是「Lua 栈即根」:解释器的工作集天然在被扫描的 arena 栈里。
+  扫描范围是 `[0, top)`,top 之上清成 nil(`internal/crescent/state.go::visitThreadValues`,对齐 `lgc.c`
+  `traversestack`)。Lua 帧执行时 top 是帧逻辑顶;host 函数运行时 top 降到它最后一个参数之后,和 5.1 的
+  C 函数一样,所以调用方寄存器里位于调用之上的旧值不算根(#285,[05](./05-interpreter-loop.md) §7.6)。
 - **shadow stack(R7)只为一种情况存在**:**host function(Go 写的 stdlib / 宿主回调)执行期间**,
   host 代码可能把某个 arena 对象的 GCRef 暂存在 **Go 局部变量**(Go 栈上)。此时若该对象不在任何 Lua 栈槽 / 表 / 全局里,
   它对 GC **不可达**(GC 不扫 Go 栈里的 arena 引用——GCRef 是整数,Go 精确栈扫描只认 Go 指针,看不出这是 arena 引用)。

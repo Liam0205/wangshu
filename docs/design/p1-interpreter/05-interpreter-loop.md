@@ -757,6 +757,11 @@ func (vm *VM) callHost(f *frame, a, nargs, nresults int) callResult {
   `callLuaFromHost` 脚手架覆写活跃寄存器,TFORLOOP 的迭代器三槽被毁、`pairs` 收到 number——症状离根因
   极远(2026-06-12 测试加固轮由生成器二期发现,修复见 `internal/crescent/host.go::callHost`)。同一条
   纪律在 RETURN 侧的四个站点见 §7.2.1,那里记的是第四处(`doReturn` 终止分支,#229)。
+- **host 函数运行期间,top 是它自己最后一个参数之后**(`funcIdx + 1 + nargs`,对齐 5.1 `luaD_precall` 对
+  C 函数设的 `L->top = func + 1 + nargs`)。GC 只扫 `[0, top)`、把 top 之上清成 nil,所以 host 函数里触发的
+  回收(`collectgarbage`、分配)不再把调用方寄存器里、位于这次调用之上的旧值当根:已返回的 callee 和已出
+  作用域的局部变量留下的大对象能被回收(#285)。调用方的活寄存器都在 `funcIdx` 之下——CALL 的函数寄存器
+  就是第一个空闲寄存器。返回后照上一条把 top 恢复到帧逻辑顶。
 - host **内部若回调 Lua**(`vm.callLuaFromHost`),才触发 §7.3 的 Go 栈重入。
 - host 可能**抛 Lua 错误**(`vm.raise`):它走 §9 的错误返回路径,被最近 protected 边界捕获。host 不该 Go `panic`(§9.4)。
 - host 帧也有 CallInfo(带 host 哨兵 protoID),让 `error`/traceback 能显示 `[C]: in function 'xxx'`([09](./09-errors-pcall.md))。
@@ -954,6 +959,11 @@ pcall host 实现:
 - **没有 pcall 保护时**:错误一路 return 到顶层 `Program.Call`,后者把 `*LuaError` 转成 Go 的 `error` 返回给宿主([11-embedding-arena-abi](./11-embedding-arena-abi.md))。中间所有 Lua 帧的 CallInfo 随 execute return 被一并放弃(因为整个 execute 失败,Thread 状态标 dead 或重置)。
 - **CallInfo 清理责任在 protected 边界**,不在每个出错帧——出错帧只管 `return e` 冒泡,**省掉了每帧的 defer/cleanup**(这正是显式返回 vs panic 的关键简化:panic 要在每帧 defer 关 upvalue,显式返回让边界一次性清理)。
 - **元方法/错误处理器**(`error` 的 message handler、`xpcall` 的 handler):在边界捕获后、返回前调用 handler(可能再 reentry execute);细节 [09](./09-errors-pcall.md)。
+- **b 步的实际位置**:`internal/crescent/meta.go::callLuaFromHostNamed` 在 execute 出错返回时先
+  `closeUpvals(th, funcIdx)`,再截断 CallInfo、恢复 top,对应 `luaD_pcall` 的 `luaF_close(L, oldtop)`。协程因错误
+  死亡时 `Resume` 同样关闭它整条栈上的开放 upvalue(`closeUpvals(co.th, 0)`):死协程的栈不再是 GC 根。这两处
+  原先都漏了,出错前创建的闭包仍指着已被复用或被 GC 清掉的栈槽;#285 把 host 调用期间的 top 降低之后
+  luasuite `closure.lua` 暴露出这个问题,回归见 `test/regression/issue285_stale_register_roots_test.go`。
 
 ### 9.4 错误来源与 host 协作
 

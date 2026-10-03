@@ -220,6 +220,11 @@ func (st *State) Resume(id uint64, args []value.Value) ([]value.Value, bool, *Lu
 		// clearing it follows the same hygiene standard as returning to the pool)
 		co.status = CoDead
 		co.xfer = nil
+		// lua_resume's error path leaves the dead thread's upvalues open in PUC, but the thread stays
+		// reachable through them. Here a dead coroutine's stack is no GC root (visitExtraValues skips
+		// it), so close them now, keeping the values the closures saw: otherwise a closure created
+		// inside reads whatever the collector or a later reuse leaves in those slots (#285).
+		st.closeUpvals(co.th, 0)
 		return nil, false, sig
 	}
 	// Normal completion: return values are on co.th's stack at [0, top)

@@ -393,6 +393,11 @@ func (st *State) callLuaFromHostNamed(th *thread, fn value.Value, args []value.V
 		// lua_yieldk business); the reference reports this error and the coroutine does
 		// not suspend. If not intercepted, the sentinel gets caught by pcall as an
 		// ordinary error and the internal string "<yield>" leaks to the script.
+		// luaD_pcall closes the frames' open upvalues before it unwinds them (luaF_close(L, oldtop)),
+		// so a closure made inside keeps the value its variable had when the error was raised.
+		// Unwinding without closing left the upvalues pointing at stack slots that the next call
+		// reuses, or that the collector clears once they are above top (#285).
+		st.closeUpvals(th, funcIdx)
 		if e == errYieldSentinel {
 			th.truncateCI(savedDepth)
 			th.setTop(funcIdx)
