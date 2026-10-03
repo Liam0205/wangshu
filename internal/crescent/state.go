@@ -1261,7 +1261,7 @@ func (st *State) Call(cl arena.GCRef, args []value.Value, nresults int) ([]value
 // After runningThread is reset to nil, mainTh is still a resident root at the
 // same level as loadedCls → the return values stay reachable under GC (the stack
 // is not shrunk, and the slot values are still referenced by mainTh.stack).
-func (st *State) callOnStack(cl arena.GCRef, args []value.Value, nresults int) ([]value.Value, error) {
+func (st *State) callOnStack(cl arena.GCRef, args []value.Value, nresults int) (rets []value.Value, err error) {
 	if object.IsHostClosure(st.arena, cl) {
 		// Calling a host closure directly from the Go side needs a temporary stack
 		// frame scaffold, not done this cycle; a Register'd host fn works in a closed
@@ -1273,7 +1273,7 @@ func (st *State) callOnStack(cl arena.GCRef, args []value.Value, nresults int) (
 	// is pointless Go-heap churn). State is single-goroutine, and the main thread
 	// does not re-enter (host→Lua re-entry stacks up on the same th's execute,
 	// coroutines each have their own th). Reset: top zeroed + frame depth rewound
-	// to 0 (truncateCI), openUvs reused (the last Run's terminal closeUpvals already emptied it).
+	// to 0 (truncateCI), openUvs reused (the last Run closed its upvalues on the way out, error or not).
 	th := st.mainTh
 	if th == nil {
 		th = st.newThread()
@@ -1293,15 +1293,24 @@ func (st *State) callOnStack(cl arena.GCRef, args []value.Value, nresults int) (
 		th.setTop(0)
 		th.truncateCI(0)
 		th.pendingResume = nil
-		// If the last Run exited via error, unwind did not go through closeUpvals,
-		// so openUvs may still hold open uvs pointing to now-invalid stack positions —
-		// close them (self-held snapshot values), clear uvOwner.
+		// A Run that failed closes its open upvalues on the way out (below); this is a second line
+		// for any exit that did not, so a stale open upvalue never points into the reset stack.
 		if len(th.openUvs) > 0 {
 			st.closeUpvals(th, 0)
 		}
 	}
 	st.runningThread = th
-	defer func() { st.runningThread = nil }()
+	defer func() {
+		// An error unwinds the frames without their RETURNs, leaving their upvalues open. Close them
+		// now, while runningThread still roots the stack, as lua_pcall's luaD_pcall does
+		// (luaF_close(L, oldtop)) before it returns. Left until the next Run, they pointed into a
+		// stack the collector no longer scans between Runs, so a host Collect() there freed what
+		// an escaped closure still referenced, and it read reused memory afterwards (#292).
+		if err != nil && len(th.openUvs) > 0 {
+			st.closeUpvals(th, 0)
+		}
+		st.runningThread = nil
+	}()
 	// The host running a chunk is itself one C call: an embedder's lua_pcall goes through luaD_call
 	// like any other, so a chunk starts at C depth 1. Starting at 0 gave every script one more level
 	// of host->Lua nesting and of syntax depth than embedded PUC (lua.c adds one more of its own,
@@ -1367,7 +1376,7 @@ func (st *State) callOnStack(cl arena.GCRef, args []value.Value, nresults int) (
 	// After top-level execution ends, the return values are a few slots starting at
 	// the stack bottom (determined by the RETURN landing point dst=funcIdx).
 	// Zero copy: slice th.stack's active region directly (contract in the callOnStack doc).
-	rets := th.activeSlice(th.top)
+	rets = th.activeSlice(th.top)
 	if nresults >= 0 {
 		if len(rets) > nresults {
 			rets = rets[:nresults]
