@@ -343,6 +343,12 @@ func (st *State) callHost(th *thread, funcIdx, nargs, nresults int) *LuaError {
 	for i := 0; i < nargs; i++ {
 		args[i] = th.slot(funcIdx + 1 + i)
 	}
+	// The host function's stack ends at its last argument, as luaD_precall sets L->top = func + 1 +
+	// nargs for a C function. The GC scans the stack up to top and clears what lies above, so a
+	// collection run by the host function (collectgarbage, an allocation) no longer keeps alive what
+	// returned callees and dead locals left in the caller's registers above the call (#285). The
+	// caller's live registers are all below funcIdx: a CALL's function register is the first free one.
+	th.setTop(funcIdx + 1 + nargs)
 	results, e := fn(st, args)
 	if e != nil {
 		return e
