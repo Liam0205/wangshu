@@ -13,7 +13,8 @@ import (
 // formatted with 60, so in syntax errors a [string "..."] first line longer than 43 bytes or an
 // "=name" longer than 59 was cut early. The "@file" form had its own off-by-four: it kept 56 bytes
 // of the tail where luaO_chunkid keeps bufflen - sizeof(" '...' ") = 52 at runtime (72 in syntax
-// errors). Expectations are lua5.1's.
+// errors). An empty chunk name takes the [string] branch like any other and shows as [string ""]
+// in both kinds of position; wangshu showed "?" (#284). Expectations are lua5.1's.
 func TestSyntaxErrorChunkNameUsesMaxSrc(t *testing.T) {
 	const src = `local a60 = string.rep("a", 60)
 local a80 = string.rep("a", 80)
@@ -29,6 +30,11 @@ add(select(2, pcall(loadstring("error('e')", "=" .. a80))))
 add(select(2, loadstring("x=\n", "one\ntwo")))
 add(select(2, loadstring("return " .. string.rep("(", 300) .. "1" .. string.rep(")", 300), a60)))
 add(debug.getinfo(loadstring("return 1", a60), "S").short_src)
+add(select(2, loadstring("x=", "")))
+add(select(2, pcall(loadstring("error('e')", ""))))
+add(debug.getinfo(loadstring("return 1", ""), "S").short_src)
+add(select(2, loadstring("x=", "=")))
+add(select(2, loadstring("x=", "@")))
 OUT = table.concat(out, "\n")`
 	a := func(n int) string { return strings.Repeat("a", n) }
 	want := strings.Join([]string{
@@ -42,6 +48,11 @@ OUT = table.concat(out, "\n")`
 		`[string "one..."]:2: unexpected symbol near '<eof>'`,
 		`[string "` + a(60) + `"]:1: chunk has too many syntax levels`,
 		`[string "` + a(43) + `..."]`,
+		`[string ""]:1: unexpected symbol near '<eof>'`,
+		`[string ""]:1: e`,
+		`[string ""]`,
+		`:1: unexpected symbol near '<eof>'`,
+		`:1: unexpected symbol near '<eof>'`,
 	}, "\n")
 	st := wangshu.NewState(wangshu.Options{})
 	prog, err := wangshu.Compile([]byte(src), "@x")
