@@ -608,7 +608,7 @@
 
   **另开的 issue**:#290(P4 构建下 `go vet` 的 `unsafe.Pointer` 警告)、#291(没有引用的挂起协程永远不被回收)。
 
-  验证：每个 issue 一个 regression 文件(`issue281_*` 到 `issue288_*`,#282 有词法、语法、块名、寄存器上限四个),
+  验证:#284 的用例加在已有的 `syntax_error_chunkname_test.go`,其余每个 issue 一个 regression 文件(`issue281_*` 到 `issue288_*`,#282 有词法、语法、块名、寄存器上限四个),
   期望值逐条用 `lua5.1` 跑出;赋值目标上限三条依赖 C 调用深度，取自内嵌的 5.1.5(`internal/oracle`),理由见
   `issue282_parser_errors_test.go` 头注。探针在 P1、P3、P4 的不升层 / force-all / auto 七种配置下都与 lua5.1 一致。
   #285 的三处改动和 #282 的词法改动各自去掉后，对应用例都会失败。
