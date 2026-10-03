@@ -706,11 +706,11 @@ Lua 5.1 的 `luaL_loadfile`:**若 chunk 首字符是 `#`,跳过首行**(到第�
 > 2. 望舒的入口是 `Compile`(`roadmap.md` (§8)、[11-embedding-arena-abi](./11-embedding-arena-abi.md)),
 >    源可能来自字符串/文件/嵌入。**shebang 只对「文件源」有意义**。
 >
-> **实现方式**:在**加载源码的边界**(未来 `cmd/wangshu` 脚本运行器读文件时,或 `Compile` 的文件
-> 变体)做预处理:`if len(src)>0 && src[0]=='#' { 跳到第一个 \n(含),其余喂给 lexer }`。
-> **被跳过的首行仍占 1 行**:loader 跳行时应让 lexer 的初始 `line` 从 2 起(或在源里保留换行
-> 让 lexer 自然计行),使错误行号与原文件对齐。**`lex.New` 接受一个可选初始行号**或由 loader
-> 保留首行换行——二者皆可,**精确接口待 [11](./11-embedding-arena-abi.md) 定稿**,记 §13。
+> **实现方式(2026-10-03,#288 同轮完成)**:放在 `loadfile` / `dofile` 读文件的地方
+> (`internal/stdlib/baseenv.go::baseFnLoadfile`),照 `luaL_loadfile`:文件第一个字节是 `#` 时，丢掉第一个换行之前的
+> 内容，**保留那个换行**交给 lexer,所以 lexer 照常从第 1 行计数，错误行号与原文件对齐;整个文件只有一行 `#...` 时
+> 换成单个 `"\n"`。`lex.New` 不需要初始行号参数。`loadstring` / `load` / `Compile` 不跳，和 5.1 一样只有文件加载器
+> 做这件事。
 
 **lexer 本体不识别 `#!`**:`#` 在 lexer 里恒为 `Hash` token。这样 lexer 保持「纯词法、与源
 来源无关」,可被 REPL / 字符串 eval / 文件加载共用。
@@ -820,9 +820,7 @@ parser 自缓存**」。逐条兑现:
 - ~~错误措辞待差分核对~~:**已关闭**(#282)。§11.2 的每一条都已与 lua5.1 逐条比对。
 - **非 ASCII 标识符**:本文定死 ASCII-only(§4.3)。若差分基准在高位字节上与之不一致,需在
   [12](./12-testing-difftest.md) 固定口径(可能需放宽到「locale-free 的某确定集」)。
-- **shebang 归属的精确接口**:`#` 首行跳过归 loader/嵌入层(§10),但 `lex.New` 是否接受
-  「初始行号」参数、还是由 loader 保留首行换行让 lexer 自然计行,**待
-  [11-embedding-arena-abi](./11-embedding-arena-abi.md) 定稿**。
+- ~~shebang 归属的精确接口~~:**已关闭**(#288 同轮)。由 `loadfile` 保留首行换行，lexer 自然计行，见 §10。
 - **`lex` 是否依赖 `value`**:本文选「lexer 处即 `NumberValue`」(§1.1、§5.4)。若实现期
   `lex→value` 依赖不便,允许退化为「lexer 产裸 `float64`、codegen 处规范化」,**载荷类型不变**,
   差分无可观察差异——二选一待实现期定。
