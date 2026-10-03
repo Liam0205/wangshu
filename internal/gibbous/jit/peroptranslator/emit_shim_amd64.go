@@ -22,9 +22,6 @@
 package peroptranslator
 
 import (
-	"reflect"
-	"unsafe"
-
 	jit "github.com/Liam0205/wangshu/internal/gibbous/jit"
 )
 
@@ -97,21 +94,6 @@ func emitMovRbxImm64(cb *codeBuf, imm uint64) {
 		cb.emit([]byte{byte(imm >> (8 * i))})
 	}
 }
-
-// funcEntryPC returns the entry program counter of a Go function value.
-// reflect.ValueOf(fn).Pointer() returns the funcval pointer in Go 1.17+;
-// the entry PC is the first word of that struct.
-//
-// Kept for compat; per-shim helpers below use the direct unsafe idiom
-// which the empirical helper e2e test proved works.
-func funcEntryPC(fn interface{}) uint64 {
-	fp := reflect.ValueOf(fn).Pointer()
-	return uint64(*(*uintptr)(uintptrToPtr(fp)))
-}
-
-// uintptrToPtr is a helper to satisfy Go's unsafe rules for the funcval
-// deref. It exists to keep the funcEntryPC body tidy.
-func uintptrToPtr(u uintptr) unsafe.Pointer { return unsafe.Pointer(u) }
 
 // shim*Addr helpers moved to shims.go (arch-neutral) so both amd64 and
 // arm64 emit paths can reference the same names.
