@@ -1242,10 +1242,9 @@ func (st *State) Call(cl arena.GCRef, args []value.Value, nresults int) ([]value
 //
 // ⚠️ The underlying slice is the reused th.stack: it is overwritten after the
 // next Call/Run resets top. The caller must consume it before next entering the
-// VM (read out scalars / copy / register compound values via the pin table).
-// After runningThread is reset to nil, mainTh is still a resident root at the
-// same level as loadedCls → the return values stay reachable under GC (the stack
-// is not shrunk, and the slot values are still referenced by mainTh.stack).
+// VM or calling the host Collect() (read out scalars / copy / register compound
+// values via the pin table): once runningThread is reset to nil the main thread's
+// stack is no GC root, so a collection in between frees what the slots refer to.
 func (st *State) callOnStack(cl arena.GCRef, args []value.Value, nresults int) (rets []value.Value, err error) {
 	if object.IsHostClosure(st.arena, cl) {
 		// Calling a host closure directly from the Go side needs a temporary stack
