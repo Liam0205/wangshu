@@ -11,6 +11,7 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"unsafe"
@@ -416,9 +417,16 @@ func (st *State) SetCompileFn(fn func(src []byte, chunkname string, cDepth int) 
 func (st *State) Bridge() *bridge.Bridge { return st.bridge }
 
 // CompileAndLoad compiles a piece of source and loads it as a closure (the core of loadstring).
+//
+// The chunk name stops at its first NUL byte: lua_load takes it as a C string, so the error position,
+// debug.getinfo's source and short_src all see only that much -- loadstring(s) on an s holding a NUL
+// is named after the part of s before it.
 func (st *State) CompileAndLoad(src []byte, chunkname string) (value.Value, error) {
 	if st.compileFn == nil {
 		return value.Nil, errf("loadstring: compiler not available")
+	}
+	if i := strings.IndexByte(chunkname, 0); i >= 0 {
+		chunkname = chunkname[:i]
 	}
 	mainID, protos, err := st.compileFn(src, chunkname, st.nCcalls)
 	if err != nil {
