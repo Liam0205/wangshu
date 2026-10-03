@@ -1242,9 +1242,10 @@ func (st *State) Call(cl arena.GCRef, args []value.Value, nresults int) ([]value
 //
 // ⚠️ The underlying slice is the reused th.stack: it is overwritten after the
 // next Call/Run resets top. The caller must consume it before next entering the
-// VM or calling the host Collect() (read out scalars / copy / register compound
-// values via the pin table): once runningThread is reset to nil the main thread's
-// stack is no GC root, so a collection in between frees what the slots refer to.
+// VM or starting a host collection (Collect, or MaybeCollectNow past the threshold)
+// (read out scalars / copy / register compound values via the pin table): once
+// runningThread is reset to nil the main thread's stack is no GC root, so a
+// collection in between frees what the slots refer to.
 func (st *State) callOnStack(cl arena.GCRef, args []value.Value, nresults int) (rets []value.Value, err error) {
 	if object.IsHostClosure(st.arena, cl) {
 		// Calling a host closure directly from the Go side needs a temporary stack
@@ -1376,7 +1377,8 @@ func (st *State) callOnStack(cl arena.GCRef, args []value.Value, nresults int) (
 
 // CallOnStack is the exported form of callOnStack, for the facade layer's
 // zero-alloc CallInto. The return value is the active slice on the main thread's
-// stack (zero copy, valid until next entering the VM); see the callOnStack doc for the contract.
+// stack (zero copy, valid until next entering the VM or a host collection); see the callOnStack doc
+// for the contract.
 func (st *State) CallOnStack(cl arena.GCRef, args []value.Value, nresults int) ([]value.Value, error) {
 	return st.callOnStack(cl, args, nresults)
 }
