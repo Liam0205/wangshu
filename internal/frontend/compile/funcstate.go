@@ -150,9 +150,10 @@ func (fs *funcState) reserveRegs(line int32, n int) {
 	}
 }
 
-// checkStack raises "function or expression too complex" when the water line + n exceeds MaxStack (250) (04 §9).
+// checkStack raises "function or expression too complex" when the water line + n reaches MaxStack
+// (250), as luaK_checkstack does (`newstack >= MAXSTACK`): a function has at most 249 registers (04 §9).
 func (fs *funcState) checkStack(line int32, n int) {
-	if fs.freereg+n > bytecode.MaxStack {
+	if fs.freereg+n >= bytecode.MaxStack {
 		raise(fs, line, "function or expression too complex")
 	}
 }
@@ -241,7 +242,7 @@ func (fs *funcState) findUpval(name string) int {
 // addUpval registers a new upvalue and returns its index.
 func (fs *funcState) addUpval(line int32, name string, inStack bool, idx uint8) int {
 	if len(fs.upvals) >= bytecode.MaxUpvalues {
-		raise(fs, line, "too many upvalues")
+		raiseLimit(fs, line, bytecode.MaxUpvalues, "upvalues")
 	}
 	fs.upvals = append(fs.upvals, upvalDesc{name: name, inStack: inStack, idx: idx})
 	fs.proto.UpvalDescs = append(fs.proto.UpvalDescs, bytecode.UpvalDesc{Name: name, InStack: inStack, Idx: idx})
@@ -251,7 +252,7 @@ func (fs *funcState) addUpval(line int32, name string, inStack bool, idx uint8) 
 // registerLocal declares a new local variable (must be called after the RHS is evaluated, 04 §5.8).
 func (fs *funcState) registerLocal(line int32, name string) int {
 	if fs.nactvar >= bytecode.MaxLocVars {
-		raise(fs, line, "too many local variables")
+		raiseLimit(fs, line, bytecode.MaxLocVars, "local variables")
 	}
 	idx := len(fs.locvars)
 	fs.locvars = append(fs.locvars, localVar{name: name, startPC: int32(fs.pc())})
@@ -405,6 +406,15 @@ type CompileError struct {
 func (e *CompileError) Error() string {
 	// lcode.c / lparser.c report these through luaX_syntaxerror too, so MAXSRC applies.
 	return fmt.Sprintf("%s:%d: %s", bytecode.ChunkIDN(e.Source, bytecode.MaxSrc), e.Line, e.Msg)
+}
+
+// raiseLimit is errorlimit's wording. The parser makes these checks first, at the point PUC does
+// (see parse.funcScope), so this only guards codegen's own count.
+func raiseLimit(fs *funcState, line int32, limit int, what string) {
+	if fs.proto.LineDefined == 0 {
+		raise(fs, line, "main function has more than %d %s", limit, what)
+	}
+	raise(fs, line, "function at line %d has more than %d %s", fs.proto.LineDefined, limit, what)
 }
 
 // raise throws via panic(*CompileError); the top-level Compile catches it with recover.
