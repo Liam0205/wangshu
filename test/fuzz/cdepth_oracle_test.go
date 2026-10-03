@@ -94,8 +94,8 @@ print(last, rs)`},
 // enterGibbous rather than the interpreter. In PUC that is one lua_pcall, the same single C level as
 // running a chunk, so the function must see the depth the oracle's main chunk gives the same call.
 func TestCDepthOfAPromotedFunctionCalledFromGo(t *testing.T) {
-	if !tieredBuild {
-		t.Skip("needs a compiled tier")
+	if !topPromotes {
+		t.Skip("this build does not compile top (no compiled tier, or P4 off amd64)")
 	}
 	keep := enumerateGlobals(t)
 	prelude := oracle.Prelude(keep)

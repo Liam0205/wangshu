@@ -34,6 +34,8 @@ fuzz_oracle_tiered_test.go  wangshu_oracle_cgo && cgo && (wangshu_p3 || wangshu_
 cdepth_oracle_test.go       wangshu_oracle_cgo && cgo,TestCDepth*(普通测试，不是 Fuzz 靶点)
 cdepth_tier_off_test.go     wangshu_oracle_cgo && cgo && !(wangshu_p3 || wangshu_p4),tieredBuild = false 与占位的 runTieredSide
 cdepth_tier_on_test.go      wangshu_oracle_cgo && cgo && (wangshu_p3 || wangshu_p4),tieredBuild = true(runTieredSide 用 fuzz_oracle_tiered 里的)
+cdepth_promote_on/off_test.go  只定义 topPromotes:P3 与 amd64 上的 P4 为 true,arm64 上的 P4 为 false(那里的翻译器只有原生路径，
+                            原生路径不接受的函数留在解释器里),供 TestCDepthOfAPromotedFunctionCalledFromGo 跳过
 race_on/off_test.go         race / !race,只定义 raceEnabled,供 fuzz_auto / fuzz_p4 跳过 -race 下的 mmap 路径
 ```
 
