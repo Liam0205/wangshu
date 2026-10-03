@@ -266,7 +266,7 @@ func TestLineNumbers(t *testing.T) {
 }
 
 func TestErrorPrefix(t *testing.T) {
-	lx := New([]byte("\n\nlocal x = ?"), "myfile.lua")
+	lx := New([]byte("\n\nlocal x = 'abc"), "myfile.lua")
 	for {
 		tk, err := lx.Next()
 		if err != nil {

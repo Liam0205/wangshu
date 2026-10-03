@@ -495,14 +495,14 @@ func (lx *Lexer) scanShortString(quote byte) (token.Token, error) {
     lx.pos++                       // 跳过开引号
     lx.buf = lx.buf[:0]
     for {
-        if lx.pos >= len(lx.src) { return zero, lx.errAt(startLine, "unfinished string") }
+        if lx.pos >= len(lx.src) { return zero, lx.errorNear("unfinished string", "<eof>") }
         c := lx.src[lx.pos]
         switch {
         case c == quote:
             lx.pos++
             return token.Token{Kind: token.String, Line: startLine, Str: string(lx.buf)}, nil
-        case c == '\n' || c == '\r':                 // 裸换行非法
-            return zero, lx.errAt(startLine, "unfinished string")
+        case c == '\n' || c == '\r':                 // 裸换行非法;near 显示开引号加已读内容
+            return zero, lx.errorNear("unfinished string", string(quote)+string(lx.buf))
         case c == '\\':
             lx.pos++
             if err := lx.readEscape(); err != nil { return zero, err }   // 写入 buf,处理续行/\ddd
@@ -513,7 +513,8 @@ func (lx *Lexer) scanShortString(quote byte) (token.Token, error) {
 }
 ```
 
-注意 token 的 `Line` 取 `startLine`(起始行),即便字符串因 `\<newline>` 续行跨了多行。
+注意 token 的 `Line` 取 `startLine`(起始行),即便字符串因 `\<newline>` 续行跨了多行。错误的行号则是扫描器当前
+所在行(§11.1)。
 
 ### 6.2 长字符串(长括号 `[[ ]]` / `[=[ ]=]`)
 
@@ -641,8 +642,9 @@ for {
 要点:
 - **闭括号匹配**:必须恰好 `]` + `level` 个 `=` + `]`。`level` 不符的 `]`(如 level 2 时遇
   `]]` 或 `]=]`)是普通内容,继续。
-- **换行规范化**:长字符串内容里的换行统一写为单个 `\n`(0x0A),与 Lua 5.1 行为一致(无论源
-  是 `\r\n` 还是 `\r`,存入串的都是 `\n`);同时 `line += 1`。
+- **换行规范化**:长字符串内容里的每个换行序列(`\n`、`\r`、`\r\n`、`\n\r`,与 §9 计行的四种写法一致)都存成
+  单个 `\n`(0x0A),同时 `line += 1`。所以 `[[a<CR><LF>b]]` 长 3 字节,`[[a<CR><CR>b]]` 是两个换行、长 4 字节
+  (`read_long_string` 存 `'\n'`,由 `inclinenumber` 跳过成对的另一半;#282 之前望舒保留了源字节)。
 - **首换行丢弃只发生一次**(开括号紧后),不影响内容中的其它换行。
 
 > **可选告警:嵌套长括号(`nesting of [[...]] is deprecated`)**。Lua 5.1 对「长字符串/长
@@ -719,7 +721,7 @@ Lua 5.1 的 `luaL_loadfile`:**若 chunk 首字符是 `#`,跳过首行**(到第�
 
 ### 11.1 定位与措辞格式
 
-lexer 错误携带:**chunk 名(`source`)+ 行号(出错处或 token 起始行)+ 措辞**。格式对齐 Lua
+lexer 错误携带:**chunk 名(`source`)+ 行号(扫描器当前所在行)+ 措辞**。格式对齐 Lua
 5.1 的 `luaX_syntaxerror`/`luaX_lexerror`:
 
 ```
@@ -730,9 +732,8 @@ lexer 错误携带:**chunk 名(`source`)+ 行号(出错处或 token 起始行)+ 
 的文本」;对未闭合类错误放已读到的片段。
 
 ```go
-func (lx *Lexer) errf(format string, a ...any) error            // 当前行
-func (lx *Lexer) errAt(line int32, format string, a ...any) error // 指定行(如串/注释起始行)
-// 返回的 error 实现 LexError{Source string; Line int32; Msg string},parser 透传为语法错误
+func (l *Lexer) errorNear(msg, text string) *Error // 当前行,msg 后接 near '<text>'
+// *Error{Source string; Line int32; Msg string},parser 透传为语法错误
 ```
 
 错误类型 `LexError` 让 parser(04)能区分「词法错」与「语法错」,但二者最终都进 04 §13 的
@@ -740,21 +741,35 @@ func (lx *Lexer) errAt(line int32, format string, a ...any) error // 指定行(�
 
 ### 11.2 错误目录表
 
-| 触发条件 | 措辞(暂拟) | 备注 |
-|---|---|---|
-| 短字符串到 EOF / 裸换行未闭合 | `unfinished string` | 行号=串起始行 |
-| 长字符串到 EOF 未闭合 | `unfinished long string` | 措辞**待差分核对** |
-| 长注释到 EOF 未闭合 | `unfinished long comment` | |
-| `\ddd` > 255 或位数非法 | `escape sequence too large` | 5.1 仅 1~3 位十进制且 ≤255 |
-| 未知转义字母(含 5.2+ 的 `\x`/`\z`、5.3 的 `\u`) | `invalid escape sequence` | **措辞待差分**;关键是 5.2+ 转义在此**明确报错** |
-| 数字解析失败 / 整段未被吃尽 | `malformed number near '<lit>'` | §5;`near` 截断规则待差分 |
-| 非法/不可识别字符(高位字节、控制字符、孤立 `~` 后非 `=` 等) | `unexpected symbol near '<char>'` | 含 ASCII-only 标识符策略(§4.3)挡下的高位字节 |
-| 长括号定界符畸形(`[=` 后非 `[`,在期望长串处) | `invalid long string delimiter` | **措辞待差分**;多见于 parser 期望 `[` 却得畸形长括号 |
-| (可选)长串/注释内嵌 `[[` | `nesting of [[...]] is deprecated` | **5.1 行为存疑,P1 暂不实现**,§8/§13 |
+措辞、`near` 后缀和行号都已与 lua5.1 逐条核对(#282,回归见
+`test/regression/issue282_lexer_errors_test.go`)。所有词法错误都走 `luaX_lexerror(msg, token)`,行号是扫描器
+**当前所在行**(`ls->linenumber`),后缀是 ` near '<txtToken>'`:`TK_EOS` 显示 `<eof>`,字符串和数字显示扫描缓冲区
+里**已经读到的内容**。
 
-> **凡标「待差分核对」的措辞,均以 [12-testing-difftest](./12-testing-difftest.md) 差分测试 Lua
-> 5.1 参考实现/gopher-lua 的实际输出为准**,本文不编造确定性文案(避免与差分基准不符)。错误
-> **种类与触发条件**是确定的;**精确字符串**待定。
+| 触发条件 | 措辞 | `near` 的内容 |
+|---|---|---|
+| 短字符串读到输入结尾 | `unfinished string` | `<eof>` |
+| 短字符串遇到裸换行 | `unfinished string` | 开引号加已读内容,转义已解码:`'a\65\tb` 显示 `'aA<TAB>b` |
+| `\ddd` 大于 255 | `escape sequence too large` | 同上,到出错的转义之前为止 |
+| 长字符串读到输入结尾 | `unfinished long string` | `<eof>`;行号是输入结束的那一行,不是长串起始行 |
+| 长注释读到输入结尾 | `unfinished long comment` | `<eof>` |
+| `[` 后跟若干 `=` 但没有第二个 `[` | `invalid long string delimiter` | 已读的 `[=`、`[==` |
+| 0 级长串/长注释里出现 `[[` | `nesting of [[...]] is deprecated` | `[`(`LUA_COMPAT_LSTR == 1`) |
+| 数字整段不合法 | `malformed number` | 整段数字原文 |
+
+不认识的字符**不是词法错误**:`llex` 把它当作单字符 token 返回(`token.CHAR`),由语法分析报
+`unexpected symbol near '$'`,在调用参数里则是 `')' expected near '$'`。单独的 `~` 也一样。`near` 里的写法按
+`luaX_token2str`:控制字符(含 DEL)写成 `char(N)`,其他字节原样输出。NUL 字节是 0 号 token,`luaX_lexerror`
+对 0 号 token 不加后缀,所以只报 `unexpected symbol`。
+
+5.1 没有「未知转义」错误:`\q` 按 `q` 原样保留(`read_string` 的 default 分支)。
+
+扫描缓冲区里的内容也决定了 STRING / NUMBER token 在语法错误里的显示(`token.Token.Text`):字符串是**解码后**的
+内容加两端定界符,长串的换行一律是 `\n`,开括号后紧跟的那个换行不出现;数字是源码原文。
+
+> 几处容易漏的细节:`check_next` 用 `strchr(set, current)` 判断,NUL 也算命中,所以数字里的 NUL 会被当成指数
+> 标记或正负号吃进去,随后 `luaO_str2d` 读到 NUL 就停(`1\0abc` 是合法的 `1`,`1e\0` 是 `malformed number near
+> '1e'`)。`near` 文本经 `luaO_pushfstring` 的 `%s`,也在第一个 NUL 处截断。
 
 ---
 
@@ -802,11 +817,7 @@ parser 自缓存**」。逐条兑现:
 
 ### 13.2 文档缺口 / 待决(记入 `llmdoc/memory/doc-gaps.md`)
 
-- **错误措辞待差分核对**:`unfinished long string`、`invalid long string delimiter`、
-  `invalid escape sequence`、`malformed number near '...'` 的 `near` 截断、
-  `nesting of [[...]] is deprecated` 是否复刻——全部以
-  [12-testing-difftest](./12-testing-difftest.md) 差分测试 Lua 5.1 实际输出为准(§11)。**错误
-  种类已定,精确字符串待定。**
+- ~~错误措辞待差分核对~~:**已关闭**(#282)。§11.2 的每一条都已与 lua5.1 逐条比对。
 - **非 ASCII 标识符**:本文定死 ASCII-only(§4.3)。若差分基准在高位字节上与之不一致,需在
   [12](./12-testing-difftest.md) 固定口径(可能需放宽到「locale-free 的某确定集」)。
 - **shebang 归属的精确接口**:`#` 首行跳过归 loader/嵌入层(§10),但 `lex.New` 是否接受

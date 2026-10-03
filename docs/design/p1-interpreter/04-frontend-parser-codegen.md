@@ -373,14 +373,41 @@ func (p *Parser) parseExpr(limit uint8) ast.Expr {
 
 ### 4.4 赋值 vs 调用语句的消歧
 
-`parseExprStmt` 先调 `parsePrefixExpr` 得到一个表达式 `e`,再看当前 token:
+`parseExprStmt` 先调 `parsePrefixExpr` 得到一个表达式 `e`,再按 `e` 的形状定语句种类,与 Lua 5.1
+`exprstat()` 一致(#282 之前望舒按后继符号判断,措辞也不同):
 
-- 若是 `=` 或 `,` → 这是赋值语句。`e` 必须是 `NameExpr` 或 `IndexExpr`(否则报
-  `cannot assign to ...` / `syntax error`);继续收集逗号分隔的其余 LHS 与 `=` 后的 RHS。
-- 否则 `e` 必须是 `CallExpr` 或 `MethodCallExpr` → `CallStmt`(独立调用语句);其它形状报
-  `syntax error`(如裸 `a + b` 作语句)。
+- `e` 是 `CallExpr` 或 `MethodCallExpr` → `CallStmt`。后面跟什么由下一条语句处理,所以 `f() = 1` 报的是下一条
+  语句开头的 `unexpected symbol near '='`。
+- 其他形状一律当作赋值:`e` 必须是 `NameExpr` 或 `IndexExpr`,否则报 `syntax error near '<tok>'`(如
+  `(a) = 1`);继续收集逗号分隔的其余目标,再要求 `=`。所以 `x x`、`a.b`、`a[1]` 报 `'=' expected near ...`。
+- 目标个数受 `assignment` 的 `luaY_checklimit(nvars, LUAI_MAXCCALLS - nCcalls, "variables in assignment")`
+  限制:5.1 每多一个目标就递归一层,所以上限是**剩余的 C 调用深度**。望舒用 `depthLimit - depth`
+  算同一个数,只差在 `nCcalls` 的计法上:望舒的语法层数与运行期 C 调用深度对齐的是内嵌 5.1.5
+  (`internal/oracle`),独立的 `lua5.1` 命令行在 `lua_cpcall` 里多套一层,上限会少 1。
 
-这与 Lua 5.1 `exprstat()` 逻辑一致:`prefixexp` 解析后由后继符号定夺语句种类。
+#### 4.4.1 语法错误的措辞、`near` 与行号(#282)
+
+所有语法错误都按 `lparser.c` 的报错点逐条对齐,回归见 `test/regression/issue282_parser_errors_test.go`:
+
+- **行号**是 `ls->linenumber`,即扫描器当前所在行:当前 token 的结束行,已预读下一个 token 时是那个 token 的
+  结束行(`Parser.curLine`)。一个跨行长串之后的错误报在长串的最后一行。
+- **`luaX_syntaxerror`** 在消息后接 ` near '<当前 token>'`(`Parser.syntaxError`),`token.Token.String` 给出
+  `txtToken` 的写法(见 [03](./03-frontend-lexer.md) §11.2)。不带 token 的 `luaX_lexerror(msg, 0)` 不加后缀
+  (`Parser.plainError`),例如 `chunk has too many syntax levels` 和下面的上限错误。
+- **名字检查**一律是 `error_expected(TK_NAME)`,即带引号的 `'<name>' expected`;只有参数表是
+  `<name> or '...' expected`(`parlist`,不带引号)。
+- **`check_match`**:闭合记号缺失时,若开记号不在当前行,报
+  `'end' expected (to close 'function' at line 1) near '<eof>'`;同一行则是普通的 `'end' expected`。适用于
+  `end`/`function`、`)`/`(`(括号表达式和调用参数)、`}`/`{`、`end`/`while`、`until`/`repeat`、`end`/`for`、
+  `end`/`if`、`end`/`do`。
+- **`cannot use '...' outside a vararg function`** 是 `luaX_syntaxerror`,带 `near '...'`。
+- **上限检查在解析时做**,与 5.1 一样早于后面的语法错误、报解析到的那一行:`new_localvar` 在读到第 201 个局部
+  名时报 `main function has more than 200 local variables`(函数里是 `function at line N has more than ...`,
+  N 是 linedefined);`singlevaraux` 给一个函数加第 61 个 upvalue 时报 `... has more than 60 upvalues`,超限的
+  可能是中间某层函数。为此 parser 维护一份精简的作用域(`parse.funcScope`:活动局部名、upvalue 名、
+  linedefined)。codegen 的同名检查只是后备。
+- **linedefined** 取 `body()` 收到的 `line`:`function` 语句是关键字所在行,`local function` 和函数表达式是
+  `(` 所在行(5.1 在读完名字或 `function` 之后才取 `ls->linenumber`)。
 
 ---
 

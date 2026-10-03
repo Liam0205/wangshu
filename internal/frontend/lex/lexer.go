@@ -15,6 +15,7 @@
 package lex
 
 import (
+	"bytes"
 	"fmt"
 	"math"
 	"strconv"
@@ -55,8 +56,12 @@ func (e *Error) Error() string {
 	return fmt.Sprintf("%s:%d: %s", bytecode.ChunkIDN(e.Source, bytecode.MaxSrc), e.Line, e.Msg)
 }
 
-func (l *Lexer) errorf(format string, args ...any) *Error {
-	return &Error{Source: l.source, Line: l.line, Msg: fmt.Sprintf(format, args...)}
+// errorNear is luaX_lexerror(msg, token) with a nonzero token: the message gets " near '<text>'",
+// where text is what txtToken shows -- "<eof>" for TK_EOS, the scan buffer so far for a string or
+// number. The line is the scanner's current one, so an unfinished long string reports where the
+// input ran out, not where it started.
+func (l *Lexer) errorNear(msg, text string) *Error {
+	return &Error{Source: l.source, Line: l.line, Msg: msg + token.Near(text)}
 }
 
 // peek returns the byte at offset off ahead, or 0 if out of range.
@@ -155,7 +160,7 @@ func (l *Lexer) skipLongBracket(level int) error {
 			// inside a level-0 long bracket raises. Oracle diff fuzz
 			// catch (--[[[[]] parses clean here, errors on 5.1.5).
 			if level == 0 && l.matchNestedOpen() {
-				return l.errorf("nesting of [[...]] is deprecated near '['")
+				return l.errorNear("nesting of [[...]] is deprecated", "[")
 			}
 			l.pos++
 		case ']':
@@ -167,7 +172,7 @@ func (l *Lexer) skipLongBracket(level int) error {
 			l.pos++
 		}
 	}
-	return l.errorf("unfinished long comment")
+	return l.errorNear("unfinished long comment", "<eof>")
 }
 
 // matchNestedOpen reports whether l.pos sits on the first '[' of a
@@ -198,9 +203,10 @@ func (l *Lexer) matchLongBracketClose(level int) bool {
 }
 
 // readLongString reads a long string body after its opener has been consumed.
-// It returns the content after the leading newline has been stripped (no escape decoding).
+// It returns the content after the leading newline has been stripped (no escape decoding). Every
+// newline sequence in it reads as a single "\n": read_long_string saves '\n' and lets inclinenumber
+// skip the rest of a CR LF or LF CR pair, so `[[a<CR><LF>b]]` is 3 bytes long.
 func (l *Lexer) readLongString(level int) (string, error) {
-	startLine := l.line
 	contentStart := l.pos
 	for !l.atEnd() {
 		c := l.src[l.pos]
@@ -211,21 +217,42 @@ func (l *Lexer) readLongString(level int) (string, error) {
 			// PUC LUA_COMPAT_LSTR == 1: same deprecation error as in
 			// long comments (read_long_string is shared upstream).
 			if level == 0 && l.matchNestedOpen() {
-				return "", l.errorf("nesting of [[...]] is deprecated near '['")
+				return "", l.errorNear("nesting of [[...]] is deprecated", "[")
 			}
 			l.pos++
 		case ']':
 			contentEnd := l.pos
 			if l.matchLongBracketClose(level) {
-				return string(l.src[contentStart:contentEnd]), nil
+				body := l.src[contentStart:contentEnd]
+				if bytes.IndexByte(body, '\r') >= 0 {
+					return normalizeNewlines(body), nil
+				}
+				return string(body), nil
 			}
 			l.pos++
 		default:
 			l.pos++
 		}
 	}
-	l.line = startLine
-	return "", l.errorf("unfinished long string (started at line %d)", startLine)
+	return "", l.errorNear("unfinished long string", "<eof>")
+}
+
+// normalizeNewlines turns each newline sequence (\n, \r, \r\n or \n\r, as inclineFromCurrent reads
+// them) into a single \n.
+func normalizeNewlines(b []byte) string {
+	out := make([]byte, 0, len(b))
+	for i := 0; i < len(b); i++ {
+		c := b[i]
+		if c != '\n' && c != '\r' {
+			out = append(out, c)
+			continue
+		}
+		out = append(out, '\n')
+		if i+1 < len(b) && (b[i+1] == '\n' || b[i+1] == '\r') && b[i+1] != c {
+			i++
+		}
+	}
+	return string(out)
 }
 
 // Next emits the next token (or returns an error).
@@ -260,8 +287,21 @@ func (l *Lexer) next() (token.Token, error) {
 			if err != nil {
 				return token.Token{}, err
 			}
-			return token.Token{Kind: token.STRING, Line: startLine, Str: s,
-				Raw: string(l.src[saved:l.pos])}, nil
+			// txtToken shows the scan buffer: the brackets around the content as read_long_string
+			// saved it, which leaves out the newline right after the opener.
+			sep := strings.Repeat("=", level)
+			text := "[" + sep + "[" + s + "]" + sep + "]"
+			return token.Token{Kind: token.STRING, Line: startLine, Str: text[2+level : len(text)-2-level],
+				Text: text}, nil
+		}
+		// skip_sep: a `[` followed by '='s but no second `[` is an error, not a `[` token.
+		n := 1
+		for saved+n < len(l.src) && l.src[saved+n] == '=' {
+			n++
+		}
+		if n > 1 {
+			l.pos = saved + n
+			return token.Token{}, l.errorNear("invalid long string delimiter", string(l.src[saved:l.pos]))
 		}
 		l.pos = saved + 1
 		return token.Token{Kind: token.LBRACK, Line: startLine}, nil
@@ -309,10 +349,12 @@ func (l *Lexer) scanNumber(startLine int32) (token.Token, error) {
 	for !l.atEnd() && (isDigit(l.src[l.pos]) || l.src[l.pos] == '.') {
 		l.pos++
 	}
-	// Optional exponent marker (official check_next "Ee" + check_next "+-", each at most once)
-	if !l.atEnd() && (l.src[l.pos] == 'e' || l.src[l.pos] == 'E') {
+	// Optional exponent marker (official check_next "Ee" + check_next "+-", each at most once).
+	// check_next tests strchr(set, current), which also finds a NUL byte (the set's terminator), so a
+	// NUL is taken as either; the numeral then ends there when luaO_str2d reads the buffer.
+	if !l.atEnd() && (l.src[l.pos] == 'e' || l.src[l.pos] == 'E' || l.src[l.pos] == 0) {
 		l.pos++
-		if !l.atEnd() && (l.src[l.pos] == '+' || l.src[l.pos] == '-') {
+		if !l.atEnd() && (l.src[l.pos] == '+' || l.src[l.pos] == '-' || l.src[l.pos] == 0) {
 			l.pos++
 		}
 	}
@@ -326,11 +368,15 @@ func (l *Lexer) scanNumber(startLine int32) (token.Token, error) {
 		break
 	}
 	lit := string(l.src[start:l.pos])
-	f, ok := parseNumeral(lit)
-	if !ok {
-		return token.Token{}, l.errorf("malformed number near '%s'", lit)
+	num := lit
+	if i := strings.IndexByte(num, 0); i >= 0 {
+		num = num[:i]
 	}
-	return token.Token{Kind: token.NUMBER, Line: startLine, Num: f, Raw: lit}, nil
+	f, ok := parseNumeral(num)
+	if !ok {
+		return token.Token{}, l.errorNear("malformed number", lit)
+	}
+	return token.Token{Kind: token.NUMBER, Line: startLine, Num: f, Text: lit}, nil
 }
 
 // parseNumeral is equivalent to the official luaO_str2d (consumes the whole span, failing if not fully consumed):
@@ -401,24 +447,30 @@ func hexDigitVal(c byte) int {
 	}
 }
 
+// scanShortString follows read_string. buf is its scan buffer: the opening delimiter, then the
+// DECODED contents, which is what an error inside the string shows after "near" -- `"a\300` reports
+// near '"a' -- and, with the closing delimiter, what txtToken shows for the finished token.
 func (l *Lexer) scanShortString(startLine int32, quote byte) (token.Token, error) {
-	rawStart := l.pos
 	l.pos++ // consume the opening quote
-	var buf []byte
+	buf := []byte{quote}
 	for {
-		if l.atEnd() || l.src[l.pos] == '\n' || l.src[l.pos] == '\r' {
-			return token.Token{}, l.errorf("unfinished string")
+		if l.atEnd() {
+			return token.Token{}, l.errorNear("unfinished string", "<eof>")
+		}
+		if l.src[l.pos] == '\n' || l.src[l.pos] == '\r' {
+			return token.Token{}, l.errorNear("unfinished string", string(buf))
 		}
 		c := l.src[l.pos]
 		if c == quote {
 			l.pos++
-			return token.Token{Kind: token.STRING, Line: startLine, Str: string(buf),
-				Raw: string(l.src[rawStart:l.pos])}, nil
+			buf = append(buf, quote)
+			text := string(buf)
+			return token.Token{Kind: token.STRING, Line: startLine, Str: text[1 : len(text)-1], Text: text}, nil
 		}
 		if c == '\\' {
 			l.pos++
 			if l.atEnd() {
-				return token.Token{}, l.errorf("unfinished string")
+				return token.Token{}, l.errorNear("unfinished string", "<eof>")
 			}
 			esc := l.src[l.pos]
 			switch esc {
@@ -462,7 +514,7 @@ func (l *Lexer) scanShortString(startLine int32, quote byte) (token.Token, error
 						l.pos++
 					}
 					if n > 255 {
-						return token.Token{}, l.errorf("escape sequence too large")
+						return token.Token{}, l.errorNear("escape sequence too large", string(buf))
 					}
 					buf = append(buf, byte(n))
 				} else {
@@ -527,7 +579,6 @@ func (l *Lexer) scanSymbol(startLine int32) (token.Token, error) {
 		if l.peek(1) == '=' {
 			return mk(token.NEQ, 2), nil
 		}
-		return token.Token{}, l.errorf("invalid character '~' (expected '~=')")
 	case '<':
 		if l.peek(1) == '=' {
 			return mk(token.LE, 2), nil
@@ -551,5 +602,8 @@ func (l *Lexer) scanSymbol(startLine int32) (token.Token, error) {
 		}
 		return mk(token.DOT, 1), nil
 	}
-	return token.Token{}, l.errorf("unexpected character '%c'", c)
+	// llex returns any other character as a single-character token, a lone `~` included, and leaves the
+	// error to the parser: "unexpected symbol near '$'", or "')' expected near '$'" inside a call.
+	l.pos++
+	return token.Token{Kind: token.CHAR, Line: startLine, Str: string([]byte{c})}, nil
 }

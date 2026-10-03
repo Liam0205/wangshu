@@ -151,7 +151,7 @@ func (p *Parser) parseSimpleExpr() (ast.Expr, error) {
 		return &ast.FalseExpr{Line: line}, nil
 	case token.ELLIPSIS:
 		if !p.insideVararg {
-			return nil, p.errorf("cannot use '...' outside a vararg function")
+			return nil, p.syntaxError("cannot use '...' outside a vararg function")
 		}
 		emitLine := p.lastLine // PUC emits VARARG before consuming `...`
 		if err := p.next(); err != nil {
@@ -164,7 +164,8 @@ func (p *Parser) parseSimpleExpr() (ast.Expr, error) {
 		if err := p.next(); err != nil {
 			return nil, err
 		}
-		return p.parseFuncBody(line, false)
+		// simpleexp passes body ls->linenumber after skipping `function`: the `(` line.
+		return p.parseFuncBody(p.curLine(), false)
 	}
 	return p.parsePrefixExpr()
 }
@@ -178,8 +179,13 @@ func (p *Parser) parsePrefixExpr() (ast.Expr, error) {
 		if err := p.next(); err != nil {
 			return nil, err
 		}
+		// singlevar resolves the name after str_checkname consumed it.
+		if _, err := p.resolveName(p.fs, e.(*ast.NameExpr).Name); err != nil {
+			return nil, err
+		}
 	case token.LPAREN:
 		line := p.tok.Line
+		openLine := p.curLine()
 		if err := p.next(); err != nil {
 			return nil, err
 		}
@@ -187,7 +193,7 @@ func (p *Parser) parsePrefixExpr() (ast.Expr, error) {
 		if err != nil {
 			return nil, err
 		}
-		if err := p.expect(token.RPAREN); err != nil {
+		if err := p.expectMatch(token.RPAREN, token.LPAREN, openLine); err != nil {
 			return nil, err
 		}
 		// Always wrap in ParenExpr: ① collapse a multi-value source to a
@@ -200,7 +206,7 @@ func (p *Parser) parsePrefixExpr() (ast.Expr, error) {
 		// ls->lastline at the point primaryexp discharges the inner expression (#252).
 		e = &ast.ParenExpr{Line: line, EndLine: p.lastLine, E: inner}
 	default:
-		return nil, p.errorf("unexpected symbol near '%s'", p.tok.String())
+		return nil, p.syntaxError("unexpected symbol")
 	}
 	for {
 		switch p.tok.Kind {
@@ -211,7 +217,7 @@ func (p *Parser) parsePrefixExpr() (ast.Expr, error) {
 				return nil, err
 			}
 			if !p.match(token.NAME) {
-				return nil, p.errorf("<name> expected near '%s'", p.tok.String())
+				return nil, p.errorExpected(token.NAME)
 			}
 			e = &ast.IndexExpr{Line: opLine, ObjEndLine: objEnd, Obj: e, Key: &ast.StringExpr{Line: p.tok.Line, Val: p.tok.Str}}
 			if err := p.next(); err != nil {
@@ -237,7 +243,7 @@ func (p *Parser) parsePrefixExpr() (ast.Expr, error) {
 				return nil, err
 			}
 			if !p.match(token.NAME) {
-				return nil, p.errorf("<name> expected near '%s'", p.tok.String())
+				return nil, p.errorExpected(token.NAME)
 			}
 			method := p.tok.Str
 			line := p.tok.Line
@@ -291,8 +297,9 @@ func (p *Parser) parseArgs() ([]ast.Expr, []int32, error) {
 		// 5.1). The STRING/LBRACE argument forms are not checked. Both plain
 		// calls and obj:m\n(3) method calls go through here.
 		if p.tok.Line != p.lastLine {
-			return nil, nil, p.errorf("ambiguous syntax (function call x new statement) near '('")
+			return nil, nil, p.syntaxError("ambiguous syntax (function call x new statement)")
 		}
+		openLine := p.curLine()
 		if err := p.next(); err != nil {
 			return nil, nil, err
 		}
@@ -306,7 +313,7 @@ func (p *Parser) parseArgs() ([]ast.Expr, []int32, error) {
 		if err != nil {
 			return nil, nil, err
 		}
-		if err := p.expect(token.RPAREN); err != nil {
+		if err := p.expectMatch(token.RPAREN, token.LPAREN, openLine); err != nil {
 			return nil, nil, err
 		}
 		// The ')' is what discharges the LAST argument, so it takes the closing paren's line.
@@ -331,7 +338,7 @@ func (p *Parser) parseArgs() ([]ast.Expr, []int32, error) {
 		}
 		return []ast.Expr{&ast.StringExpr{Line: line, Val: s}}, []int32{p.lastLine}, nil
 	}
-	return nil, nil, p.errorf("function arguments expected near '%s'", p.tok.String())
+	return nil, nil, p.syntaxError("function arguments expected")
 }
 
 // explist ::= expr {',' expr}
@@ -377,6 +384,7 @@ func (p *Parser) parseExprListEnds() ([]ast.Expr, []int32, error) {
 //	fieldsep ::= ',' | ';'
 func (p *Parser) parseTableExpr() (ast.Expr, error) {
 	line := p.tok.Line
+	openLine := p.curLine()
 	newTableLine := p.lastLine // PUC emits NEWTABLE before consuming `{`
 	if err := p.expect(token.LBRACE); err != nil {
 		return nil, err
@@ -460,7 +468,7 @@ func (p *Parser) parseTableExpr() (ast.Expr, error) {
 			t.Items[lastPositional].EndLine = p.lastLine
 		}
 	}
-	if err := p.expect(token.RBRACE); err != nil {
+	if err := p.expectMatch(token.RBRACE, token.LBRACE, openLine); err != nil {
 		return nil, err
 	}
 	t.CloseLine = p.lastLine
@@ -476,14 +484,19 @@ func (p *Parser) parseTableExpr() (ast.Expr, error) {
 //
 //	parlist ::= namelist [',' '...'] | '...'
 //
-// When isMethod is true, an implicit "self" is injected at the head of Params.
+// When isMethod is true, an implicit "self" is injected at the head of Params. startLine is body()'s
+// line: the function's linedefined, and the line check_match names when `end` is missing.
 func (p *Parser) parseFuncBody(startLine int32, isMethod bool) (*ast.FuncExpr, error) {
+	// open_func: the body has its own locals and upvalues.
+	p.fs = &funcScope{prev: p.fs, lineDefined: startLine}
+	defer func() { p.fs = p.fs.prev }()
 	if err := p.expect(token.LPAREN); err != nil {
 		return nil, err
 	}
 	var params []string
 	if isMethod {
 		params = append(params, "self")
+		p.activate("self")
 	}
 	isVararg := false
 	if !p.match(token.RPAREN) {
@@ -493,15 +506,24 @@ func (p *Parser) parseFuncBody(startLine int32, isMethod bool) (*ast.FuncExpr, e
 				if err := p.next(); err != nil {
 					return nil, err
 				}
+				// LUA_COMPAT_VARARG declares the implicit `arg` local after `...`, and it counts like a
+				// parameter.
+				if err := p.checkLocalLimit(len(params) - len(p.fs.actvars)); err != nil {
+					return nil, err
+				}
 				break
 			}
 			if !p.match(token.NAME) {
-				return nil, p.errorf("<name> expected near '%s'", p.tok.String())
+				return nil, p.syntaxError("<name> or '...' expected")
 			}
-			params = append(params, p.tok.Str)
+			name := p.tok.Str
 			if err := p.next(); err != nil {
 				return nil, err
 			}
+			if err := p.checkLocalLimit(len(params) - len(p.fs.actvars)); err != nil {
+				return nil, err
+			}
+			params = append(params, name)
 			if !p.match(token.COMMA) {
 				break
 			}
@@ -509,6 +531,10 @@ func (p *Parser) parseFuncBody(startLine int32, isMethod bool) (*ast.FuncExpr, e
 				return nil, err
 			}
 		}
+	}
+	p.activate(params[len(p.fs.actvars):]...)
+	if isVararg {
+		p.activate("arg")
 	}
 	if err := p.expect(token.RPAREN); err != nil {
 		return nil, err
@@ -526,7 +552,7 @@ func (p *Parser) parseFuncBody(startLine int32, isMethod bool) (*ast.FuncExpr, e
 		return nil, err
 	}
 	endLine := p.tok.Line
-	if err := p.expect(token.KW_END); err != nil {
+	if err := p.expectMatch(token.KW_END, token.KW_FUNCTION, startLine); err != nil {
 		return nil, err
 	}
 	return &ast.FuncExpr{Line: startLine, Params: params, IsVararg: isVararg, Body: body, EndLine: endLine}, nil
