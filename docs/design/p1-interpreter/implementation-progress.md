@@ -578,7 +578,9 @@
   #279 的用例在 P1、P3、P4 下各跑一遍 force-all 与不升层，但这些用例调用 `debug.traceback` 等不在白名单里的函数，
   force-all 下实际没有帧升层(本地审查用 `PromotionCount` 查出),只说明解释器路径正确;编译层由
   `issue276_279_compiled_callers_test.go` 覆盖，它的调用方只调用已知局部函数和白名单 stdlib,force-all 与阈值 1
-  的 auto 各跑一遍并断言 `PromotionCount` 非零，去掉 gibbous 调用 helper 的 `pc + 1` 修复后它会失败。它原先的预热调用每次都报错，P4 的调用点从没成功过，走不到 `ExecutePlainCallInlineFrame`;第二次全范围终审查出这条路径不写调用方 pc,补了「调用点先成功、后出错」的两个用例(未捕获与 `xpcall(f, debug.traceback)`),`ExecuteCalleeFromInlineFrame` 的同一检查在 `internal/crescent` 的 `TestInlineFrameCalleeAddsNoCLevel` 里;
+  的 auto 各跑一遍并断言 `PromotionCount` 非零(P4 在 arm64 上不断言：那里的翻译器只有原生路径，原生路径不接受的函数没有
+  head-op replay 可退，这些调用方大多留在解释器里，PR CI 的 arm64 / macOS P4 腿因此失败过一次;用例仍与 lua5.1 比输出),去掉 gibbous
+  调用 helper 的 `pc + 1` 修复后它会失败。它原先的预热调用每次都报错，P4 的调用点从没成功过，走不到 `ExecutePlainCallInlineFrame`;第二次全范围终审查出这条路径不写调用方 pc,补了「调用点先成功、后出错」的两个用例(未捕获与 `xpcall(f, debug.traceback)`),`ExecuteCalleeFromInlineFrame` 的同一检查在 `internal/crescent` 的 `TestInlineFrameCalleeAddsNoCLevel` 里;
   `crescent` 内部测试 `TestTraceback_NotBuiltForCaughtErrors`
   钉住「被 pcall / resume 捕获的错误不生成 traceback」。各修复去掉后对应用例都会失败。`test/api` 里原先断言
   `[C]: in ?` 的用例改为断言 lua5.1 的完整输出。
