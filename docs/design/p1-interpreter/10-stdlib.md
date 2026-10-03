@@ -836,7 +836,9 @@ STW §7.3)。本文只列 opt 字符串 → 行为映射(对齐 Lua 5.1):
 > `errfile` 写成 `cannot <what> <文件名>: <strerror>`:`fopen` 失败是 `open`,能打开但读失败(比如目录)是 `read`;
 > 最后一段是 C 库对 errno 的说明，望舒取 Go 的 `syscall.Errno` 文本、首字母改大写，与 glibc / macOS 的 `strerror`
 > 一致(其他平台、没有 errno 的错误保留 Go 的文本)。文件第一个字节是 `#` 时，跟 `luaL_loadfile` 一样跳过第一行
-> (`#!` 行),保留换行，行号不变;`loadstring` 不跳。`dofile` 加载失败时原样抛出这条消息，不加调用方位置。实现在
+> (`#!` 行),保留换行，行号不变;`loadstring` 不跳。文件名在第一个 NUL 处截断:`fopen` 和 `errfile` 的 `%s` 都把它当 C
+> 字符串,`loadfile("a.lua\0x")` 打开的是 `a.lua`,消息里的文件名也只到 NUL 为止。`dofile` 加载失败时原样抛出这条消息，
+> 不加调用方位置。实现在
 > `internal/stdlib/baseenv.go`(`baseFnLoadfile` / `fileErrorMessage`),回归在
 > `test/regression/issue288_loadfile_error_text_test.go`。
 
