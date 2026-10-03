@@ -16,7 +16,7 @@ metadata:
 
 > 范围：分支 `fix/281-288-stock-divergences`。改动在 `internal/crescent/{coroutine,host,meta,state}.go`、
 > `internal/stdlib/{stdlib,tablelib,baseenv}.go`、`internal/bytecode/chunkid.go`、`internal/frontend/{token,lex,parse,compile}`;
-> 测试在 `test/regression/issue28{1..8}_*_test.go`,共用 `stock_divergence_helper_test.go` 里的 `printedBy` / `loadMessage`;
+> 测试在 `test/regression/issue28{1,2,3,5,6,7,8}_*_test.go`(#284 的用例加在已有的 `syntax_error_chunkname_test.go`),共用 `stock_divergence_helper_test.go` 里的 `printedBy` / `loadMessage`;
 > 设计稿 03 / 04 / 05 / 06 / 07 / 08 / 09 / 10 与 P1 implementation-progress。对账表在 implementation-progress 的
 > #281-#288 条目，这里只记过程和教训。
 
