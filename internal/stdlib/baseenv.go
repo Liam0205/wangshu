@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io/fs"
 	"os"
+	"strings"
 	"syscall"
 
 	"github.com/Liam0205/wangshu/internal/crescent"
@@ -125,6 +126,12 @@ func baseFnLoadfile(st *crescent.State, args []value.Value) ([]value.Value, *cre
 		return nil, crescent.NewArgError(1, "string expected")
 	}
 	path := string(object.StringBytes(st.Arena(), value.GCRefOf(args[0])))
+	// luaL_loadfile hands the name to fopen and errfile formats it with %s, both as a C string, so
+	// it ends at the first NUL: loadfile("a.lua\0x") opens a.lua. Go would reject the whole name
+	// with EINVAL instead.
+	if i := strings.IndexByte(path, 0); i >= 0 {
+		path = path[:i]
+	}
 	src, err := os.ReadFile(path)
 	if err != nil {
 		return []value.Value{value.Nil, intern(st, fileErrorMessage(path, err))}, nil
