@@ -271,7 +271,7 @@ func baseFnLoad(st *crescent.State, args []value.Value) ([]value.Value, *crescen
 			if v, ok := e.ErrFuncResult(); ok {
 				return []value.Value{value.Nil, v}, nil
 			}
-			return []value.Value{value.Nil, intern(st, e.Error())}, nil
+			return []value.Value{value.Nil, readerErrorValue(st, e)}, nil
 		}
 		if len(results) == 0 || results[0] == value.Nil {
 			done = true
@@ -309,6 +309,21 @@ func baseFnLoad(st *crescent.State, args []value.Value) ([]value.Value, *crescen
 		return []value.Value{value.Nil, intern(st, err.Error())}, nil
 	}
 	return []value.Value{fn}, nil
+}
+
+// readerErrorValue is what load returns for an error its reader raised: the error value itself, as
+// luaD_protectedparser leaves it on the stack (#283) -- nil for load(error), a table for error({}).
+// Uncaught at top level, lua.c's traceback handler has already run on it, and that handler only
+// extends strings and numbers (db_errorfb), so those come back with the traceback appended.
+func readerErrorValue(st *crescent.State, e *crescent.LuaError) value.Value {
+	v := e.Value
+	if !e.HasValue {
+		v = intern(st, e.Msg)
+	}
+	if e.Traceback != "" && (value.Tag(v) == value.TagString || value.IsNumber(v)) {
+		v = intern(st, e.Error())
+	}
+	return v
 }
 
 // baseFnLoadstring: loadstring(s [, chunkname]) -> function | (nil, errmsg).
