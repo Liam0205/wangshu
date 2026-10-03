@@ -123,8 +123,9 @@ type Roots struct {
 	// ReleaseThreads runs once marking is final, before weak tables are cleared and objects
 	// swept. isDead tells whether a thread object went unreached; the runtime closes and
 	// frees what it keeps for those, as luaE_freethread closes the thread's upvalues before
-	// freeing it.
-	ReleaseThreads func(isDead func(arena.GCRef) bool)
+	// freeing it. It returns the bytes it still keeps for the reached ones (their stacks),
+	// which the thread objects' own sizes leave out, so pacing counts them as live.
+	ReleaseThreads func(isDead func(arena.GCRef) bool) (liveBytes uint64)
 
 	// R7 shadow stack is held by the Collector itself; R8 temporary roots fall under
 	// R5/R7 and need no separate field.
@@ -215,6 +216,14 @@ func (c *Collector) AllocCharge(nbytes uint32) {
 	if c.hostTrigger && !c.stopped && !c.collecting && c.bytesAllocSince >= c.threshold {
 		c.Collect()
 	}
+}
+
+// Account adds nbytes to the allocation count without ever collecting, for memory allocated
+// where a collection must not run (a thread's stack growing in the middle of building a frame);
+// the next safepoint collects if the threshold was crossed.
+func (c *Collector) Account(nbytes uint32) {
+	c.bytesAllocSince += uint64(nbytes)
+	c.updateGCPending()
 }
 
 // SetHostTriggeredCollect toggles whether host alloc crossing the threshold triggers
@@ -318,15 +327,17 @@ func (c *Collector) Collect() {
 	defer func() { c.collecting = false }()
 	c.markRoots()
 	c.markAll()
+	var threadBytes uint64
 	if c.roots.ReleaseThreads != nil {
 		dead := c.deadWhite()
-		c.roots.ReleaseThreads(func(th arena.GCRef) bool {
+		threadBytes = c.roots.ReleaseThreads(func(th arena.GCRef) bool {
 			return object.ColorOf(object.HeaderOf(c.a, th)) == dead
 		})
 	}
 	c.separateFinalizers()
 	c.clearWeakTables()
 	c.sweep()
+	c.liveBytesAfterSweep += threadBytes
 	// Run finalizers (06 §10): separateFinalizers has already resurrected this round's
 	// dead-white userdata and moved them into toRunFinalizers; here we dispatch each via
 	// the callback (injected by State, calls the __gc metamethod). Executed in reverse

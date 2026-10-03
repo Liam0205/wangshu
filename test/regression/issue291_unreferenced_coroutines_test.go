@@ -160,3 +160,31 @@ dead	1
 		}
 	}
 }
+
+// TestDroppedCoroutinesAreCollectedAutomatically covers the other half of #291: collectable is not
+// enough if the collector never runs. A coroutine's stack is allocated outside any object the
+// collector sizes, and its growth was never charged, so a loop that only creates and drops coroutines
+// (deep ones, or ones that allocate nothing else) reached no threshold and grew without bound until an
+// explicit collectgarbage(). lua5.1 counts thread stacks in totalbytes. Without any explicit collection
+// the peak must stay near lua5.1's (about 1.3 MB and 0.6 MB here; it was 53 MB and 115 MB).
+func TestDroppedCoroutinesAreCollectedAutomatically(t *testing.T) {
+	const src = `local function rec(n) if n == 0 then coroutine.yield() return 0 end return 1 + rec(n - 1) end
+local peak = 0
+for i = 1, 500 do
+  local co = coroutine.create(function() rec(2000) end)
+  coroutine.resume(co)
+  local c = collectgarbage("count") if c > peak then peak = c end
+end
+local f = function() coroutine.yield() end
+local peak2 = 0
+for i = 1, 20000 do
+  local co = coroutine.create(f)
+  coroutine.resume(co)
+  local c = collectgarbage("count") if c > peak2 then peak2 = c end
+end
+print(peak < 8192, peak2 < 8192)
+`
+	if got := printedBy(t, wangshu.Options{}, src); got != "true\ttrue\n" {
+		t.Errorf("peak under 8 MB (deep, many): got %q, want both true", got)
+	}
+}

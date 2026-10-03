@@ -79,11 +79,19 @@ func (st *State) NewCoroutine(fn value.Value) (value.Value, *LuaError) {
 	if value.Tag(fn) != value.TagFunction || object.IsHostClosure(st.arena, value.GCRefOf(fn)) {
 		return value.Nil, NewArgError(1, "Lua function expected")
 	}
+	// lua_newthread checks the GC before it allocates, like every allocating API call: a loop that
+	// only creates coroutines reaches no other safepoint.
+	h := st.gc.Push(fn)
+	st.gc.MaybeCollect()
+	st.gc.Pop(h)
 	co := &coroutine{
 		th:     st.newThread(),
 		status: CoSuspended,
 		fn:     fn,
 	}
+	// The stacks are charged like any allocation (lua5.1 counts them in totalbytes), here and
+	// whenever they grow.
+	co.th.gc = st.gc
 	var id uint64
 	if n := len(st.cos.free); n > 0 {
 		id = st.cos.free[n-1]
@@ -98,8 +106,8 @@ func (st *State) NewCoroutine(fn value.Value) (value.Value, *LuaError) {
 	st.gc.LinkSweep(co.ref)
 	v := value.MakeGC(value.TagThread, co.ref)
 	// Nothing refers to the new object yet: keep it through a collection the charge may start.
-	h := st.gc.Push(v)
-	st.gc.AllocCharge(object.ThreadHeadBytes())
+	h = st.gc.Push(v)
+	st.gc.AllocCharge(object.ThreadHeadBytes() + uint32(co.th.segmentBytes()))
 	st.gc.Pop(h)
 	return v, nil
 }
@@ -152,10 +160,14 @@ func (st *State) scanCoroutine(ref arena.GCRef, visit func(value.Value), visitRe
 // unreached closes its upvalues, keeping the values a reached closure still sees (the collector
 // marked them through openUpvalueValue), and gives its stack segments back to the arena, as
 // luaE_freethread does. Running and normal coroutines are rooted, so only suspended and dead ones
-// get here.
-func (st *State) releaseCoroutines(isDead func(arena.GCRef) bool) {
+// get here. It returns the segment bytes of the coroutines that stay.
+func (st *State) releaseCoroutines(isDead func(arena.GCRef) bool) (liveBytes uint64) {
 	for id, co := range st.cos.cos {
-		if co == nil || !isDead(co.ref) {
+		if co == nil {
+			continue
+		}
+		if !isDead(co.ref) {
+			liveBytes += co.th.segmentBytes()
 			continue
 		}
 		st.closeUpvals(co.th, 0)
@@ -165,6 +177,7 @@ func (st *State) releaseCoroutines(isDead func(arena.GCRef) bool) {
 		st.cos.free = append(st.cos.free, uint64(id))
 		st.cos.live--
 	}
+	return liveBytes
 }
 
 // Resume resumes (or starts) a coroutine (08 §3.5 / §4.2).

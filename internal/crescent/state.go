@@ -1401,6 +1401,7 @@ func (st *State) CallOnStack(cl arena.GCRef, args []value.Value, nresults int) (
 // new segment (no extra relocation needed).
 type thread struct {
 	arena      *arena.Arena           // the arena where the value stack segment lives (for segment addressing + grow)
+	gc         *gc.Collector          // non-nil on a coroutine's thread: its segment growth is charged here
 	stackBaseW uint32                 // the value stack segment's word offset in the arena (= valueStackRef>>3)
 	stackCap   int                    // segment capacity (slot count; = size())
 	top        int                    // current stack top (the temporary region above ci.top)
@@ -1492,6 +1493,11 @@ func (st *State) newThread() *thread {
 func (st *State) freeThread(th *thread) {
 	st.arena.Free(arena.GCRef(th.stackBaseW)<<3, uint32(th.stackCap)*8)
 	st.arena.Free(arena.GCRef(th.ciBaseW)<<3, uint32(th.ciCap*ciWords)*8)
+}
+
+// segmentBytes is the bytes a thread's value stack and CallInfo segments occupy.
+func (th *thread) segmentBytes() uint64 {
+	return uint64(th.stackCap)*8 + uint64(th.ciCap*ciWords)*8
 }
 
 // --- CallInfo arena segment writes (PW10 R2b-1: cold fields write only the mirror) ---
@@ -1800,6 +1806,9 @@ func (th *thread) growCISeg(need int) {
 	if !oldRef.IsNull() {
 		a.Free(oldRef, uint32(oldCap*ciWords)*8)
 	}
+	if th.gc != nil {
+		th.gc.Account(uint32((newCap - oldCap) * ciWords * 8))
+	}
 }
 
 // ciSegCl reads cl (word3, GCRef) from the depth-th frame of the ci segment. The
@@ -1920,6 +1929,9 @@ func (th *thread) growStack(need int) {
 	th.stackCap = newCap
 	if !oldRef.IsNull() {
 		a.Free(oldRef, uint32(oldCap)*8)
+	}
+	if th.gc != nil {
+		th.gc.Account(uint32(newCap-oldCap) * 8)
 	}
 }
 

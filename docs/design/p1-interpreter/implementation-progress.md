@@ -619,10 +619,10 @@
   |---|---|---|
   | P4 构建下 `go vet` 报 `possible misuse of unsafe.Pointer`(#290) | `internal/gibbous/jit/peroptranslator/emit_shim_amd64.go` | 报警的是没有调用方的 `funcEntryPC` / `uintptrToPtr`,直接删掉。默认、P3、P4 三种构建的 `go vet` 都干净 |
   | 顶层 Run 出错后、下一次 Run 之前 `Collect()`,逃逸闭包读到已回收的对象(#292) | `internal/crescent/state.go::callOnStack` | 出错展开的帧没有执行 RETURN,upvalue 一直开着，等到下一次 Run 才关;两次 Run 之间主线程的栈不是根，于是闭包引用的值被回收。改为出错返回前、`runningThread` 还指着主线程时 `closeUpvals(th, 0)`,与 `luaD_pcall` 的 `luaF_close` 一样。`Run`、`Call`、`CallInto` 都经过这里，见 [05](./05-interpreter-loop.md) §9.3 |
-  | 没有引用的挂起协程永远不被回收(#291) | `internal/crescent/coroutine.go`、`internal/gc` | 协程句柄是 lightuserdata,所有非 dead 协程都是根。现在协程的 Lua 值是 arena 里只有头的 Thread 对象，收集器经 `Roots.ScanThread` 扫它的栈;根里只放 running 和 normal 的协程;开放 upvalue 标记它所指的栈槽值(同 `reallymarkobject`),没被标记的协程在清扫前关闭 upvalue、归还栈段，注册表下标复用。`coroutine.wrap` 返回的函数把协程放在宿主闭包的 upvalue 里，与 `auxwrap` 一样让函数持有协程。`type` / `tostring` / 报错里的类型名不再查注册表，直接按 `TagThread` 判断。见 [08](./08-coroutines.md) §6.1、[06](./06-memory-gc.md) §5.2 |
+  | 没有引用的挂起协程永远不被回收(#291) | `internal/crescent/coroutine.go`、`internal/gc` | 协程句柄是 lightuserdata,所有非 dead 协程都是根。现在协程的 Lua 值是 arena 里只有头的 Thread 对象，收集器经 `Roots.ScanThread` 扫它的栈;根里只放 running 和 normal 的协程;开放 upvalue 标记它所指的栈槽值(同 `reallymarkobject`),没被标记的协程在清扫前关闭 upvalue、归还栈段，注册表下标复用;协程栈段计入 GC 分配量和活跃字节，创建前先检查一次 GC,否则只建协程的循环不会自动收集。`coroutine.wrap` 返回的函数把协程放在宿主闭包的 upvalue 里，与 `auxwrap` 一样让函数持有协程。`type` / `tostring` / 报错里的类型名不再查注册表，直接按 `TagThread` 判断。见 [08](./08-coroutines.md) §6.1、[06](./06-memory-gc.md) §5.2 |
 
   验证:#291、#292 各一个 regression 文件(`issue291_unreferenced_coroutines_test.go`、`issue292_collect_after_failed_run_test.go`),
-  期望值用 `lua5.1` 跑出;#291 的第二组用例在 GC 压力模式下也跑一遍。探针在 P1、P3、P4 的不升层 / force-all / auto
+  期望值用 `lua5.1` 跑出;#291 的第二组用例在 GC 压力模式下也跑一遍，第三组不调用 `collectgarbage()`,断言内存峰值有界(修前 53 MB / 115 MB,修后约 1 MB,lua5.1 是 1.3 MB / 0.6 MB)。探针在 P1、P3、P4 的不升层 / force-all / auto
   七种配置下都与 lua5.1 一致，打开 GC 压力模式也一致。去掉修复后两个文件的用例都会失败。
 
 ## 相关

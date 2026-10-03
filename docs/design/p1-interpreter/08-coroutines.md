@@ -783,7 +783,11 @@ yield 经 `hostCoroutineYield`(host)触发,而 host 调用本身会 `nCcalls`...
 > `coroutine` 记录里。收集器扫到这个 Thread 头时经 `Roots.ScanThread`(`State.scanCoroutine`)扫它的栈、主函数和
 > xfer 区，所以挂起协程只在被引用时存活。根里只放 running 和 normal 的协程(`visitExtraRefs`)。标记结束后
 > `Roots.ReleaseThreads`(`State.releaseCoroutines`)对没被标记的协程先 `closeUpvals(co.th, 0)`,再把两个栈段还给
-> arena,清掉注册表项，下标留给下一个协程复用。此前(到 #291 为止)协程句柄是 lightuserdata,所有非 dead 协程都是根，
+> arena,清掉注册表项，下标留给下一个协程复用。协程的两个栈段也计入 GC 的分配量:创建时按段的大小
+> `AllocCharge`,扩容时按增量计入(`Collector.Account`,只记账不收集，因为扩容发生在建帧中途),活跃字节也算上
+> 存活协程的栈段(`ReleaseThreads` 的返回值),与 lua5.1 把线程栈算进 `totalbytes` 一样;`NewCoroutine` 在分配前
+> 像 `lua_newthread` 一样先检查一次 GC。否则只建协程、不分配别的对象的循环碰不到阈值，内存一直涨到显式
+> `collectgarbage()`。此前(到 #291 为止)协程句柄是 lightuserdata,所有非 dead 协程都是根，
 > 没有引用的挂起协程一直不被回收，弱表里以它为键的项也不被清。回归测试见
 > `test/regression/issue291_unreferenced_coroutines_test.go`。
 
