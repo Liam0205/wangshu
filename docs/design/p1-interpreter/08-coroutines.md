@@ -750,7 +750,7 @@ yield 经 `hostCoroutineYield`(host)触发,而 host 调用本身会 `nCcalls`...
 
 | 根 | 06 §5.1 定义 | 协程语义 |
 |---|---|---|
-| **R3** | 主线程(main thread) | 主线程也是一个 Thread(§8),恒为根(连带其值栈/CallInfo) |
+| **R3** | 主线程(main thread) | 主线程也是一个 Thread(§8)。设计上恒为根;实现里只在 Run / Call 进行中或在 resume 链上时扫它的栈(06 §5.1 的实现现状) |
 | **R4** | 所有活跃 thread | **所有可达的协程 Thread**——经 resume 链(R3→...)或被某变量引用 |
 | **R5** | 当前 running thread 的值栈与 CallInfo | 当前正在跑的协程的执行现场(寄存器全可达) |
 
@@ -904,7 +904,8 @@ Thread 的唯一区别:
 - **主线程的 `resumeFrom` 恒为 0**——没有谁 resume 主线程(它是 resume 链的根,§7.1)。
 - **主线程不能 yield**(§8.2)。
 
-主线程一样有独立值栈 + CallInfo 链(都在 arena),一样被 GC 当根(R3)。`coroutine.running()` 在主线程里返回
+主线程一样有独立值栈 + CallInfo 链(都在 arena)。设计上它被 GC 当根(R3);实现里两次 Run 之间它的栈不是根,
+只在 Run / Call 进行中或在 resume 链上时被扫(06 §5.1 的实现现状,#292)。`coroutine.running()` 在主线程里返回
 特殊值(§8.3,5.1 返回 nil)。
 
 ### 8.2 主线程不能 yield
