@@ -63,7 +63,8 @@ lua5.1 一边扫描一边生成代码,codegen 阶段的错误(`function or expre
 
 ## 5. 流程上的小事
 
-- pre-commit 的 golangci-lint 拒了一次(staticcheck 的 De Morgan 提示)。`fix-commit.py` 写了一半的证据按约定移进
-  `commits/aborted/` 并写说明，再用同一个标签重试。
+- pre-commit 的 golangci-lint 拒了一次(staticcheck 的 De Morgan 提示),提交没有生成。提交前就有的检查结果作废，改完后
+  重新暂存、重新记录，不要把作废的那次当成这次提交的依据。本地跑 `go vet` 不等于跑过 lint,改了 Go 代码先跑一次
+  `golangci-lint run` 再提交。
 - 用 Python 整段替换源码时，替换串里的缩进和源文件对不上，断言失败、文件没改。之后改用 Edit 逐处改，或在替换前打印
   匹配次数。
