@@ -347,8 +347,8 @@ func (lx *Lexer) scanNumber() (token.Token, error) {
 **malformed 判定(对齐 Lua 5.1 `read_numeral` 的「贪心吃完 + 整体校验」)**:Lua 5.1 的做法
 是**贪心吃掉所有「可能属于数字」的字符**(数字、`.`、`e`/`E`/`+`/`-` 在指数位、hex 位的
 `a-f`),然后把整段交给 `str2d`(≈`strtod`)解析;**只要解析没吃完整段或失败就报
-`malformed number`**。例如 `1..2`(第二个 `.` 不被数字吃，留给 `Concat`)、`0x`(无 hex 位)、`1e`(指数缺数字)、
-`3.4.5`、`3a` 都报 malformed;`0x1p4` 是合法的 16(见 §5.3 的订正)。
+`malformed number`**。例如 `1..2`(两个 `.` 都被数字读进来，报 `malformed number near '1..2'`;要拼接得写成
+`1 ..2`)、`0x`(无 hex 位)、`1e`(指数缺数字)、`3.4.5`、`3a` 都报 malformed;`0x1p4` 是合法的 16(见 §5.3 的订正)。
 
 > 「near '...'」中的片段是整段数字原文(`malformed number near '<lit>'`),已与 lua5.1 核对(#282,§11.2)。
 
