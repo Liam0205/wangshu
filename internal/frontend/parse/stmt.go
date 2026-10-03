@@ -345,11 +345,14 @@ func (p *Parser) parseFunctionStmt() (ast.Stmt, error) {
 	if !p.match(token.NAME) {
 		return nil, p.errorExpected(token.NAME)
 	}
-	var target ast.Expr = &ast.NameExpr{Line: p.tok.Line, Name: p.tok.Str}
-	if _, err := p.resolveName(p.fs, p.tok.Str); err != nil {
+	name := &ast.NameExpr{Line: p.tok.Line, Name: p.tok.Str}
+	var target ast.Expr = name
+	if err := p.next(); err != nil {
 		return nil, err
 	}
-	if err := p.next(); err != nil {
+	// singlevar resolves the name after str_checkname consumed it, so an upvalue-limit error reports
+	// the line the scanner reached past the name, as in parsePrefixExpr.
+	if _, err := p.resolveName(p.fs, name.Name); err != nil {
 		return nil, err
 	}
 	for p.match(token.DOT) {
