@@ -186,8 +186,10 @@ resume 本身是 protected 边界,§5.2):
 
 > **订正(2026-10-02 与 `lua5.1` 核对)**:上面表格里 running / normal 两行的措辞和下面这段的说法都不对，本文
 > §3.5 的伪代码注释、§7.1、§7.2、§11.1 第 8 条、§11.2 里同样的说法也以这里为准。lua5.1 按 `lbaselib.c` 的
-> `statnames` 区分，报 `cannot resume running coroutine` / `cannot resume normal coroutine`;`non-suspended` 是 5.2 的措辞。
-> 望舒目前仍报 `non-suspended`,代码与本节一起在 #281 修正。
+> `statnames` 区分，报 `cannot resume running coroutine` / `cannot resume normal coroutine`。`non-suspended` 只出现在
+> `lua_resume` 自己的检查里，库函数在调用它之前已经按状态报错，所以 Lua 代码看不到这句。望舒原来对 running 和
+> normal 都报 `non-suspended`,#281 改为按状态名报错(`internal/crescent/coroutine.go::Resume`),回归在
+> `test/regression/issue281_resume_state_wording_test.go`。
 >
 > **`running` 与 `normal` 共用 `non-suspended` 措辞**:Lua 5.1 对"目标非 suspended"统一报
 > `cannot resume non-suspended coroutine`,只有 dead 单独报 `cannot resume dead coroutine`。**精确措辞

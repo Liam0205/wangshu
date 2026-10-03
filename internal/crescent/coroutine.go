@@ -121,7 +121,9 @@ func (st *State) Resume(id uint64, args []value.Value) ([]value.Value, bool, *Lu
 	case CoDead:
 		return nil, false, errf("cannot resume dead coroutine")
 	case CoRunning, CoNormal:
-		return nil, false, errf("cannot resume non-suspended coroutine")
+		// luaB_coresume / auxwrap check costatus first and name the state (statnames); lua_resume's own
+		// "cannot resume non-suspended coroutine" is only reachable through the C API (#281).
+		return nil, false, errf("cannot resume %s coroutine", co.status)
 	}
 	resumerTh := st.runningThread
 	co.status = CoRunning
