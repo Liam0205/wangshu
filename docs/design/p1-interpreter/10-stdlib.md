@@ -839,6 +839,9 @@ STW §7.3)。本文只列 opt 字符串 → 行为映射(对齐 Lua 5.1):
 > `luaL_error` 同样走这一套，位置取 load 的调用方(调用方是 C 函数时不带位置);数字片段按 `lua_tolstring`
 > 转成字符串接受。语法错误走 `luaD_throw`,不调 handler。望舒用 `State.ProtectedCallKeepingHandler` 调 reader,
 > 用 `State.RaiseCaughtInHost` 报 reader 返回值不对的错误(`internal/stdlib/stdlib.go` 的 load)。
+> 返回的第二个值是 reader 抛出的**错误值本身**,不转成字符串:`load(error)` 返回 `nil, nil`,`error({})` 返回那张表
+> (#283)。只有顶层运行、lua.c 的 traceback handler 已经处理过时，字符串和数字后面才接上 traceback(`db_errorfb`
+> 不改其他类型的值)。
 
 **`require`/`module`/`package` 系统的 P1 决策**:
 
