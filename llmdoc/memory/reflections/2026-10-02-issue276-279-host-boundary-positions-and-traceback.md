@@ -24,7 +24,9 @@ metadata:
 > implementation-progress。用户决定在本分支一起修的两项存量差异：语法错误里块名的截断长度
 > (`internal/bytecode/chunkid.go`、`internal/frontend/{lex,parse,compile}`)和 `print` 逐个写出参数
 > (`internal/stdlib/stdlib.go`、`internal/oracle/prelude.go`),测试在 `test/regression/syntax_error_chunkname_test.go`
-> 与 `print_partial_output_test.go`。对账表在 P1 implementation-progress 的 #276-#279 条目，这里只记过程和教训。
+> 与 `print_partial_output_test.go`。后几次全范围终审又修了 xpcall handler 结果的 GC 根(`meta.go`、`state.go`,
+> 测试 `issue279_xpcall_handler_result_test.go`)和 `dofile` 的错误前缀(`internal/stdlib/baseenv.go`,测试
+> `issue278_dofile_load_error_test.go`)。对账表在 P1 implementation-progress 的 #276-#279 条目，这里只记过程和教训。
 
 ## 过程
 
@@ -96,6 +98,13 @@ metadata:
 18. **本地审查第十七轮**(重要 1、小问题 1)。缓冲版给「全局 `tostring` 是内置的、参数没有 `__tostring`」加了一条不调用
     `tostring` 的快捷路径，结果连带省掉了这次调用本来会做的 C 调用深度检查，C 深度用尽时 lua5.1 报 `C stack overflow`,
     望舒照常输出;字节记账的错误也没有冻结位置。第十八轮之后增量审查再无发现。
+19. **之后的四次全范围终审**(每次都只有 1-2 个小问题)。第三次查出反思没收录第 16-18 条、测试注释把升层计数说成足以
+    证明走了编译路径;第四次查出 09 §7.1 的订正只说「上面的格式」,没管到它下面的逐部分定义和 §7.2 伪码，以及
+    `State.errFuncResult` 从不清空，最后一次 xpcall handler 的结果一直被当作 GC 根;第五次查出 `dofile` 加载失败时
+    多一层调用方位置(master 上就有，#278 同类，用户决定在本分支修);第六次查出 test-layout 没写新加的 `TestCDepth*`
+    文件、也没说只有 CI 点名才会跑。排查 GC 根那一项时还发现 master 上就有的 #285(已返回函数留在栈槽里的旧值也被
+    当作根),终审顺带列出的三处措辞差异开成了 #286-#288。反思和参考文档两次落后于代码(第三次和第六次),说明每修完
+    一轮就该顺手对一遍 llmdoc,而不是等审查指出。
 
 ## 教训
 
@@ -161,6 +170,12 @@ P4 的 CALL 内联缓存只在调用成功后才填写，之后才改走 `Execut
 位置。省掉调用时只想到了「结果一样」,没有列出入口里的其他副作用。**用快捷路径代替一次通用调用之前，读一遍被省掉的
 入口，把它做的检查、计数、错误标注逐项列出，在快捷路径里照做或写明为什么不需要**,并用调用深度用尽、预算用尽这类边界
 各测一次。
+
+### 10. 把值挂成 GC 根的地方，要写明什么时候摘掉
+
+`errFuncResult` 为了让 handler 的结果在错误传回 xpcall 的途中不被回收，挂成了根，但没人负责摘掉。注释写了「什么时候
+需要它」,没写「到哪里为止」。**新加一个 GC 根时，同时写出谁在什么时候把它清空或恢复**,并用 `collectgarbage("count")`
+这类可见的写法和 lua5.1 比一次：根挂得太久不会出错，只会让内存一直不释放，靠功能测试发现不了。
 
 ## 触发场景
 
