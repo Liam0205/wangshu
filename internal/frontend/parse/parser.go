@@ -57,7 +57,27 @@ type Parser struct {
 	// depthLimit is the depth at which enterDepth trips: maxParseDepth, minus the C-call depth
 	// already in use when the parse is a loadstring/load (see ParseAtCDepth).
 	depthLimit int
+
+	// fs is the function being parsed (see funcScope).
+	fs *funcScope
 }
+
+// funcScope is the part of lparser.c's FuncState that PUC's parse-time limit checks read: the
+// active local names (searchvar), the upvalue names (indexupvalue) and linedefined, which
+// errorlimit's wording names. PUC makes these checks while parsing, so they come before any later
+// syntax error and report the line the parser is on; codegen runs after the whole chunk is parsed
+// and keeps only a fallback.
+type funcScope struct {
+	prev        *funcScope
+	lineDefined int32
+	actvars     []string
+	upvals      []string
+}
+
+const (
+	maxVars     = 200 // LUAI_MAXVARS
+	maxUpvalues = 60  // LUAI_MAXUPVALUES
+)
 
 // maxParseDepth is the syntax nesting cap (5.1's 200 is conservative; Go stack
 // frames are larger, but we keep the same value).
@@ -68,7 +88,7 @@ const maxParseDepth = 200
 func (p *Parser) enterDepth() error {
 	p.depth++
 	if p.depth > p.depthLimit {
-		return p.errorf("chunk has too many syntax levels")
+		return p.plainError("chunk has too many syntax levels")
 	}
 	return nil
 }
@@ -88,7 +108,7 @@ func Parse(lx *lex.Lexer, source string) (*ast.Block, error) {
 // calls -- or from an xpcall handler running past the C limit -- has that much less room, and fails
 // with "chunk has too many syntax levels" where a top-level load would not.
 func ParseAtCDepth(lx *lex.Lexer, source string, cDepth int) (*ast.Block, error) {
-	p := &Parser{lx: lx, source: source, insideVararg: true, depthLimit: maxParseDepth - cDepth}
+	p := &Parser{lx: lx, source: source, insideVararg: true, depthLimit: maxParseDepth - cDepth, fs: &funcScope{}}
 	if err := p.next(); err != nil {
 		return nil, err
 	}
@@ -97,7 +117,7 @@ func ParseAtCDepth(lx *lex.Lexer, source string, cDepth int) (*ast.Block, error)
 		return nil, err
 	}
 	if p.tok.Kind != token.EOF {
-		return nil, p.errorf("'<eof>' expected near '%s'", p.tok.String())
+		return nil, p.errorExpected(token.EOF)
 	}
 	return body, nil
 }
@@ -156,16 +176,117 @@ func (p *Parser) wrapLexErr(err error) *Error {
 	return &Error{Source: p.source, Line: p.lx.Line(), Msg: err.Error()}
 }
 
-func (p *Parser) errorf(format string, args ...any) *Error {
-	return &Error{Source: p.source, Line: p.tok.Line, Msg: fmt.Sprintf(format, args...)}
+// curLine is PUC's ls->linenumber, the line every parser error reports: where the scanner stands,
+// which is the end of the last token it read -- the lookahead when one is buffered, otherwise the
+// current token. Reporting the current token's start line put an error after a multi-line long
+// string on the string's first line.
+func (p *Parser) curLine() int32 {
+	if p.hasAhead {
+		if p.ahead.EndLine != 0 {
+			return p.ahead.EndLine
+		}
+		return p.ahead.Line
+	}
+	return p.tokEndLine()
+}
+
+// syntaxError is luaX_syntaxerror: msg followed by " near" the current token.
+func (p *Parser) syntaxError(msg string) *Error {
+	if p.tok.HasNear() {
+		msg += token.Near(p.tok.String())
+	}
+	return p.plainError(msg)
+}
+
+// plainError is luaX_lexerror(ls, msg, 0), which names no token.
+func (p *Parser) plainError(msg string) *Error {
+	return &Error{Source: p.source, Line: p.curLine(), Msg: msg}
+}
+
+// errorExpected is error_expected: "'<token>' expected near ...".
+func (p *Parser) errorExpected(k token.Kind) *Error {
+	return p.syntaxError("'" + token.KindName(k) + "' expected")
+}
+
+// errorLimit is errorlimit: fs has gone over one of the parser's fixed limits.
+func (p *Parser) errorLimit(fs *funcScope, limit int, what string) *Error {
+	if fs.lineDefined == 0 {
+		return p.plainError(fmt.Sprintf("main function has more than %d %s", limit, what))
+	}
+	return p.plainError(fmt.Sprintf("function at line %d has more than %d %s", fs.lineDefined, limit, what))
 }
 
 // expect consumes the current token if it matches kind; otherwise errors.
 func (p *Parser) expect(k token.Kind) error {
 	if p.tok.Kind != k {
-		return p.errorf("'%s' expected near '%s'", token.KindName(k), p.tok.String())
+		return p.errorExpected(k)
 	}
 	return p.next()
+}
+
+// expectMatch is check_match: the token closing a construct opened by who on line where. When the
+// opener is on another line, the error names it and its line.
+func (p *Parser) expectMatch(what, who token.Kind, where int32) error {
+	if p.tok.Kind == what {
+		return p.next()
+	}
+	if where == p.curLine() {
+		return p.errorExpected(what)
+	}
+	return p.syntaxError(fmt.Sprintf("'%s' expected (to close '%s' at line %d)",
+		token.KindName(what), token.KindName(who), where))
+}
+
+// checkName is str_checkname: the current token must be a name, which is consumed and returned.
+func (p *Parser) checkName() (string, error) {
+	if !p.match(token.NAME) {
+		return "", p.errorExpected(token.NAME)
+	}
+	name := p.tok.Str
+	return name, p.next()
+}
+
+// checkLocalLimit is new_localvar's check, made as the n-th name (from 0) of a declaration is read,
+// before any of the declaration's names is active.
+func (p *Parser) checkLocalLimit(n int) error {
+	if len(p.fs.actvars)+n+1 > maxVars {
+		return p.errorLimit(p.fs, maxVars, "local variables")
+	}
+	return nil
+}
+
+// activate is adjustlocalvars: the names become visible to the code that follows.
+func (p *Parser) activate(names ...string) { p.fs.actvars = append(p.fs.actvars, names...) }
+
+// resolveName is singlevaraux for a name just read: a name found in an enclosing function becomes an
+// upvalue of every function between there and fs, and that is where PUC checks LUAI_MAXUPVALUES --
+// against the first function to go over it, which may be an intermediate one. Upvalues are matched
+// by name: while a function is parsed, the scopes it can see do not change, so one name always means
+// the same outer variable (indexupvalue matches by variable). It reports whether name is a local or
+// upvalue (not a global).
+func (p *Parser) resolveName(fs *funcScope, name string) (bool, error) {
+	if fs == nil {
+		return false, nil
+	}
+	for i := len(fs.actvars) - 1; i >= 0; i-- {
+		if fs.actvars[i] == name {
+			return true, nil
+		}
+	}
+	found, err := p.resolveName(fs.prev, name)
+	if err != nil || !found {
+		return found, err
+	}
+	for _, u := range fs.upvals {
+		if u == name {
+			return true, nil
+		}
+	}
+	if len(fs.upvals)+1 > maxUpvalues {
+		return false, p.errorLimit(fs, maxUpvalues, "upvalues")
+	}
+	fs.upvals = append(fs.upvals, name)
+	return true, nil
 }
 
 // match checks whether the current token kind == k (no consumption).
@@ -179,8 +300,18 @@ func (p *Parser) consume(k token.Kind) (bool, error) {
 	return true, p.next()
 }
 
-// parseBlock parses a stmt list until a block-terminating token (04 §4.2).
+// parseBlock parses a stmt list until a block-terminating token (04 §4.2). The locals it declares go
+// out of scope at its end (leaveblock).
 func (p *Parser) parseBlock() (*ast.Block, error) {
+	saved := len(p.fs.actvars)
+	b, err := p.parseBlockKeepScope()
+	p.fs.actvars = p.fs.actvars[:saved]
+	return b, err
+}
+
+// parseBlockKeepScope is parseBlock leaving the block's locals in scope, for repeat-until, whose
+// condition still sees them.
+func (p *Parser) parseBlockKeepScope() (*ast.Block, error) {
 	if err := p.enterDepth(); err != nil {
 		return nil, err
 	}
@@ -191,7 +322,7 @@ func (p *Parser) parseBlock() (*ast.Block, error) {
 		// it cannot stand alone as a statement — `;` / `a=1;;` reports
 		// unexpected symbol in the reference (relaxed only in 5.2).
 		if p.match(token.SEMI) {
-			return nil, p.errorf("unexpected symbol near '%s'", p.tok.String())
+			return nil, p.syntaxError("unexpected symbol")
 		}
 		// `return` / `break` must be the last statement of a block (Lua 5.1
 		// restriction).
@@ -213,7 +344,7 @@ func (p *Parser) parseBlock() (*ast.Block, error) {
 				return nil, err
 			}
 			if p.loopDepth == 0 {
-				return nil, p.errorf("no loop to break near '%s'", p.tok.String())
+				return nil, p.syntaxError("no loop to break")
 			}
 			block.Stmts = append(block.Stmts, &ast.BreakStmt{Line: line})
 			if _, err := p.consume(token.SEMI); err != nil {

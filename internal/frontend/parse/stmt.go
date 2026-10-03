@@ -37,14 +37,17 @@ func (p *Parser) parseLocal() (ast.Stmt, error) {
 		if err := p.next(); err != nil {
 			return nil, err
 		}
-		if !p.match(token.NAME) {
-			return nil, p.errorf("<name> expected near '%s'", p.tok.String())
-		}
-		name := p.tok.Str
-		if err := p.next(); err != nil {
+		name, err := p.checkName()
+		if err != nil {
 			return nil, err
 		}
-		fn, err := p.parseFuncBody(line, false)
+		if err := p.checkLocalLimit(0); err != nil {
+			return nil, err
+		}
+		// The function can call itself: its name is in scope inside the body (localfunc).
+		p.activate(name)
+		// localfunc passes body ls->linenumber, read after the name: the `(` line, not the keyword's.
+		fn, err := p.parseFuncBody(p.curLine(), false)
 		if err != nil {
 			return nil, err
 		}
@@ -53,13 +56,14 @@ func (p *Parser) parseLocal() (ast.Stmt, error) {
 	// names
 	names := []string{}
 	for {
-		if !p.match(token.NAME) {
-			return nil, p.errorf("<name> expected near '%s'", p.tok.String())
-		}
-		names = append(names, p.tok.Str)
-		if err := p.next(); err != nil {
+		name, err := p.checkName()
+		if err != nil {
 			return nil, err
 		}
+		if err := p.checkLocalLimit(len(names)); err != nil {
+			return nil, err
+		}
+		names = append(names, name)
 		ok, err := p.consume(token.COMMA)
 		if err != nil {
 			return nil, err
@@ -85,6 +89,8 @@ func (p *Parser) parseLocal() (ast.Stmt, error) {
 			ends[n-1] = p.lastLine
 		}
 	}
+	// The initializers were parsed with the names still out of scope (adjustlocalvars comes last).
+	p.activate(names...)
 	return &ast.LocalStmt{Line: line, EndLine: p.lastLine, ExprEndLines: ends, Names: names, Exprs: exprs}, nil
 }
 
@@ -127,7 +133,7 @@ func (p *Parser) parseIf() (ast.Stmt, error) {
 			return nil, err
 		}
 	}
-	if err := p.expect(token.KW_END); err != nil {
+	if err := p.expectMatch(token.KW_END, token.KW_IF, line); err != nil {
 		return nil, err
 	}
 	return &ast.IfStmt{Line: line, Clauses: clauses, Else: elseBody}, nil
@@ -153,7 +159,7 @@ func (p *Parser) parseWhile() (ast.Stmt, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := p.expect(token.KW_END); err != nil {
+	if err := p.expectMatch(token.KW_END, token.KW_WHILE, line); err != nil {
 		return nil, err
 	}
 	return &ast.WhileStmt{Line: line, CondEndLine: condEnd, Cond: cond, Body: body}, nil
@@ -169,7 +175,7 @@ func (p *Parser) parseDo() (ast.Stmt, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := p.expect(token.KW_END); err != nil {
+	if err := p.expectMatch(token.KW_END, token.KW_DO, line); err != nil {
 		return nil, err
 	}
 	return &ast.DoStmt{Line: line, Body: body}, nil
@@ -181,16 +187,18 @@ func (p *Parser) parseRepeat() (ast.Stmt, error) {
 	if err := p.next(); err != nil {
 		return nil, err
 	}
+	saved := len(p.fs.actvars)
 	p.loopDepth++
-	body, err := p.parseBlock()
+	body, err := p.parseBlockKeepScope()
 	p.loopDepth--
 	if err != nil {
 		return nil, err
 	}
-	if err := p.expect(token.KW_UNTIL); err != nil {
+	if err := p.expectMatch(token.KW_UNTIL, token.KW_REPEAT, line); err != nil {
 		return nil, err
 	}
 	cond, err := p.parseExpr(0)
+	p.fs.actvars = p.fs.actvars[:saved]
 	if err != nil {
 		return nil, err
 	}
@@ -204,16 +212,22 @@ func (p *Parser) parseFor() (ast.Stmt, error) {
 	if err := p.next(); err != nil { // 'for'
 		return nil, err
 	}
-	if !p.match(token.NAME) {
-		return nil, p.errorf("<name> expected near '%s'", p.tok.String())
-	}
-	first := p.tok.Str
-	if err := p.next(); err != nil {
+	first, err := p.checkName()
+	if err != nil {
 		return nil, err
 	}
+	// The loop's control variables and its own variables go out of scope after `end` (forstat's block).
+	saved := len(p.fs.actvars)
+	defer func() { p.fs.actvars = p.fs.actvars[:saved] }()
 	switch p.tok.Kind {
 	case token.EQ:
-		// numeric for
+		// numeric for: fornum declares (for index), (for limit), (for step) and the variable before
+		// reading the header, so the limit check comes first.
+		for n := 0; n < 4; n++ {
+			if err := p.checkLocalLimit(n); err != nil {
+				return nil, err
+			}
+		}
 		if err := p.next(); err != nil {
 			return nil, err
 		}
@@ -249,31 +263,38 @@ func (p *Parser) parseFor() (ast.Stmt, error) {
 			return nil, err
 		}
 		doLine := p.lastLine
+		p.activate("(for index)", "(for limit)", "(for step)", first)
 		p.loopDepth++
 		body, err := p.parseBlock()
 		p.loopDepth--
 		if err != nil {
 			return nil, err
 		}
-		if err := p.expect(token.KW_END); err != nil {
+		if err := p.expectMatch(token.KW_END, token.KW_FOR, line); err != nil {
 			return nil, err
 		}
 		return &ast.NumForStmt{Line: line, Var: first, ExprEndLines: ends, DoLine: doLine,
 			Init: init, Limit: limit, Step: step, Body: body}, nil
 	case token.COMMA, token.KW_IN:
-		// generic for
+		// generic for: forlist declares (for generator), (for state), (for control), then each name.
+		for n := 0; n < 4; n++ {
+			if err := p.checkLocalLimit(n); err != nil {
+				return nil, err
+			}
+		}
 		names := []string{first}
 		for p.match(token.COMMA) {
 			if err := p.next(); err != nil {
 				return nil, err
 			}
-			if !p.match(token.NAME) {
-				return nil, p.errorf("<name> expected near '%s'", p.tok.String())
-			}
-			names = append(names, p.tok.Str)
-			if err := p.next(); err != nil {
+			name, err := p.checkName()
+			if err != nil {
 				return nil, err
 			}
+			if err := p.checkLocalLimit(3 + len(names)); err != nil {
+				return nil, err
+			}
+			names = append(names, name)
 		}
 		if err := p.expect(token.KW_IN); err != nil {
 			return nil, err
@@ -295,19 +316,21 @@ func (p *Parser) parseFor() (ast.Stmt, error) {
 			return nil, err
 		}
 		doLine := p.lastLine
+		p.activate("(for generator)", "(for state)", "(for control)")
+		p.activate(names...)
 		p.loopDepth++
 		body, err := p.parseBlock()
 		p.loopDepth--
 		if err != nil {
 			return nil, err
 		}
-		if err := p.expect(token.KW_END); err != nil {
+		if err := p.expectMatch(token.KW_END, token.KW_FOR, line); err != nil {
 			return nil, err
 		}
 		return &ast.GenForStmt{Line: line, Names: names, IterLine: iterLine, DoLine: doLine,
 			ExprEndLines: ends, Exprs: exprs, Body: body}, nil
 	default:
-		return nil, p.errorf("'=' or 'in' expected near '%s'", p.tok.String())
+		return nil, p.syntaxError("'=' or 'in' expected")
 	}
 }
 
@@ -320,9 +343,12 @@ func (p *Parser) parseFunctionStmt() (ast.Stmt, error) {
 		return nil, err
 	}
 	if !p.match(token.NAME) {
-		return nil, p.errorf("<name> expected near '%s'", p.tok.String())
+		return nil, p.errorExpected(token.NAME)
 	}
 	var target ast.Expr = &ast.NameExpr{Line: p.tok.Line, Name: p.tok.Str}
+	if _, err := p.resolveName(p.fs, p.tok.Str); err != nil {
+		return nil, err
+	}
 	if err := p.next(); err != nil {
 		return nil, err
 	}
@@ -331,7 +357,7 @@ func (p *Parser) parseFunctionStmt() (ast.Stmt, error) {
 			return nil, err
 		}
 		if !p.match(token.NAME) {
-			return nil, p.errorf("<name> expected near '%s'", p.tok.String())
+			return nil, p.errorExpected(token.NAME)
 		}
 		target = &ast.IndexExpr{Line: p.tok.Line, Obj: target, Key: &ast.StringExpr{Line: p.tok.Line, Val: p.tok.Str}}
 		if err := p.next(); err != nil {
@@ -344,7 +370,7 @@ func (p *Parser) parseFunctionStmt() (ast.Stmt, error) {
 			return nil, err
 		}
 		if !p.match(token.NAME) {
-			return nil, p.errorf("<name> expected near '%s'", p.tok.String())
+			return nil, p.errorExpected(token.NAME)
 		}
 		target = &ast.IndexExpr{Line: p.tok.Line, Obj: target, Key: &ast.StringExpr{Line: p.tok.Line, Val: p.tok.Str}}
 		isMethod = true
@@ -379,54 +405,54 @@ func (p *Parser) parseReturn() (ast.Stmt, error) {
 	return &ast.ReturnStmt{Line: line, ExprEndLines: ends, Exprs: exprs}, nil
 }
 
-// expression-statement: starts with a prefixexp; if followed by '='/',' it's an
-// AssignStmt, otherwise a CallStmt (04 §4.4).
+// expression-statement (exprstat): a prefixexp that is a call is a call statement; anything else
+// starts an assignment, whose targets must be variables (04 §4.4). So `x x` and `a.b` report
+// "'=' expected", and `f() = 1` is the call `f()` followed by a statement starting with `=`.
 func (p *Parser) parseExprStmt() (ast.Stmt, error) {
 	line := p.tok.Line
 	first, err := p.parsePrefixExpr()
 	if err != nil {
 		return nil, err
 	}
-	if p.match(token.EQ) || p.match(token.COMMA) {
-		// assignment.
-		if !isAssignable(first) {
-			return nil, p.errorf("syntax error near '%s'", p.tok.String())
-		}
-		targets := []ast.Expr{first}
-		for p.match(token.COMMA) {
-			if err := p.next(); err != nil {
-				return nil, err
-			}
-			t, err := p.parsePrefixExpr()
-			if err != nil {
-				return nil, err
-			}
-			if !isAssignable(t) {
-				return nil, p.errorf("syntax error near '%s'", p.tok.String())
-			}
-			targets = append(targets, t)
-		}
-		if err := p.expect(token.EQ); err != nil {
-			return nil, err
-		}
-		exprs, ends, err := p.parseExprListEnds()
-		if err != nil {
-			return nil, err
-		}
-		// Nothing follows the RHS list, so its last element takes the statement's last token (#252).
-		if n := len(ends); n > 0 {
-			ends[n-1] = p.lastLine
-		}
-		// p.lastLine IS the reference ls->lastline (see its declaration), which is what PUC uses here.
-		return &ast.AssignStmt{Line: line, EndLine: p.lastLine, ExprEndLines: ends, Targets: targets, Exprs: exprs}, nil
-	}
-	// call statement: first must be a Call/MethodCall.
 	switch first.(type) {
 	case *ast.CallExpr, *ast.MethodCallExpr:
 		return &ast.CallStmt{Line: line, Call: first}, nil
-	default:
-		return nil, p.errorf("syntax error near '%s'", p.tok.String())
 	}
+	if !isAssignable(first) {
+		return nil, p.syntaxError("syntax error")
+	}
+	targets := []ast.Expr{first}
+	for p.match(token.COMMA) {
+		if err := p.next(); err != nil {
+			return nil, err
+		}
+		t, err := p.parsePrefixExpr()
+		if err != nil {
+			return nil, err
+		}
+		// assignment's luaY_checklimit(nvars, LUAI_MAXCCALLS - nCcalls): the C stack the parse is
+		// using counts against the number of targets, because assignment recurses once per target.
+		if limit := p.depthLimit - p.depth; len(targets) > limit {
+			return nil, p.errorLimit(p.fs, limit, "variables in assignment")
+		}
+		if !isAssignable(t) {
+			return nil, p.syntaxError("syntax error")
+		}
+		targets = append(targets, t)
+	}
+	if err := p.expect(token.EQ); err != nil {
+		return nil, err
+	}
+	exprs, ends, err := p.parseExprListEnds()
+	if err != nil {
+		return nil, err
+	}
+	// Nothing follows the RHS list, so its last element takes the statement's last token (#252).
+	if n := len(ends); n > 0 {
+		ends[n-1] = p.lastLine
+	}
+	// p.lastLine IS the reference ls->lastline (see its declaration), which is what PUC uses here.
+	return &ast.AssignStmt{Line: line, EndLine: p.lastLine, ExprEndLines: ends, Targets: targets, Exprs: exprs}, nil
 }
 
 func isAssignable(e ast.Expr) bool {
