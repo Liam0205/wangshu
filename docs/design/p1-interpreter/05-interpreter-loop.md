@@ -961,8 +961,8 @@ pcall host 实现:
   返回前、`runningThread` 还指着主线程时就 `closeUpvals(th, 0)`,对应宿主 `lua_pcall` 里 `luaD_pcall` 的
   `luaF_close`。原先要等到下一次 Run 开始才关，而两次 Run 之间主线程的栈不是 GC 根，宿主在这期间 `Collect()` 会回收
   逃逸闭包还在引用的对象，下一次 Run 读到被复用的内存(#292,回归见
-  `test/regression/issue292_collect_after_failed_run_test.go`;#291 之后收集器也标记开放 upvalue 所指的值，它只在这次
-  关闭和那项标记都去掉时失败，关闭本身由 `internal/crescent/callonstack_error_upvals_test.go` 直接断言)。
+  `test/regression/issue292_collect_after_failed_run_test.go`;#291 之后收集器也标记开放 upvalue 所指的值，这个回归测试只在这次
+  关闭和那项标记都去掉时才失败，关闭本身由 `internal/crescent/callonstack_error_upvals_test.go` 直接断言)。
 - **CallInfo 清理责任在 protected 边界**,不在每个出错帧——出错帧只管 `return e` 冒泡,**省掉了每帧的 defer/cleanup**(这正是显式返回 vs panic 的关键简化:panic 要在每帧 defer 关 upvalue,显式返回让边界一次性清理)。
 - **元方法/错误处理器**(`error` 的 message handler、`xpcall` 的 handler):在边界捕获后、返回前调用 handler(可能再 reentry execute);细节 [09](./09-errors-pcall.md)。
 - **b 步的实际位置**:`internal/crescent/meta.go::callLuaFromHostNamed` 在 execute 出错返回时先

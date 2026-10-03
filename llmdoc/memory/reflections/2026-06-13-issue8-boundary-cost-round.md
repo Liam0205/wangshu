@@ -28,6 +28,7 @@ issue #8 表面是「per-item 跨界慢于 gopher-lua」,而 [[design-premises]]
 `CallInto` 的零分配关键是**不拷贝**返回值,直接切 `th.stack[:nret]` 活动区返回。两个风险点都不能靠推理下结论:
 
 - **GC 根可达性**:返回值切片指向复用栈,Call 返回后 `runningThread` 复位 nil,但 `mainTh` 仍是 loadedCls 同级常驻根 → 栈槽位值在 GC 下保持可达。验证手段:`SetGCStressMode(true)`(每分配点触发 GC)+ 复用 dst 循环 + string 返回值(经 arena),500 轮读出仍正确 = 无 UAF。
+  > **订正(2026-10-04,#292)**:「`mainTh` 仍是常驻根」不成立。两次 Run 之间主线程的栈不是根，压力模式只在 VM 内部的分配点收集，测不到宿主在两次调用之间 `Collect()`。见 [[design-claims-vs-codebase-physics]] §4。
 - **覆写约定**:返回值底层是复用栈,下次进入 VM 前会被覆写。这是 `CallInto` 与旧 `Call`(独立拷贝、可长持)在接口约定上的**根本差异**,必须在 godoc 显式标注 ⚠️,并保留旧 `Call` 给「返回值要跨下次 Call 存活」的调用方。验证手段:连续 CallInto 不串台测试 + 旧 Call 跨调用独立性测试,两条都要留。
 
 **How to apply**:任何「返回内部缓冲区切片以省分配」的优化(P3 值栈 arena 化后会更频繁遇到),GC stress 实测 + 覆写约定测试是上线前提,不是可选。与长稳轮「内存复用类变更配套清单」([[longevity-review-fix-round]])同家族:复用前先列哪些路径会从良性变 UAF。

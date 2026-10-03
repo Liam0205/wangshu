@@ -310,6 +310,12 @@ GC 根 = **不经其它对象就能被程序直接触达的 arena 对象**。漏
 | R8 | **临时根 / 构造中的对象** | 解释器在多步构造(如 CONCAT 中间串、表构造中途)持有的尚未挂入任何对象的引用 | 这些临时 GCRef | 见 §7 safepoint 一致性;多数情况落在 R5(已在栈上)或 R7 |
 | R9 | **per-type 元表槽** | `State.typeMetatables[9]`([07](./07-metatables-metamethods.md) §1.2:string 公共元表、debug.setmetatable 设的各类型元表) | 各槽指向的 metatable Table(非 0 槽) | 承 07 回填请求:不当根则 string 元表(挂着 string 库)会被误回收 |
 
+> **实现现状(#292 一轮订正)**:R3 在实现里不是常驻根。主线程是 Go 侧的 `*thread`(`State.mainTh`),根集合
+> (`internal/crescent/state.go::visitExtraValues` / `visitExtraRefs`)只扫 `runningThread` 和 resume 链(`threadChain`)。
+> 所以主线程的栈和开放 upvalue 只在 Run / Call 进行中(它是 `runningThread`)或在 resume 链上时被扫;两次 Run 之间
+> 不是根，`callOnStack` 返回的切片只在下次进入 VM 或宿主调用 `Collect()` 之前有效，出错返回前要先关闭 upvalue
+> ([05](./05-interpreter-loop.md) §9.3)。协程的 R4 见 [08](./08-coroutines.md) §6.1。
+
 **为什么 R5「值栈/CallInfo 本身在 arena 且被 GC 直接当根扫描」而 R7 shadow stack 另设——澄清(任务点名):**
 
 - Thread 的 valueStack/callInfo **物理上住 arena**([01](./01-value-object-model.md) §5.6)。解释器执行 Lua 代码时,
