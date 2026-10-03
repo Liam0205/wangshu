@@ -585,6 +585,34 @@
   钉住「被 pcall / resume 捕获的错误不生成 traceback」。各修复去掉后对应用例都会失败。`test/api` 里原先断言
   `[C]: in ?` 的用例改为断言 lua5.1 的完整输出。
 
+- **#276-#279 本地审查登记的八处存量差异(2026-10-03,#281-#288)**:都是 master 上就有的差异，转成 issue 后一起修。
+  每一处都先用探针和 lua5.1 比对，再把同类写法扫一遍;#282 的范围用户决定「全部对齐」,比 issue 原文大很多。
+
+  | 问题 | 位置 | 根因与修法 |
+  |---|---|---|
+  | resume 正在运行或 normal 的协程用了 5.2 措辞(#281) | `internal/crescent/coroutine.go::Resume` | `luaB_coresume` / `auxwrap` 先查 `costatus`,按 `statnames` 报 `cannot resume running coroutine` / `cannot resume normal coroutine`;`non-suspended` 只有 C API 能走到。08 §2.3 的错误说法一起订正 |
+  | 空块名显示成 `?`(#284) | `internal/bytecode/chunkid.go` | `luaO_chunkid` 对不以 `=`、`@` 开头的块名一律走 `[string "..."]` 分支，空串也一样 |
+  | load 把 reader 的错误值转成了字符串(#283) | `internal/stdlib/stdlib.go::readerErrorValue` | `luaD_protectedparser` 留在栈上的就是错误值本身:`load(error)` 返回 `nil, nil`,`error({})` 返回那张表。顶层未捕获时 lua.c 的 traceback 处理函数只会给字符串和数字加 traceback,照做 |
+  | `table.foreach` / `foreachi` 参数错误少 `got <type>`(#286) | `internal/stdlib/tablelib.go` | `luaL_checktype` 走 `tag_error` |
+  | `__index` / `__newindex` 成环用了 5.2 措辞(#287) | `internal/crescent/meta.go` | `MAXTAGLOOP` 之后是 `loop in gettable` / `loop in settable`;次数上限本来就一致 |
+  | loadfile / dofile 打不开文件时少 strerror(#288) | `internal/stdlib/baseenv.go::fileErrorMessage` | `errfile`:`cannot open|read <name>: <strerror>`,读目录这类打开成功但读失败的情况是 `read`。同轮还发现 loadfile 不跳过首行 `#`(用户决定本分支修):`luaL_loadfile` 跳到第一个换行，行号不变 |
+  | GC 把调用之上的旧寄存器当根(#285) | `internal/crescent/host.go::callHost` | `luaD_precall` 对 C 函数设 `L->top = func + 1 + nargs`,`traversestack` 只标记到 top。宿主函数运行期间把 top 降到最后一个参数之后，已返回 callee 留下的大表可被回收。降 top 之后 luasuite `closure.lua:95` 失败，查出一个潜伏缺陷:pcall 的错误展开和协程因错误死亡都没有关闭开放 upvalue,出错前建的闭包指着会被复用或被 GC 清掉的栈槽。`callLuaFromHostNamed` 与 `Resume` 现在先 `closeUpvals`,对应 `luaD_pcall` 的 `luaF_close` |
+  | 词法 / 语法错误的措辞、`near` 和行号(#282) | `internal/frontend/lex` / `parse` / `token` | 按 `llex.c` / `lparser.c` 的报错点逐条对齐，见 [03](./03-frontend-lexer.md) §11.2 与 [04](./04-frontend-parser-codegen.md) §4.4、§4.4.1。要点：不认识的字符是单字符 token(`token.CHAR`),由语法分析报 `unexpected symbol`;词法错误都带 `near`,内容是扫描缓冲区(解码后的字符串);`exprstat` 按表达式形状定语句种类;名字检查带引号;`check_match` 报开记号和它的行;错误行号是扫描器所在行;局部变量 / upvalue / 赋值目标的上限改在解析时按 `errorlimit` 的写法报;`local function` 和函数表达式的 linedefined 改为 `(` 所在行 |
+  | 长字符串里的 CR LF 存成两个字节(#282 同类，值的差异) | `internal/frontend/lex/lexer.go::readLongString` | `read_long_string` 把每个换行序列存成一个 `\n`;`[[a<CR><LF>b]]` 长 3,原先是 4 |
+  | 块名里的 NUL(#282 同类) | `internal/crescent/state.go::CompileAndLoad` | `lua_load` 把块名当 C 字符串，第一个 NUL 之后都看不到 |
+  | 寄存器上限多了一个(#282 同类) | `internal/frontend/compile/funcstate.go::checkStack` | `luaK_checkstack` 是 `newstack >= MAXSTACK`,一个函数最多 249 个寄存器 |
+
+  **已知限制(用户决定不处理)**:`function or expression too complex` / `control structure too long` 不带 `near`、行号
+  取 codegen 手里的行;常量超过 262143 个或局部变量调试表超过 32767 条时，lua5.1 按运行期错误抛出，望舒按编译错误
+  处理。详见 [04](./04-frontend-parser-codegen.md) §9。
+
+  **另开的 issue**:#290(P4 构建下 `go vet` 的 `unsafe.Pointer` 警告)、#291(没有引用的挂起协程永远不被回收)。
+
+  验证：每个 issue 一个 regression 文件(`issue281_*` 到 `issue288_*`,#282 有词法、语法、块名、寄存器上限四个),
+  期望值逐条用 `lua5.1` 跑出;赋值目标上限三条依赖 C 调用深度，取自内嵌的 5.1.5(`internal/oracle`),理由见
+  `issue282_parser_errors_test.go` 头注。探针在 P1、P3、P4 的不升层 / force-all / auto 七种配置下都与 lua5.1 一致。
+  #285 的三处改动和 #282 的词法改动各自去掉后，对应用例都会失败。
+
 ## 相关
 
 [00-overview](./00-overview.md) · [../engineering](../engineering.md) ·

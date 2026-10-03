@@ -5,10 +5,16 @@
 
 ## 当前缺口
 
-- **【#276-#279 本地审查发现的存量差异,2026-10-02】** — master `0fdd72e` 上就有，本轮不修，已开 issue:
-  #281(resume running / normal 协程的措辞，连带 08 §2.3 的错误描述)、#282(语法错误措辞)、#283(load 的 reader
-  错误值被转成字符串)、#284(空块名在错误位置里显示为 `?`)、#285(GC 把已返回函数留在栈槽里的旧值当作根，比 lua5.1 回收得晚)、#286(`table.foreach` 参数错误少 `got <type>`)、#287(`__index` / `__newindex` 成环的措辞)、#288(`cannot open` 后面少 `strerror`);#282 另补了词法器 `unexpected character` 的同类写法。C 调用深度与语法层数的起点与嵌入式 PUC 一致，比 lua5.1 独立解释器少算 lua.c 自己的 `lua_cpcall(pmain)` 一层,登记为已知限制，见
-  `docs/design/p1-interpreter/implementation-progress.md` 对账表。
+- **【已完成 2026-10-03,#281-#288】#276-#279 本地审查登记的存量差异** — 原缺口(2026-10-02 记)的八个 issue
+  在一个分支里修完，对账见 `docs/design/p1-interpreter/implementation-progress.md` 的 #281-#288 条目，反思
+  [[2026-10-03-issue281-288-stock-divergences]]。#282 用户决定按 `llex.c` / `lparser.c` 全部对齐，以下两项用户决定
+  作为已知限制不处理，详见 `docs/design/p1-interpreter/04-frontend-parser-codegen.md` §9:
+  - codegen 阶段的 `function or expression too complex` / `control structure too long` 不带 `near`,行号不是扫描器所在行;
+  - 常量 / 局部变量调试表超出 `luaM_growvector` 上限时，lua5.1 报运行期错误，望舒报编译错误。
+
+  C 调用深度与语法层数的起点与嵌入式 PUC 一致，比 lua5.1 独立解释器少算 lua.c 自己的 `lua_cpcall(pmain)` 一层,
+  登记为已知限制，见同一对账表。同轮另开:#290(P4 构建 `go vet` 的 `unsafe.Pointer` 警告)、#291(没有引用的挂起
+  协程不被回收)。
 
 - **【已完成 2026-10-02,#276-#279】宿主调用边界的错误位置与 yield 存量差异** — 原缺口(2026-10-01 #271 轮记)列了六项:
   ①② yield 越过元方法边界由 #272 修好;③ 宿主函数触发的元方法处理函数里 `error(m, 2)` 差一层(#277)、④ C 函数内部
