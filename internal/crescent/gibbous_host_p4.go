@@ -60,7 +60,7 @@ func (st *State) RefreshJitCtxAddrs(ctx *jit.JITContext, base int32) {
 		ctx.SetUpvalInlineFields(
 			uintptr(th.cur.cl),
 			arenaBase+uintptr(th.stackBaseW)*8,
-			len(st.cos.cos) == 0 && len(st.threadChain) == 0,
+			st.cos.live == 0 && len(st.threadChain) == 0,
 		)
 		// Value-stack end (issue #80): the seg2seg CALL fast body
 		// bounds-checks the callee frame against this before an

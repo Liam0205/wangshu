@@ -349,9 +349,9 @@ mark 的核心是「从一个对象出发,找出它引用的所有子 arena 对�
 | **Table** | ① array 段 `Value[asize]` 每槽(若 `IsCollectable`)② node 段每 Node 的 `key`、`val`(若 `IsCollectable`)③ `metaRef`(若非 0)。**弱表例外**:先经 `WeakMode()` 判 `__mode`,弱侧不标记并登记 weakList(§8.4,承 07 §13) | array/node 是附属块(§1.3),由表头顺带遍历;遍历 node 全部 `nsize` 槽(含空槽,空槽 key/val 为 Nil 不可回收,跳过) |
 | **Closure(Lua)** | `upvalRef[nupvals]` 每个(指向 Upvalue 对象) | flags bit0=0;protoID 是整数 ID,**不扫** |
 | **Closure(Host)** | `upval[nupvals]` 每个(是 Value,若 `IsCollectable`) | flags bit0=1;hostFnID 是整数 ID,**不扫**;host upvalue 是直接 Value 非 Upvalue 对象 |
-| **Upvalue** | ① `value`(word2,关闭态存值;若 `IsCollectable`)② 开放态:其指向的栈槽**不在此扫**(随 Thread 栈扫到) | 开放 upvalue 的「值」逻辑上是 `thread.stack[idx]`,该槽由 Thread 标记覆盖,避免重复;仅关闭态扫 word2 |
+| **Upvalue** | ① `value`(word2,关闭态存值;若 `IsCollectable`)② 开放态:标记所属线程栈槽 `thread.stack[idx]` 里的值(经 `Roots.OpenUpvalue`;槽在所属线程 top 之上时不标记) | 所属线程可能是没有引用的挂起协程，它的栈不会被扫，而共享这个 upvalue 的闭包还活着，所以在 upvalue 处标记(同 `lgc.c` `reallymarkobject`,#291);该协程回收前先关闭这些 upvalue,见 [08](./08-coroutines.md) §6.1 |
 | **Userdata** | ① `metaRef`(若非 0)② `envRef`(若非 0) | payload 是不透明字节,**不扫**(宿主若在 payload 藏 GCRef,须自行经句柄表,不走 GC) |
-| **Thread** | ① 值栈 `valueStack[0..top)` 每槽(若 `IsCollectable`)② CallInfo 数组 `[0..ciTop)` 每帧引用的 closure GCRef + 帧内保存的 Value ③ openUpvalRef 链(每个开放 Upvalue 对象)④ `resumeFrom`/caller thread ref(若非 0) | **最复杂**;栈只扫 `[0,top)`(top 之上是垃圾槽,不扫);CallInfo 帧结构见 [05](./05-interpreter-loop.md),含被调 closure 引用 |
+| **Thread** | ① 值栈 `valueStack[0..top)` 每槽(若 `IsCollectable`)② CallInfo 数组 `[0..ciTop)` 每帧引用的 closure GCRef + 帧内保存的 Value ③ openUpvalRef 链(每个开放 Upvalue 对象)④ `resumeFrom`/caller thread ref(若非 0) | **最复杂**;栈只扫 `[0,top)`(top 之上是垃圾槽,不扫);CallInfo 帧结构见 [05](./05-interpreter-loop.md),含被调 closure 引用。协程的 Thread 对象只有头，栈在 runtime 的段里，由 `Roots.ScanThread` 扫;没被标记的协程在清扫前由 `Roots.ReleaseThreads` 关闭 upvalue、归还栈段([08](./08-coroutines.md) §6.1) |
 
 **遍历原则:**
 - 只对 `value.IsCollectable(v)`(tag ∈ `[0xFFFB,0xFFFF]`,[01](./01-value-object-model.md) §3.3)的 Value 取其 GCRef 并标灰;

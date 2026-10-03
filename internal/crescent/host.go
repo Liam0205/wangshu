@@ -115,6 +115,23 @@ func (st *State) MakeHostClosure(id uint32) arena.GCRef {
 	return cl
 }
 
+// MakeHostClosureKeeping wraps a HostFnID into a host closure whose upvalues hold vals. The HostFn
+// cannot read them, but the collector marks them, so values its Go closure captured stay alive
+// exactly as long as the host closure does.
+func (st *State) MakeHostClosureKeeping(id uint32, vals ...value.Value) arena.GCRef {
+	cl := object.AllocHostClosure(st.arena, id, uint16(len(vals)))
+	for i, v := range vals {
+		object.SetHostClosureUpval(st.arena, cl, uint16(i), v)
+	}
+	st.gc.LinkSweep(cl)
+	st.hostFns.refs[id]++
+	// Nothing refers to cl (and so to vals) yet: keep it through a collection the charge may start.
+	h := st.gc.Push(value.MakeGC(value.TagFunction, cl))
+	st.gc.AllocCharge(object.ClosureBytes(uint16(len(vals))))
+	st.gc.Pop(h)
+	return cl
+}
+
 // releaseHostFn releases a host closure's slot reference when the host closure
 // is collected by GC (a callback from the gc package).
 func (st *State) releaseHostFn(id uint32) {

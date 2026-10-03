@@ -1,13 +1,15 @@
 // Coroutines — route B (08 §3): single goroutine, resume starts a new layer of
 // execute, the yield signal bubbles up to the resume boundary via yieldRequested.
 //
-// In P1 the thread is still a Go struct (moving the value stack into an arena is
-// separate work); a coroutine object is represented by a lightuserdata handle
-// (coID) + a registry on State, and the Lua-side type() recognizes it via the
-// registry to return "thread".
+// The coroutine's state lives in a Go record in a registry on State (its stacks in
+// arena segments of their own); the Lua value is a thread object, a Thread head in
+// the arena that carries the record's index (coID). The collector reaches a
+// coroutine's stack through that object, so a coroutine nothing refers to is
+// collected like any other object (#291).
 package crescent
 
 import (
+	"github.com/Liam0205/wangshu/internal/arena"
 	"github.com/Liam0205/wangshu/internal/object"
 	"github.com/Liam0205/wangshu/internal/value"
 )
@@ -39,6 +41,7 @@ func (s CoStatus) String() string {
 // coroutine is one coroutine instance: an independent thread (value stack +
 // CallInfo chain) + status.
 type coroutine struct {
+	ref     arena.GCRef // the thread object that is this coroutine's Lua value
 	th      *thread
 	status  CoStatus
 	fn      value.Value // main function (started on the first resume)
@@ -59,52 +62,109 @@ type coroutine struct {
 	deathLines []string
 }
 
-// coRegistry registers coroutines on State (coID → *coroutine).
+// coRegistry registers coroutines on State (coID → *coroutine). The entry of a coroutine
+// whose thread object was collected is nil, and its coID goes on free for reuse.
 type coRegistry struct {
-	cos []*coroutine
+	cos  []*coroutine
+	free []uint64
+	live int // non-nil entries
 }
 
-// NewCoroutine creates a suspended coroutine and returns its coID (lightuserdata handle).
-func (st *State) NewCoroutine(fn value.Value) (uint64, *LuaError) {
+// NewCoroutine creates a suspended coroutine and returns its thread value.
+func (st *State) NewCoroutine(fn value.Value) (value.Value, *LuaError) {
 	// PUC luaB_cocreate: lua_isfunction && !lua_iscfunction -- host
 	// closures (C functions) are rejected too, with "Lua function
 	// expected" (issue #133 patrol: we used to accept host fns, so
 	// coroutine.create(print) diverged from the oracle).
 	if value.Tag(fn) != value.TagFunction || object.IsHostClosure(st.arena, value.GCRefOf(fn)) {
-		return 0, NewArgError(1, "Lua function expected")
+		return value.Nil, NewArgError(1, "Lua function expected")
 	}
 	co := &coroutine{
 		th:     st.newThread(),
 		status: CoSuspended,
 		fn:     fn,
 	}
-	st.cos.cos = append(st.cos.cos, co)
-	return uint64(len(st.cos.cos) - 1), nil
+	var id uint64
+	if n := len(st.cos.free); n > 0 {
+		id = st.cos.free[n-1]
+		st.cos.free = st.cos.free[:n-1]
+		st.cos.cos[id] = co
+	} else {
+		id = uint64(len(st.cos.cos))
+		st.cos.cos = append(st.cos.cos, co)
+	}
+	st.cos.live++
+	co.ref = object.AllocThreadHandle(st.arena, id)
+	st.gc.LinkSweep(co.ref)
+	v := value.MakeGC(value.TagThread, co.ref)
+	// Nothing refers to the new object yet: keep it through a collection the charge may start.
+	h := st.gc.Push(v)
+	st.gc.AllocCharge(object.ThreadHeadBytes())
+	st.gc.Pop(h)
+	return v, nil
 }
 
-// coByID fetches a coroutine (returns nil on out-of-range).
-func (st *State) coByID(id uint64) *coroutine {
-	if int(id) >= len(st.cos.cos) {
+// coOf returns the coroutine a thread value is, or nil for any other value.
+func (st *State) coOf(v value.Value) *coroutine {
+	if value.Tag(v) != value.TagThread {
 		return nil
 	}
-	return st.cos.cos[id]
+	ref := value.GCRefOf(v)
+	id := object.ThreadHandleID(st.arena, ref)
+	if id >= uint64(len(st.cos.cos)) {
+		return nil
+	}
+	if co := st.cos.cos[id]; co != nil && co.ref == ref {
+		return co
+	}
+	return nil
 }
 
-// IsCoroutineHandle reports whether a Value is a coroutine handle (lightuserdata + in registry).
-func (st *State) IsCoroutineHandle(v value.Value) bool {
-	if value.Tag(v) != value.TagLightUD {
-		return false
-	}
-	return st.coByID(value.AsLightUD(v)) != nil
-}
+// IsCoroutineHandle reports whether a Value is a coroutine (a thread value).
+func (st *State) IsCoroutineHandle(v value.Value) bool { return st.coOf(v) != nil }
 
 // CoStatusOf returns the coroutine's status name (coroutine.status).
-func (st *State) CoStatusOf(id uint64) string {
-	co := st.coByID(id)
+func (st *State) CoStatusOf(v value.Value) string {
+	co := st.coOf(v)
 	if co == nil {
 		return "dead"
 	}
 	return co.status.String()
+}
+
+// scanCoroutine is the collector's ScanThread hook: a reached coroutine keeps its stack, its main
+// function (held only here before the first resume) and its transfer values. A dead one keeps
+// nothing -- its upvalues were closed when it died.
+func (st *State) scanCoroutine(ref arena.GCRef, visit func(value.Value), visitRef func(arena.GCRef)) {
+	co := st.coOf(value.MakeGC(value.TagThread, ref))
+	if co == nil || co.status == CoDead {
+		return
+	}
+	st.visitThreadValues(co.th, nil, visit)
+	st.visitThreadRefs(co.th, nil, visitRef)
+	visit(co.fn)
+	for _, v := range co.xfer {
+		visit(v)
+	}
+}
+
+// releaseCoroutines is the collector's ReleaseThreads hook: each coroutine whose thread object went
+// unreached closes its upvalues, keeping the values a reached closure still sees (the collector
+// marked them through openUpvalueValue), and gives its stack segments back to the arena, as
+// luaE_freethread does. Running and normal coroutines are rooted, so only suspended and dead ones
+// get here.
+func (st *State) releaseCoroutines(isDead func(arena.GCRef) bool) {
+	for id, co := range st.cos.cos {
+		if co == nil || !isDead(co.ref) {
+			continue
+		}
+		st.closeUpvals(co.th, 0)
+		st.freeThread(co.th)
+		co.th, co.fn, co.xfer = nil, value.Nil, nil
+		st.cos.cos[id] = nil
+		st.cos.free = append(st.cos.free, uint64(id))
+		st.cos.live--
+	}
 }
 
 // Resume resumes (or starts) a coroutine (08 §3.5 / §4.2).
@@ -112,8 +172,8 @@ func (st *State) CoStatusOf(id uint64) string {
 // Returns (results, ok, err): when ok=false, results[0] is the error value (the
 // "resume turns an error into (false, errval)" semantics are assembled on the
 // stdlib side; here we return the raw information).
-func (st *State) Resume(id uint64, args []value.Value) ([]value.Value, bool, *LuaError) {
-	co := st.coByID(id)
+func (st *State) Resume(v value.Value, args []value.Value) ([]value.Value, bool, *LuaError) {
+	co := st.coOf(v)
 	if co == nil {
 		return nil, false, errf("cannot resume dead coroutine")
 	}
@@ -215,9 +275,8 @@ func (st *State) Resume(id uint64, args []value.Value) ([]value.Value, bool, *Lu
 			co.xfer = nil
 			return out, true, nil
 		}
-		// Error: the coroutine dies (leftover xfer values stay resident in the
-		// registry along with the dead coroutine — the registry does not shrink;
-		// clearing it follows the same hygiene standard as returning to the pool)
+		// Error: the coroutine dies (its xfer values are dropped now; the record goes
+		// when its thread object is collected)
 		co.status = CoDead
 		co.xfer = nil
 		// lua_resume's error path leaves the dead thread's upvalues open in PUC, but the thread stays
@@ -272,21 +331,19 @@ func (st *State) Yield(args []value.Value) *LuaError {
 // findRunningCo finds the coroutine corresponding to runningThread (nil if none = main thread).
 func (st *State) findRunningCo() *coroutine {
 	for _, co := range st.cos.cos {
-		if co.th == st.runningThread && co.status == CoRunning {
+		if co != nil && co.th == st.runningThread && co.status == CoRunning {
 			return co
 		}
 	}
 	return nil
 }
 
-// RunningCoID returns the ID of the currently running coroutine (returns false for the main thread).
-func (st *State) RunningCoID() (uint64, bool) {
-	for i, co := range st.cos.cos {
-		if co.th == st.runningThread && co.status == CoRunning {
-			return uint64(i), true
-		}
+// RunningCoroutine returns the currently running coroutine (returns false for the main thread).
+func (st *State) RunningCoroutine() (value.Value, bool) {
+	if co := st.findRunningCo(); co != nil {
+		return value.MakeGC(value.TagThread, co.ref), true
 	}
-	return 0, false
+	return value.Nil, false
 }
 
 // executeResume resumes execution from the yield point (08 §3.3 table: "the next
@@ -358,8 +415,8 @@ type pendingResumeInfo struct {
 // A suspended or normal coroutine shows the host function it waits in on top; a dead one shows the
 // stack it died with by error, or nothing; one never started has no stack. ok is false when co is
 // the running coroutine, which is the current thread's own traceback.
-func (st *State) CoTraceback(id uint64, level int, hasLevel bool) (tb string, ok bool) {
-	co := st.coByID(id)
+func (st *State) CoTraceback(v value.Value, level int, hasLevel bool) (tb string, ok bool) {
+	co := st.coOf(v)
 	if co == nil {
 		return "stack traceback:", true
 	}

@@ -15,16 +15,16 @@ var coroutineFns = []entry{
 	{"running", coFnRunning},
 }
 
-// coFnCreate: coroutine.create(f) → thread handle (lightuserdata).
+// coFnCreate: coroutine.create(f) → thread.
 func coFnCreate(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
 	if len(args) == 0 {
 		return nil, crescent.NewArgError(1, "Lua function expected")
 	}
-	id, e := st.NewCoroutine(args[0])
+	co, e := st.NewCoroutine(args[0])
 	if e != nil {
 		return nil, e
 	}
-	return []value.Value{value.LightUDValue(id)}, nil
+	return []value.Value{co}, nil
 }
 
 // coFnResume: coroutine.resume(co, ...) → (true, ...) | (false, errmsg).
@@ -32,8 +32,7 @@ func coFnResume(st *crescent.State, args []value.Value) ([]value.Value, *crescen
 	if len(args) == 0 || !st.IsCoroutineHandle(args[0]) {
 		return nil, crescent.NewArgError(1, "coroutine expected")
 	}
-	id := value.AsLightUD(args[0])
-	results, ok, e := st.Resume(id, args[1:])
+	results, ok, e := st.Resume(args[0], args[1:])
 	if !ok {
 		errVal := value.Nil
 		if e != nil {
@@ -63,7 +62,7 @@ func coFnStatus(st *crescent.State, args []value.Value) ([]value.Value, *crescen
 	if len(args) == 0 || !st.IsCoroutineHandle(args[0]) {
 		return nil, crescent.NewArgError(1, "coroutine expected")
 	}
-	return []value.Value{intern(st, st.CoStatusOf(value.AsLightUD(args[0])))}, nil
+	return []value.Value{intern(st, st.CoStatusOf(args[0]))}, nil
 }
 
 // coFnWrap: coroutine.wrap(f) → function; calling it = resume, errors are rethrown directly.
@@ -71,12 +70,12 @@ func coFnWrap(st *crescent.State, args []value.Value) ([]value.Value, *crescent.
 	if len(args) == 0 {
 		return nil, crescent.NewArgError(1, "Lua function expected")
 	}
-	id, e := st.NewCoroutine(args[0])
+	co, e := st.NewCoroutine(args[0])
 	if e != nil {
 		return nil, e
 	}
 	wrapped := func(ist *crescent.State, wargs []value.Value) ([]value.Value, *crescent.LuaError) {
-		results, ok, e := ist.Resume(id, wargs)
+		results, ok, e := ist.Resume(co, wargs)
 		if !ok {
 			if e != nil {
 				return nil, wrapError(ist, e)
@@ -86,7 +85,8 @@ func coFnWrap(st *crescent.State, args []value.Value) ([]value.Value, *crescent.
 		return results, nil
 	}
 	fid := st.RegisterHostFn(wrapped)
-	cl := st.MakeHostClosure(fid)
+	// The function keeps the coroutine alive (auxwrap's upvalue), not the Go closure capturing it.
+	cl := st.MakeHostClosureKeeping(fid, co)
 	return []value.Value{value.MakeGC(value.TagFunction, cl)}, nil
 }
 
@@ -120,9 +120,9 @@ func wrapError(st *crescent.State, e *crescent.LuaError) *crescent.LuaError {
 
 // coFnRunning: coroutine.running() → co | nil (main thread returns nil, 5.1 semantics).
 func coFnRunning(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
-	id, ok := st.RunningCoID()
+	co, ok := st.RunningCoroutine()
 	if !ok {
 		return []value.Value{value.Nil}, nil
 	}
-	return []value.Value{value.LightUDValue(id)}, nil
+	return []value.Value{co}, nil
 }

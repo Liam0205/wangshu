@@ -87,10 +87,12 @@ func (c *Collector) scanObject(ref arena.GCRef, ot object.OBJType) {
 	case object.OBJ_THREAD:
 		c.scanThread(ref)
 	case object.OBJ_UPVAL:
-		// closed: scan the self-held value; open: its value lives in a Thread stack
-		// slot and is reached when scanning the Thread.
+		// closed: scan the self-held value; open: its value lives in the owner thread's
+		// stack slot, which the owner's scan reaches only while the owner itself is reached.
 		if object.UpvalIsClosed(c.a, ref) {
 			c.markValue(object.UpvalClosedValue(c.a, ref))
+		} else if c.roots.OpenUpvalue != nil {
+			c.markValue(c.roots.OpenUpvalue(ref))
 		}
 	}
 }
@@ -164,6 +166,9 @@ func (c *Collector) scanThread(th arena.GCRef) {
 		uv = object.UpvalNextOpen(c.a, uv)
 	}
 	c.markRef(object.ThreadResumeFrom(c.a, th))
+	if c.roots.ScanThread != nil {
+		c.roots.ScanThread(th, c.markValue, c.markRef)
+	}
 }
 
 // deadWhite returns this cycle's collection color (= last cycle's currentWhite).
