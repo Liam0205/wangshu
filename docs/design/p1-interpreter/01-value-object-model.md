@@ -273,8 +273,11 @@ word6: openUpvalRef (GCRef→ 本 thread 开放 upvalue 链头,或 0)
 word7: errorJmp / 状态机字段(pcall 保护点链,见 09-errors-pcall)
 word8: resumeFrom / caller thread ref(resume 链)
 ```
-现状(#291):协程的 Lua 值是一个只有头的 Thread 对象(`object.AllocThreadHandle`):word2/word4 为 0,word7 存协程在
-State 注册表里的下标，值栈和 CallInfo 是 runtime 自己在 arena 里的段，见 [08-coroutines](./08-coroutines.md) §6.1。
+
+> **实现现状(2026-10-04,#291)**:协程的 Lua 值是一个只有头的 Thread 对象(`object.AllocThreadHandle`):word2/word4
+> 为 0,word7 存协程在 State 注册表里的下标，值栈和 CallInfo 是 runtime 自己在 arena 里的段，见
+> [08-coroutines](./08-coroutines.md) §6.1。
+
 **值栈即寄存器文件**:字节码的寄存器 `R(i)` = `thread.valueStack[base + i]`(`base` 为当前帧基址)。栈与 CallInfo 都在 arena,故跨界与 GC 都不触碰 Go 栈(对应 §2 栈移动税)。栈扩容时整体搬迁并修正开放 upvalue 定位。详见 [08-coroutines](./08-coroutines.md)、[05-interpreter-loop](./05-interpreter-loop.md)。
 
 ### 5.7 Proto(住 Go 堆,经 ProtoID 引用)
