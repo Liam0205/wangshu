@@ -582,6 +582,9 @@ updatePacing():
 - **首次触发**:`threshold` 初值 = 一个小常量(如 arena 初始容量,避免极早 GC)。
 - P1 **只做 full GC**(无增量步长 `GCstepmul`);threshold 是「下次 full GC 的分配水位」。增量步长是 P3+ 的事。
 - **存活量估计**:精确 live = sweep 时累加存活对象字节;或近似 = `bump - sum(freelist 空闲块)`。P1 用 sweep 时精确累加(简单准确)。
+  协程的值栈和 CallInfo 段不属于任何对象的大小:存活协程的段字节由 `Roots.ReleaseThreads` 报给 pacing,在 sweep 之后
+  加进 live;分配量上，创建协程时按段大小计入，扩容时经 `Collector.Account` 计入增量(只记账、不收集),与 lua5.1 把线程栈
+  算进 `totalbytes` 一样，详见 [08](./08-coroutines.md) §6.1。
 
 > pacing 影响 GC **频率**,不影响**正确性**与**可观察行为**(§11):无论何时 GC,存活对象不变、`pairs` 序不变。
 > 但 GC 频率影响**性能**与**捕获 bug 的概率**——[12](./12-testing-difftest.md) 的「高频 GC 模式」(把 GCPAUSE 设到极小,
