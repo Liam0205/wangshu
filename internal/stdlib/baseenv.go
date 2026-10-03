@@ -2,7 +2,11 @@
 package stdlib
 
 import (
+	"bytes"
+	"errors"
+	"io/fs"
 	"os"
+	"syscall"
 
 	"github.com/Liam0205/wangshu/internal/crescent"
 	"github.com/Liam0205/wangshu/internal/object"
@@ -123,13 +127,43 @@ func baseFnLoadfile(st *crescent.State, args []value.Value) ([]value.Value, *cre
 	path := string(object.StringBytes(st.Arena(), value.GCRefOf(args[0])))
 	src, err := os.ReadFile(path)
 	if err != nil {
-		return []value.Value{value.Nil, intern(st, "cannot open "+path)}, nil
+		return []value.Value{value.Nil, intern(st, fileErrorMessage(path, err))}, nil
+	}
+	// luaL_loadfile skips a first line starting with '#' (a "#!" line of an executable script) and
+	// hands the parser a "\n" in its place, so line numbers are unchanged.
+	if len(src) > 0 && src[0] == '#' {
+		if i := bytes.IndexByte(src, '\n'); i >= 0 {
+			src = src[i:]
+		} else {
+			src = []byte("\n")
+		}
 	}
 	fn, cerr := st.CompileAndLoad(src, "@"+path)
 	if cerr != nil {
 		return []value.Value{value.Nil, intern(st, cerr.Error())}, nil
 	}
 	return []value.Value{fn}, nil
+}
+
+// fileErrorMessage is lauxlib.c's errfile: "cannot <what> <filename>: <strerror>" (#288). what is the
+// step that failed -- "open", or "read" for a file that opens but cannot be read, such as a directory
+// -- and the last part is the C library's message for errno. Go's syscall.Errno text is the same
+// message with its first letter lowered, so it is raised back; errors without an errno keep Go's text.
+func fileErrorMessage(path string, err error) string {
+	what := "open"
+	var pe *fs.PathError
+	if errors.As(err, &pe) && pe.Op == "read" {
+		what = "read"
+	}
+	msg := err.Error()
+	var errno syscall.Errno
+	if errors.As(err, &errno) {
+		msg = errno.Error()
+		if msg != "" && msg[0] >= 'a' && msg[0] <= 'z' {
+			msg = string(msg[0]-'a'+'A') + msg[1:]
+		}
+	}
+	return "cannot " + what + " " + path + ": " + msg
 }
 
 // baseFnDofile: dofile([filename]) = loadfile + immediate call (10 §4.7).
