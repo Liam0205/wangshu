@@ -1073,17 +1073,26 @@ codegen 阶段的错误均为**资源/结构类**(语法错误已在 parse 阶�
 
 | 触发条件 | 措辞(对齐 5.1) | 检查点 |
 |---|---|---|
-| 局部变量(含匿名内部槽)超 200 | `too many local variables` | `registerLocal`(`nactvar` > `LUAI_MAXVARS`=200) |
-| upvalue 超 60 | `too many upvalues` | `resolveName` 新增 upvalue 时(> `LUAI_MAXUPVALUES`=60) |
-| 寄存器水位 > 250 | `function or expression too complex`(寄存器溢出) | `checkStack`(`freereg` > `MAXSTACK`=250,对齐 A 字段 8-bit 上限,[02](./02-bytecode-isa.md) §2) |
+| 局部变量(含匿名内部槽)超 200 | `main function has more than 200 local variables` / `function at line N has more than 200 local variables` | parser 在读到超限的名字时报(§4.4.1);codegen 的 `registerLocal` 只是后备 |
+| upvalue 超 60 | `... has more than 60 upvalues`(同上两种写法) | parser 的 `resolveName`;codegen 的 `addUpval` 只是后备 |
+| 寄存器达到 250 | `function or expression too complex` | `checkStack`(`freereg + n >= MAXSTACK`,与 `luaK_checkstack` 一致,一个函数最多 249 个寄存器) |
 | 常量池超 2^18 | `constant table overflow` | `addConst`(超 `MAXARG_Bx`,[02](./02-bytecode-isa.md) §2 Bx=18-bit) |
 | 跳转偏移越界 | `control structure too long` | `fixJump`(`|sBx|` > 131071,[02](./02-bytecode-isa.md) §2 sBx) |
-| 嵌套函数 / Protos 过多 | `too many functions`(子 Proto 超 Bx) | CLOSURE 登记子 Proto 时 |
-| `break` 不在循环内 | `no loop to break`(5.1:`'break' outside a loop at ...`) | §6.7(parser 也可早查) |
-| `...` 不在 vararg 函数 | `cannot use '...' outside a vararg function` | parser/codegen VarargExpr |
+| `break` 不在循环内 | `no loop to break near '<tok>'` | parser 的 `parseBlock` |
+| `...` 不在 vararg 函数 | `cannot use '...' outside a vararg function near '...'` | parser 的 `parseSimpleExpr` |
 
 注:`MAXSTACK=250` 而非 255,留 fixstack 余量(与 [02](./02-bytecode-isa.md) §2「`MaxStack ≤
 250`」一致)。所有上限值落 `internal/bytecode` 常量,codegen 引用,单一事实源。
+
+**已知限制(#282 决定不处理)**:
+
+- `function or expression too complex` 和 `control structure too long` 在 lua5.1 里是 `luaX_syntaxerror`,带
+  ` near '<当前记号>'`,行号是报错那一刻扫描器所在的行。望舒先建完整个 AST 再生成代码,codegen 运行时已经不知道
+  当时的当前记号,所以这两条不带 `near`,行号取 codegen 手里的行(`control structure too long` 目前报 0)。只有
+  寄存器用到 249 个以上、或单个跳转超过 131071 条指令的代码才会遇到。
+- 常量超过 262143 个、局部变量调试表超过 32767 条时,lua5.1 由 `luaM_growvector` 按**运行期错误**抛出:消息不带
+  位置(`constant table overflow`、`too many local variables`),`xpcall` 的处理函数会运行,未被捕获时还附带
+  traceback。望舒把它们当编译错误,带位置,不运行处理函数;局部变量调试表的上限也没有检查。
 
 ### 9.4 尾调用识别 `return f(...)` → TAILCALL
 
