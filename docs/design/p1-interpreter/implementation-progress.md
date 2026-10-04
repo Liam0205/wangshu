@@ -628,6 +628,10 @@
   `internal/crescent/callonstack_error_upvals_test.go` 直接断言出错返回后主线程上没有开放 upvalue,只去掉 #292
   的关闭它就失败。
 
+  **另开的 issue**:#296(arena 大块分配的空闲块不合并，容量只增不减;协程在 #291 之后会被自动回收，深协程循环因此
+  在每次收集后缩容、再扩栈时扩回，变慢)、#297(只靠宿主函数分配的脚本循环碰不到 safepoint,GC 从不触发)。两处在
+  #294 之前的 `082a2cd` 上就能复现。
+
 ## 相关
 
 [00-overview](./00-overview.md) · [../engineering](../engineering.md) ·
