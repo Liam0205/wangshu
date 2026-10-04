@@ -5,6 +5,12 @@
 
 ## 当前缺口
 
+- **#290-#292 本地审查发现的两处存量差异(2026-10-04 开 issue)** — master 上就有，不在 #294 的范围内:
+  [#296](https://github.com/Liam0205/wangshu/issues/296)(arena 大块分配的空闲块不合并，容量只增不减;#291 之后
+  深协程循环因每次收集后 `Compact` 缩容、再扩栈时 `grow64` 扩回而变慢)、
+  [#297](https://github.com/Liam0205/wangshu/issues/297)(只靠宿主函数分配的脚本循环碰不到 safepoint,GC 从不触发，
+  最后撞上 2 GiB arena 上限)。
+
 - **【已完成 2026-10-03,#281-#288】#276-#279 本地审查登记的存量差异** — 原缺口(2026-10-02 记)的八个 issue
   在一个分支里修完，对账见 `docs/design/p1-interpreter/implementation-progress.md` 的 #281-#288 条目，反思
   [[2026-10-03-issue281-288-stock-divergences]]。#282 用户决定按 `llex.c` / `lparser.c` 全部对齐，以下两项用户决定
