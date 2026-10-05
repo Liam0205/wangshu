@@ -286,3 +286,36 @@ func TestHostTriggeredCollect_NoRecursionInFinalizer(t *testing.T) {
 		t.Error("collecting flag not reset after Collect returns")
 	}
 }
+
+// TestCollect_CompactKeepsWatermarkHeadroom covers #296's Compact policy: after a collection the
+// slab is sized for live + next threshold (GCPAUSE 200 ⇒ 3 × live) with a quarter of headroom, and
+// it is only replaced when it is more than twice that. Shrinking to the bytes in use made the next
+// burst of allocation grow (and copy) the slab again on every cycle.
+func TestCollect_CompactKeepsWatermarkHeadroom(t *testing.T) {
+	a := arena.New(arena.Options{InitialBytes: 64 * 1024})
+	c := New(a, Options{})
+	g := object.AllocTable(a, 0, 0)
+	c.LinkSweep(g)
+	c.SetRoots(Roots{Globals: g})
+	// A live 64 KiB table rooted on the shadow stack, and a dead 8 MiB one.
+	keep := object.AllocTable(a, 8*1024, 0)
+	c.LinkSweep(keep)
+	c.Push(value.MakeGC(value.TagTable, keep))
+	dead := object.AllocTable(a, 1<<20, 0)
+	c.LinkSweep(dead)
+	if a.Cap() < 8<<20 {
+		t.Fatalf("setup: cap %d did not grow past 8 MiB", a.Cap())
+	}
+	c.Collect()
+	live := c.liveBytesAfterSweep
+	want := (live*3*5/4 + 7) &^ 7
+	if uint64(a.Cap()) != want {
+		t.Fatalf("cap after Collect = %d, want (live %d × 3) × 1.25 = %d", a.Cap(), live, want)
+	}
+	// A second collection with the same live set must not touch the slab.
+	before := a.Cap()
+	c.Collect()
+	if a.Cap() != before {
+		t.Fatalf("steady-state Collect replaced the slab: %d → %d", before, a.Cap())
+	}
+}

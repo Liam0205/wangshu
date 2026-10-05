@@ -68,6 +68,7 @@ func TestFreelist_ReuseAndZeroFill(t *testing.T) {
 func TestFreelist_LargeFirstFit(t *testing.T) {
 	a := New(Options{InitialBytes: 64 * 1024})
 	big := a.AllocBytes(200 * 8) // 200 words > 64 → LARGE
+	_ = a.AllocBytes(8)          // guard: keeps big off the top so Free does not lower bump
 	a.Free(big, 200*8)
 	got := a.AllocBytes(200 * 8) // exact hit
 	if got != big {
@@ -85,6 +86,7 @@ func TestFreelist_LargeFirstFit(t *testing.T) {
 	// 100-word block for a 70-word request: 30 remaining ≤ 64 → floored into a
 	// fixed-size bucket (no longer stranded)
 	small := a.AllocBytes(100 * 8)
+	_ = a.AllocBytes(8) // guard
 	a.Free(small, 100*8)
 	taken := a.AllocBytes(70 * 8)
 	if taken != small {
@@ -146,6 +148,7 @@ func TestLargeFreelist_BucketSegregation(t *testing.T) {
 	refs := make([]GCRef, len(sizes))
 	for i, s := range sizes {
 		refs[i] = a.AllocBytes(s * 8)
+		_ = a.AllocBytes(8) // guard: adjacent free blocks would coalesce
 	}
 	// Free them all
 	for i, s := range sizes {
@@ -165,6 +168,7 @@ func TestLargeFreelist_CrossBucketUpgrade(t *testing.T) {
 	a := New(Options{InitialBytes: 1 << 16})
 	// Free a single 200-word block into bucket 1 (129..256 words) only
 	big := a.AllocBytes(200 * 8)
+	_ = a.AllocBytes(8) // guard: keeps big off the top so Free does not lower bump
 	a.Free(big, 200*8)
 	// Request 100 words (bucket 0, 65..128) — bucket 0 is empty, upgrade to bucket 1 and find the 200-word block
 	got := a.AllocBytes(100 * 8)
@@ -188,6 +192,7 @@ func TestLargeFreelist_ExactHitO1(t *testing.T) {
 	a := New(Options{InitialBytes: 1 << 18})
 	const words = uint32(512)
 	r0 := a.AllocBytes(words * 8)
+	_ = a.AllocBytes(8) // guard
 	for i := 0; i < 100; i++ {
 		a.Free(r0, words*8)
 		r1 := a.AllocBytes(words * 8)
@@ -204,6 +209,7 @@ func TestLargeFreelist_RemainderToCorrectBucket(t *testing.T) {
 	a := New(Options{InitialBytes: 1 << 16})
 	// 200-word block — Free + Alloc 70 words → 130 words remaining > 64 → into LARGE bucket 1 (129..256)
 	big := a.AllocBytes(200 * 8)
+	_ = a.AllocBytes(8) // guard
 	a.Free(big, 200*8)
 	taken := a.AllocBytes(70 * 8)
 	if taken != big {
@@ -221,6 +227,7 @@ func TestLargeFreelist_RemainderToSmallBucket(t *testing.T) {
 	a := New(Options{InitialBytes: 1 << 16})
 	// 130-word block — Free + Alloc 100 words → 30 words remaining ≤ 64 → floored into a small bucket
 	big := a.AllocBytes(130 * 8)
+	_ = a.AllocBytes(8) // guard
 	a.Free(big, 130*8)
 	taken := a.AllocBytes(100 * 8)
 	if taken != big {
@@ -245,6 +252,7 @@ func TestLargeFreelist_FragmentationAvoidance(t *testing.T) {
 		refs := make([]GCRef, len(sizes))
 		for i, s := range sizes {
 			refs[i] = a.AllocBytes(s * 8)
+			_ = a.AllocBytes(8) // guard
 		}
 		for i := range sizes {
 			a.Free(refs[i], sizes[i]*8)
@@ -266,6 +274,7 @@ func TestLargeFreelist_FragmentationAvoidance(t *testing.T) {
 func TestLargeFreelist_ZeroFillOnReuse(t *testing.T) {
 	a := New(Options{InitialBytes: 1 << 16})
 	big := a.AllocBytes(200 * 8)
+	_ = a.AllocBytes(8) // guard
 	for i := uint32(0); i < 200; i++ {
 		a.SetWordAt(big+GCRef(i*8), 0xDEADBEEFCAFEBABE)
 	}
@@ -280,18 +289,20 @@ func TestLargeFreelist_ZeroFillOnReuse(t *testing.T) {
 
 // --- arena Compact (issue #11 direction 1) direct unit tests ---
 
-// TestCompact_NoOpAtMinCap verifies Compact is a no-op when cap ≤ max(bump, 64 KiB).
+// TestCompact_NoOpAtMinCap verifies Compact is a no-op when cap ≤ 2 × max(target, bump, 64 KiB).
 func TestCompact_NoOpAtMinCap(t *testing.T) {
 	a := New(Options{InitialBytes: 64 * 1024})
 	cap0 := a.Cap()
-	a.Compact()
+	a.Compact(0)
 	if a.Cap() != cap0 {
 		t.Errorf("Compact at min cap changed Cap: before=%d after=%d", cap0, a.Cap())
 	}
 }
 
-// TestCompact_ShrinkAfterGrowDoubling verifies Compact actually shrinks back to bump after grow doubling.
-func TestCompact_ShrinkAfterGrowDoubling(t *testing.T) {
+// TestCompact_ShrinkAfterTransientPeak verifies Compact shrinks the slab once a
+// transient allocation that forced grow doubling is freed: the freed block was
+// at the top, so bump retreats and the slab is far more than twice the need.
+func TestCompact_ShrinkAfterTransientPeak(t *testing.T) {
 	a := New(Options{InitialBytes: 64 * 1024})
 	// Allocate 200 KB → triggers grow doubling to 256 KB
 	r := a.AllocBytes(200 * 1024)
@@ -302,20 +313,50 @@ func TestCompact_ShrinkAfterGrowDoubling(t *testing.T) {
 	if capPeak < 256*1024 {
 		t.Fatalf("grow doubling did not occur as expected: peak cap=%d", capPeak)
 	}
-	a.Compact()
-	capAfter := a.Cap()
-	if capAfter >= capPeak {
-		t.Errorf("Compact did not shrink Cap: peak=%d after=%d", capPeak, capAfter)
+	a.Free(r, 200*1024)
+	a.Compact(0)
+	if capAfter := a.Cap(); capAfter != 64*1024 {
+		t.Errorf("Compact did not shrink Cap to the 64 KiB floor: peak=%d after=%d", capPeak, capAfter)
+	}
+}
+
+// TestCompact_KeepsHeadroom is the issue #296 policy: Compact keeps the slab
+// while it is at most twice max(target, bump), and shrinks to exactly that
+// size (not to bump) when it is larger, so the next burst up to target does
+// not grow again.
+func TestCompact_KeepsHeadroom(t *testing.T) {
+	a := New(Options{InitialBytes: 64 * 1024})
+	r := a.AllocBytes(900 * 1024) // grow to 1 MiB
+	if a.Cap() != 1<<20 {
+		t.Fatalf("expected cap 1 MiB, got %d", a.Cap())
+	}
+	// In use: 900 KiB → cap 1 MiB is within 2 × bump, nothing to do.
+	a.Compact(0)
+	if a.Cap() != 1<<20 {
+		t.Fatalf("Compact shrank below 2 × bump: cap=%d", a.Cap())
+	}
+	a.Free(r, 900*1024)
+	// Bump is back near 0, but the collector expects the heap to reach 400 KiB:
+	// 1 MiB ≤ 2 × 400 KiB is false (1024 > 800), so shrink to 400 KiB.
+	a.Compact(400 * 1024)
+	if a.Cap() != 400*1024 {
+		t.Fatalf("Compact did not shrink to target: cap=%d want %d", a.Cap(), 400*1024)
+	}
+	// A target of 300 KiB is within 2 × of 400 KiB: keep the slab.
+	a.Compact(300 * 1024)
+	if a.Cap() != 400*1024 {
+		t.Fatalf("Compact shrank although cap ≤ 2 × target: cap=%d", a.Cap())
 	}
 }
 
 // TestCompact_Idempotent verifies a second Compact is a no-op.
 func TestCompact_Idempotent(t *testing.T) {
 	a := New(Options{InitialBytes: 64 * 1024})
-	_ = a.AllocBytes(200 * 1024)
-	a.Compact()
+	r := a.AllocBytes(200 * 1024)
+	a.Free(r, 200*1024)
+	a.Compact(0)
 	capFirst := a.Cap()
-	a.Compact()
+	a.Compact(0)
 	capSecond := a.Cap()
 	if capSecond != capFirst {
 		t.Errorf("Compact non-idempotent: first=%d second=%d", capFirst, capSecond)
@@ -341,9 +382,14 @@ func TestCompact_GCRefValidAfterCompact(t *testing.T) {
 		}
 		records = append(records, record{ref, w, vals})
 	}
-	// Trigger grow doubling so Compact has room to shrink
-	_ = a.AllocBytes(200 * 1024)
-	a.Compact()
+	// Trigger grow doubling, then free the transient block so Compact has room to shrink
+	big := a.AllocBytes(200 * 1024)
+	capPeak := a.Cap()
+	a.Free(big, 200*1024)
+	a.Compact(0)
+	if a.Cap() >= capPeak {
+		t.Fatalf("Compact did not shrink: peak=%d after=%d", capPeak, a.Cap())
+	}
 	// After Compact all GCRefs should read back their original values
 	for _, r := range records {
 		for i := uint32(0); i < r.words; i++ {
@@ -359,14 +405,21 @@ func TestCompact_GCRefValidAfterCompact(t *testing.T) {
 // TestCompact_FreelistValidAfterCompact verifies freelist reuse is still correct after Compact.
 func TestCompact_FreelistValidAfterCompact(t *testing.T) {
 	a := New(Options{InitialBytes: 64 * 1024})
-	// Trigger grow + some Frees into the freelist
+	// Some Frees into the freelist (guards keep the blocks apart and off the top)
 	r1 := a.AllocBytes(200 * 8)
+	_ = a.AllocBytes(8)
 	r2 := a.AllocBytes(400 * 8)
+	_ = a.AllocBytes(8)
 	a.Free(r1, 200*8)
 	a.Free(r2, 400*8)
-	// Trigger grow doubling
-	_ = a.AllocBytes(150 * 1024)
-	a.Compact()
+	// Trigger grow doubling with a transient block, then free it
+	big := a.AllocBytes(150 * 1024)
+	capPeak := a.Cap()
+	a.Free(big, 150*1024)
+	a.Compact(0)
+	if a.Cap() >= capPeak {
+		t.Fatalf("Compact did not shrink: peak=%d after=%d", capPeak, a.Cap())
+	}
 	// After Compact, Free + Alloc should still go through the freelist
 	r3 := a.AllocBytes(200 * 8) // should hit the r1 remnant
 	if r3 != r1 {
@@ -380,9 +433,10 @@ func TestCompact_FreelistValidAfterCompact(t *testing.T) {
 // to test the P3 path).
 func TestCompact_InPlaceBackingNoOp(t *testing.T) {
 	a := New(Options{InitialBytes: 64 * 1024, InPlaceBacking: true})
-	_ = a.AllocBytes(200 * 1024)
+	r := a.AllocBytes(200 * 1024)
 	capPeak := a.Cap()
-	a.Compact()
+	a.Free(r, 200*1024)
+	a.Compact(0)
 	if a.Cap() != capPeak {
 		t.Errorf("Compact under InPlaceBacking should be no-op: peak=%d after=%d", capPeak, a.Cap())
 	}
