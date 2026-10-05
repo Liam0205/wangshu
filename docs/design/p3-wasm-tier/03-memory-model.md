@@ -702,7 +702,7 @@ Go 堆内(crescent / gibbous 不共见,经整数 ID 桥接):
 
 **关键观察**:
 
-- **GC 是 STW**(P1 / P3 都是,[06](../p1-interpreter/06-memory-gc.md) §6 / [05-safepoint-gc](./05-safepoint-gc.md) §6)。GC 触发时,gibbous 帧已经让出执行(经 imported 助手回到 Go,而 GC 在 Alloc 内调,见 [05-safepoint-gc](./05-safepoint-gc.md) §3)。**gibbous 与 GC 不并发**。
+- **GC 是 STW**(P1 / P3 都是,[06](../p1-interpreter/06-memory-gc.md) §6 / [05-safepoint-gc](./05-safepoint-gc.md) §6)。GC 触发时,gibbous 帧已经让出执行(经 imported 助手回到 Go,GC 在助手末尾的 `safepoint` 或 back edge 的 `$h_safepoint` 里调，见 [05-safepoint-gc](./05-safepoint-gc.md) §1)。**gibbous 与 GC 不并发**。
 - **gibbous 读弱表**:GETTABLE 翻译的快路径([02-translation](./02-translation.md) §3.4)是「同表同代次直读 array/node」,与解释器快路径相同([05](../p1-interpreter/05-interpreter-loop.md) §6.3)。读取的是 strong 引用——弱键 / 弱值的回收只在 GC 收割阶段处理,执行期间读出的引用都是当时存活的。
 - **gibbous 写弱表**:SETTABLE 翻译走助手(基线非快路径,因为写表涉及 metatable 调用与 rehash 触发,基线一律保守);助手内是普通 Go 代码,与 P1 写弱表相同。
 

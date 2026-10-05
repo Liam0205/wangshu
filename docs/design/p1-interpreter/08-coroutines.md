@@ -97,7 +97,7 @@ Lua 协程是**非对称的、有栈的**(asymmetric stackful coroutine):
 - 切换点是**显式的**(resume/yield),不是抢占式的(无时间片、无调度器)。
 - 单 OS 线程(单 goroutine,见 §3 路线 B)内完成所有协程切换。**无并发、无数据竞争、无锁**——这正是协程
   相对线程的简单性来源,也让望舒的 STW GC(06 §7.3)在协程场景下依然"天然无需停顿协调"(GC 触发时只有一个
-  协程在 Alloc,其余协程的栈是静止的根,§6)。
+  协程在跑(到达 GC 检查点),其余协程的栈是静止的根,§6)。
 
 > **与 gopher-lua 的关键差异(架构优势点)**:gopher-lua 用 **goroutine + channel** 实现协程(每个协程跑在
 > 自己的 goroutine 里,resume/yield 用 channel 握手阻塞)。这意味着 ① 每协程一个 Go 栈(内存开销 + Go

@@ -477,7 +477,7 @@ P4 运行时存在两个泾渭分明的世界,以 trampoline 为唯一边界:
   │   - arena 扩容 (Alloc 慢路径)        │   3 种出口     │   ┌─────────────────────────────────────┐    │
   │   - 抛错 / pcall 边界清理            │  status 码区分 │   │ arenaBase: arena.bytes 起点          │    │
   │   - host call (callHost)             │  A 正常返回    │   │ valueStackBase: 当前 thread 值栈偏移 │    │
-  │   - GC collect (Alloc 内 触发)       │  B OSR exit   │   │ preemptFlag (i32):                  │    │
+  │   - GC collect (helper 末尾检查点)   │  B OSR exit   │   │ preemptFlag (i32):                  │    │
   │                                     │  C helper 调用 │   │   0=正常, 1=ctx done/抢占请求         │    │
   │                                     │               │   │ gcPending (i32):                     │    │
   │  goroutine 栈对 GC 完全可见:         │               │   │   0=正常, 1=本线程已置 STW 待行       │    │
@@ -1006,7 +1006,7 @@ P3 PW6 完成了「`h_call` 返回 i64 同载新 base 刷新 + 错误负哨兵�
 
 #### 6.2.1 分配点
 
-**JIT 生成码自身从不分配**(承 [../p3-wasm-tier/05-safepoint-gc](../p3-wasm-tier/05-safepoint-gc.md) §1.1)——所有 NEWTABLE / SETLIST / CLOSURE / CONCAT / 字符串 intern / 表 rehash 触发的分配,都经 trampoline 出到对应 helper。helper 内 `Arena.Alloc` 触发,Alloc 内若越 GC 阈值则 collect,完成后 helper 返回(经 §4.3.1 续跑通道),JIT 重 load arenaBase 续跑。
+**JIT 生成码自身从不分配**(承 [../p3-wasm-tier/05-safepoint-gc](../p3-wasm-tier/05-safepoint-gc.md) §1.1)——所有 NEWTABLE / SETLIST / CLOSURE / CONCAT / 字符串 intern / 表 rehash 触发的分配,都经 trampoline 出到对应 helper。helper 分配并记账，末尾的检查点(`safepoint` → `MaybeCollect`)若越 GC 阈值则 collect,完成后 helper 返回(经 §4.3.1 续跑通道),JIT 重 load arenaBase 续跑。
 
 **P4 与 P3 的逻辑等价**:同一个 Go 侧 helper 函数体(同一份 `Arena.Alloc` + `gc.Collect` 调用),只换跨层物理通道。
 
