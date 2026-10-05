@@ -106,21 +106,19 @@ P1 解释器 [05 §5.1](../p1-interpreter/05-interpreter-loop.md) 的 safepoint 
 ;; status=0:新表已写回 R(A)（即 valueStack[base+A]）,GC 已在助手内完成,直线继续
 ```
 
-`$h_safepoint`(back edge 用,§1.3)与 `$h_newtable`(此处)都是**imported Go 函数**——它们的执行体就是 Go 侧的对应逻辑。`$h_newtable` 的 Go 侧执行体 = P1 的 `NEWTABLE` opcode 实现(同样的分配、记账，末尾同样调 `safepoint`,[06 §7.1](../p1-interpreter/06-memory-gc.md);下图是设计阶段的示意，实现里没有单独的 `gcPending` 判断，而是 `safepoint` → `MaybeCollect` 按阈值收集):
+`$h_safepoint`(back edge 用,§1.3)与 `$h_newtable`(此处)都是**imported Go 函数**——它们的执行体就是 Go 侧的对应逻辑。`$h_newtable` 的 Go 侧执行体 = P1 的 `NEWTABLE` opcode 实现(同样的分配、记账，末尾同样调 `safepoint`,[06 §7.1](../p1-interpreter/06-memory-gc.md);下图按实现的顺序画：先把新表写回 R(A),再在助手末尾调 `safepoint` → `MaybeCollect` 按阈值收集;反过来先收集、后写回，新表已挂上 sweep 链却还不在任何根上，会被回收):
 
 ```
 gibbous 直线代码执行到上面的 (call $h_newtable ...):
   └─ 一次跨层(gibbous → Go,04 §3)
        │
-       ▼  Go 侧助手体(= P1 NEWTABLE opcode 的分配 + safepoint 路径,06 §7.1)
+       ▼  Go 侧助手体(与 P1 NEWTABLE opcode 同样的分配 + safepoint 路径,06 §7.1)
      th := vm.runningThread()              // 取 running thread(R5 现场)
-     ref := arena.Alloc(tableSize)         // ← 越过 GC 阈值则置 gcPending
-     if vm.gcPending {                     // 实现:助手末尾 safepoint → MaybeCollect
-         vm.gc.Collect()                   // STW mark-sweep,跑完才返回(§5.1)
-         vm.gcPending = false              // 清 pending(本次已回收)
-     }
      ci.savedPC = PC                       // pc 物化(02 §4):写回 CallInfo.savedPC
+     ref := allocTable(...)                // 分配并记账(AllocCharge),越过阈值时 gcPending 镜像为 1
      初始化 table 头/array/node,写回 R(A)（base+8*A 偏移,共见值栈)
+     safepoint()                           // 结果已在根上之后:MaybeCollect,越过阈值则
+                                           // STW mark-sweep,跑完才返回(§5.1)
      return STATUS_OK
        │
        ▼  助手返回 gibbous(回到 br_if $err)
