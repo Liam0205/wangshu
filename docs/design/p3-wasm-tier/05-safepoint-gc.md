@@ -74,7 +74,7 @@ P1 解释器 [05 §5.1](../p1-interpreter/05-interpreter-loop.md) 的 safepoint 
 
 ### 1.1 分配点:gibbous 代码自身从不分配
 
-**核心事实:gibbous 翻译产物里没有任何 arena 分配指令。** 所有「在 P1 解释器里会调 `Arena.Alloc`」的 opcode,在 P3 都被翻译为「调 imported Go 助手」——分配发生在助手内,Wasm 侧只看到一个 `call` 和一个 status 返回。
+**核心事实:gibbous 翻译产物里没有任何 arena 分配指令。** 所有「在 P1 解释器里会分配」的 opcode,在 P3 都被翻译为「调 imported Go 助手」——分配发生在助手内,Wasm 侧只看到一个 `call` 和一个 status 返回。
 
 #### 1.1.1 触发分配的 opcode → 对应助手映射(全枚举)
 
@@ -82,7 +82,7 @@ P1 解释器 [05 §5.1](../p1-interpreter/05-interpreter-loop.md) 的 safepoint 
 
 | 触发分配的 opcode | 分配什么(P1 06 §7.2) | P3 对应 imported 助手 | 助手内 GC |
 |---|---|---|---|
-| `NEWTABLE` | Table 头 + array 段 + node 段(3 次 Alloc) | `$h_newtable` | 助手内 `Arena.Alloc` 触发,同 [06 §8.2](../p1-interpreter/06-memory-gc.md) |
+| `NEWTABLE` | Table 头 + array 段 + node 段(3 次 Alloc) | `$h_newtable` | 助手分配并记账，末尾 `safepoint` 按阈值 collect,同 [06 §7.1](../p1-interpreter/06-memory-gc.md) |
 | `SETLIST` | 可能触发表 array 段 rehash(扩容→新 array 段) | `$h_setlist`(扩容时分配) | 同上 |
 | `CLOSURE` | Lua Closure 对象(+ 可能新建 Upvalue) | `$h_closure` | 同上 |
 | `CONCAT` | 拼接结果新字符串(+ 可能多个中间串) | `$h_concat` | 同上(中间串存进寄存器槽,见 §1.1.3) |
@@ -112,7 +112,7 @@ P1 解释器 [05 §5.1](../p1-interpreter/05-interpreter-loop.md) 的 safepoint 
 gibbous 直线代码执行到上面的 (call $h_newtable ...):
   └─ 一次跨层(gibbous → Go,04 §3)
        │
-       ▼  Go 侧助手体(= P1 06 §8.2 的 Alloc 路径)
+       ▼  Go 侧助手体(= P1 NEWTABLE opcode 的分配 + safepoint 路径,06 §7.1)
      th := vm.runningThread()              // 取 running thread(R5 现场)
      ref := arena.Alloc(tableSize)         // ← 越过 GC 阈值则置 gcPending
      if vm.gcPending {                     // 实现:助手末尾 safepoint → MaybeCollect
@@ -129,7 +129,7 @@ gibbous 直线代码执行到上面的 (call $h_newtable ...):
 
 **关键:助手返回时 GC 已完成,Wasm 侧无感**。gibbous 直线代码不需要知道「刚才助手内跑了一次 full GC」——它只看到 `$h_newtable` 返回了 status 0,R(A) 槽里是新表。这与 P1 解释器里「`NEWTABLE` opcode 分配 → opcode 结束时 `safepoint` 按阈值 collect → 继续下一条 opcode」**完全同构**,只是中间多了一次跨层 `call`。
 
-> **为什么分配点的「Wasm 实代码」只有一行 call**:这正是 §1.1 的核心论断「gibbous 自身从不分配」的直接体现——分配点在 gibbous 代码里的全部形式就是「调助手 + 查 status」。GC 的全部逻辑(Alloc、collect、根枚举)都在 Go 侧助手里,Wasm 侧一条 GC 指令都没有。这与 §1.3 back edge(Wasm 侧有 `i32.load $gcPending` 检查)形成对比:**分配点的 GC 完全在 Go 侧(Wasm 无感),back edge 的 GC 触发判定在 Wasm 侧(一次 load + 分支)、collect 在 Go 侧。**
+> **为什么分配点的「Wasm 实代码」只有一行 call**:这正是 §1.1 的核心论断「gibbous 自身从不分配」的直接体现——分配点在 gibbous 代码里的全部形式就是「调助手 + 查 status」。GC 的全部逻辑(分配、记账、collect、根枚举)都在 Go 侧助手里,Wasm 侧一条 GC 指令都没有。这与 §1.3 back edge(Wasm 侧有 `i32.load $gcPending` 检查)形成对比:**分配点的 GC 完全在 Go 侧(Wasm 无感),back edge 的 GC 触发判定在 Wasm 侧(一次 load + 分支)、collect 在 Go 侧。**
 
 #### 1.1.3 为什么 Wasm 侧无感是安全的:根天然可见
 
@@ -255,14 +255,14 @@ for i = 1, 1000000 do
 end
 ```
 
-翻译后,循环体内的 `SETTABLE` 经 `$h_settable` 助手回 Go。**绝大多数迭代**:键已在表内(无 rehash),助手不分配,`gcPending` 不变。**偶发迭代**:写新键触发 rehash,助手内 `Arena.Alloc` 越过阈值置 `gcPending`——但此时助手**可能选择不立即 collect**(为了不在每次 rehash 都 STW;具体 pacing 策略见 [06 §8.3](../p1-interpreter/06-memory-gc.md))。
+翻译后,循环体内的 `SETTABLE` 经 `$h_settable` 助手回 Go。**绝大多数迭代**:键已在表内(无 rehash),助手不分配,`gcPending` 不变。**偶发迭代**:写新键触发 rehash,助手分配、记账越过阈值后置 `gcPending`。设计阶段设想助手**可能选择不立即 collect**(为了不在每次 rehash 都 STW);实现里分配类助手末尾都调 `safepoint`,越过阈值就在助手内收集，见下面的澄清。
 
-> **澄清:Alloc 内 collect vs 推迟 collect 两种做法**(设计阶段的讨论;实现取的是第三种：分配只记账，分配 opcode / 助手结束时的 `safepoint` 按阈值同步 collect,见 [06 §7.1](../p1-interpreter/06-memory-gc.md),所以助手返回时已经收集过，下面第一条的结论成立)。设计稿 06 §8.2 原先的基线是「Alloc 越阈值即同步 collect」(本文 §1.1.2 即按此)。但 [06 §8.3](../p1-interpreter/06-memory-gc.md) 的 pacing 允许「置 pending,延到 safepoint 再 collect」的变体(解释器即如此:[05 §5.3](../p1-interpreter/05-interpreter-loop.md) 的 `if vm.gcPending` 在 opcode 末尾才 collect,Alloc 只置 pending)。**两种做法 P3 都支持**:
+> **澄清:Alloc 内 collect vs 推迟 collect 两种做法**(下面三条是设计阶段的讨论)。实现取的是：分配只记账，分配类 opcode / 助手结束时的 `safepoint` 按阈值同步 collect([06 §7.1](../p1-interpreter/06-memory-gc.md)),所以分配类助手返回时阈值已经检查过。`gcPending`(arena 里的标志字，镜像「`MaybeCollect` 会不会真的收集」)仍可能在 back edge 上为 1:只记账、不收集的路径(`Collector.Account`,线程值栈 / CallInfo 段扩容时用)越过阈值后，要等下一个检查点;back edge 的 `$h_safepoint` 正是这样的检查点，另外它还负责 loop fuel(步数预算)的扣减与检查，所以并不是从不跳。设计稿 06 §8.2 原先的基线是「Alloc 越阈值即同步 collect」(本文 §1.1.2 即按此);另一种设想是「置 pending,延到 safepoint 再 collect」。**两种做法 P3 都支持**:
 > - 若 P1/P3 取「Alloc 内立即 collect」:`gcPending` 在助手返回时已是 false,back edge 检查恒不跳——back edge safepoint 退化为纯保险(零开销,never taken)。
 > - 若 P1/P3 取「Alloc 置 pending、safepoint 才 collect」:助手返回时 `gcPending=true`,**back edge safepoint 正是兑现这次推迟 collect 的地方**。
 > **P3 的 back edge safepoint 对两种做法都正确**——它只是「若有 pending 就 collect」,不关心 pending 是谁置的、何时置的。这与 [05 §5.3](../p1-interpreter/05-interpreter-loop.md) 解释器的 `if vm.gcPending` 语义完全一致。
 
-**所以 back edge safepoint 覆盖的精确时机**:「循环体内某次迭代经助手分配置了 `gcPending`、但助手选择推迟 collect,则 back edge 在下一次(或本次)迭代尾把这次推迟的 collect 兑现」——保证「置了 pending 不会无限推迟」。
+**所以 back edge safepoint 覆盖的精确时机**:「循环体内某次迭代让 `gcPending` 为 1、但当时没有收集(实现里是只记账的 `Account` 路径;设计阶段还设想过助手推迟 collect),则 back edge 在下一次(或本次)迭代尾把这次收集兑现」——保证「置了 pending 不会无限推迟」。
 
 #### 1.3.4 gcPending 全局变量在 wazero memory 之外
 
@@ -683,7 +683,7 @@ helper 返回后:gibbous 用 $cache_5 访问那个 Table ⇒ 悬垂 GCRef
 | 根集合静止(R1..R9 在 GC 期间不变,枚举一次即可) | ✅ 保留 | gibbous 帧的根(值栈槽,§3)在 collect 期间不变(gibbous 没在执行) |
 | sweep 静止(无并发分配干扰) | ✅ 保留 | 无并发(单 goroutine);gibbous 不在分配(它停在助手 call 上) |
 
-**核心**:gibbous 调助手是**同步阻塞**的——gibbous 执行到 `call $h_newtable` 后,控制权完全交给 Go 助手,gibbous 帧「冻结」在那一点直到助手返回。助手内 collect 时,gibbous 帧是静止的(和 P1 解释器调 Alloc 时主循环静止一样)。所以**STW 的「正确性推理退化为单线程顺序逻辑」([06 §7.3](../p1-interpreter/06-memory-gc.md))在 gibbous 下完全成立**。
+**核心**:gibbous 调助手是**同步阻塞**的——gibbous 执行到 `call $h_newtable` 后,控制权完全交给 Go 助手,gibbous 帧「冻结」在那一点直到助手返回。助手内 collect 时,gibbous 帧是静止的(和 P1 解释器在检查点收集时主循环静止一样)。所以**STW 的「正确性推理退化为单线程顺序逻辑」([06 §7.3](../p1-interpreter/06-memory-gc.md))在 gibbous 下完全成立**。
 
 ### 5.2 写屏障接口维持空实现
 

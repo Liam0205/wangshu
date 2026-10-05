@@ -292,7 +292,7 @@ Explicit GC control:
 ```go
 st.Collect()           // force a full GC sweep
 st.MaybeCollectNow()   // collect only if the host-trigger threshold is met (non-forced)
-st.SetHostTriggeredCollect(true) // opt-in: host-side threshold auto-triggers collect (requires all transient GCRefs to be pinned)
+st.SetHostTriggeredCollect(true) // opt-in: any allocation crossing the threshold collects immediately (requires all transient GCRefs to be pinned)
 ```
 
 For short-script high-frequency call scenarios, prefer `CallInto` to reuse the return-value slice and stay on the zero-alloc path:
