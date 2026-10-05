@@ -349,13 +349,15 @@ func (c *Collector) Collect() {
 	}
 	c.toRunFinalizers = c.toRunFinalizers[:0]
 	// issue #11 direction 1: after sweep, try to shrink the backing slab back to the Go heap.
-	// Compact internally only acts when it decides cap can shrink (cap > bump + slack); under
-	// P3 InPlaceBacking mode and a tight-cap steady state it is a no-op O(1). Typical benefit:
-	// after a transient peak triggers grow doubling, Release frees the bulk of the bump-area →
-	// Compact shrinks cap to the bump scale, and the Go runtime reclaims the old large slab
-	// (latched high-water released, alleviating the pineapple#105-class long-lived pool fat
-	// state phenomenon).
-	c.a.Compact()
+	// The heap is expected to grow to live + next threshold before the next collection, so
+	// that (plus a quarter of headroom) is the size Compact keeps; it only swaps the slab when
+	// cap is more than twice that (issue #296: shrinking to the bytes in use made grow and
+	// Compact copy the whole slab back and forth every cycle). Under P3 InPlaceBacking it is
+	// a no-op. Typical benefit: after a transient peak triggers grow doubling, the bulk of the
+	// arena dies → Compact shrinks cap and the Go runtime reclaims the old large slab (latched
+	// high-water released, alleviating the pineapple#105-class long-lived pool fat state).
+	live := c.liveBytesAfterSweep
+	c.a.Compact((live + live*uint64(c.gcPauseRatio)/100) * 5 / 4)
 	// pacing: this round's live bytes were accumulated during sweep in c.liveBytesAfterSweep.
 	c.threshold = c.liveBytesAfterSweep * uint64(c.gcPauseRatio) / 100
 	if c.threshold < uint64(c.a.Cap())/16 {

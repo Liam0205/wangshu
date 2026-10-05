@@ -101,9 +101,18 @@ type Arena struct {
 	// array segment doublings), produces O(N) chain length + O(N) scan cost ⟹
 	// O(N²) overall degradation; with multi-bucket, each alloc scans a short
 	// in-bucket chain, and a typical power-of-2 alloc hits in O(1).
+	// LARGE blocks are doubly linked (word2 = prev) so coalescing can unlink a
+	// neighbour from the middle of its bucket.
 	freeHeads      [numSizeClasses]GCRef
 	largeFreeHeads [numLargeClasses]GCRef
 	freeBytes      uint64 // total free bytes on the freelist (observation/testing)
+
+	// Address index of the free LARGE blocks (issue #296): start → words and
+	// end → start, used by freeLarge to find the free neighbours of a returned
+	// block. Kept on the Go side because allocated blocks carry no boundary
+	// tags; offsets survive grow and Compact unchanged.
+	largeByStart map[GCRef]uint32
+	largeByEnd   map[GCRef]GCRef
 
 	// freeSet/freeSite (for debugFreelist troubleshooting): all currently free
 	// word offsets and their free sites.
@@ -175,43 +184,51 @@ func (a *Arena) Words() []uint64 { return a.words }
 // Bytes returns the byte view of the entire backing. Same invalidation rule as Words.
 func (a *Arena) Bytes() []byte { return a.bytes }
 
-// Compact shrinks the backing capacity to max(bump, 64 KiB) (issue #11
-// direction 1). GCRef offsets stay unchanged (semantics preserved); only the
-// physical backing slab is swapped for a smaller one — the Go runtime reclaims
-// the old slab (possibly large, e.g. once doubled to a high-water mark by a
-// transient large allocation) back to the heap, easing the problem of a fat
-// state permanently residing in a long-lived State pool.
+// Compact swaps the backing for a smaller slab when the current one is more
+// than twice what the heap is expected to need (issue #11 direction 1, policy
+// from issue #296). GCRef offsets stay unchanged; only the physical slab is
+// replaced, and the Go runtime reclaims the old one (possibly large, e.g. once
+// doubled to a high-water mark by a transient large allocation), easing the
+// problem of a fat state permanently residing in a long-lived State pool.
+//
+// target is the size the heap should fit in until the next collection; the
+// collector passes the live bytes plus the next GC threshold, with some
+// headroom (Collector.Collect). The new capacity is max(target, bump, 64 KiB),
+// and the slab is replaced only when cap exceeds twice that. The factor of two
+// is what stops Compact and grow from alternating: grow doubles, so shrinking
+// to exactly what is in use made the next allocation burst grow (and copy the
+// whole slab) again, every cycle.
 //
 // **Conditions for effect**:
 //   - non-InPlaceBacking mode (P3 wangshu_p3 adopting wazero linear memory
 //     cannot shrink; this method is a no-op there)
-//   - cap > max(bump, 64 KiB) (otherwise there is no room to shrink)
-//
-// When to call: triggered after Collector.Collect (the freelist has already
-// accumulated dead regions into freeBytes, but bump grows monotonically and
-// never retreats; Compact shrinks cap from its "former high-water" to the
-// "current bump").
+//   - cap > 2 × max(target, bump, 64 KiB)
 //
 // **Does not touch bump, does not remap GCRef**: this method is not a
-// copy-compact GC, it only swaps the slab. It still leaves the logical
-// fragmentation of "[dead blocks within bump] on the freelist" (awaiting
-// freelist reuse) — that part is the remaining target of issue #11 direction 1's
-// real copy-compact, left as a followup.
-func (a *Arena) Compact() {
+// copy-compact GC, it only swaps the slab. Dead blocks below bump stay on the
+// freelist for reuse; LARGE ones are coalesced and the block at the top lowers
+// bump when it is freed (freeLarge), so bump tracks the highest live block.
+func (a *Arena) Compact(target uint64) {
 	if a.inPlace {
 		return // P3 adoption of wazero linear memory cannot shrink
 	}
-	const minCap = uint32(64 * 1024)
-	targetCap := roundUp8(a.bump)
-	if targetCap < minCap {
-		targetCap = minCap
+	const minCap = uint64(64 * 1024)
+	newCap := (target + 7) &^ 7
+	if b := uint64(a.bump); newCap < b {
+		newCap = (b + 7) &^ 7
 	}
-	if targetCap >= a.cap {
-		return // no room to shrink
+	if newCap < minCap {
+		newCap = minCap
 	}
-	newWords := a.backing(targetCap / 8)
+	if newCap > uint64(a.maxCap) {
+		newCap = uint64(a.maxCap)
+	}
+	if uint64(a.cap) <= 2*newCap {
+		return // not enough slack to be worth a copy
+	}
+	newWords := a.backing(uint32(newCap / 8))
 	copy(newWords, a.words[:a.bump/8]) // copy only [0..bump); the rest is unallocated
-	a.cap = targetCap
+	a.cap = uint32(newCap)
 	a.setBacking(newWords)
 }
 

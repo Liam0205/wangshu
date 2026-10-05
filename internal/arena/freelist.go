@@ -1,15 +1,20 @@
-// Freelist — size-class fixed-length buckets + LARGE first-fit (06 §2).
+// Freelist — size-class fixed-length buckets + coalescing LARGE first-fit (06 §2).
 //
 // Allocation has two levels: freelist hit (O(1) pop reuse) → bump linear split.
 // Reclamation (gc sweep / rehash segment swap) returns via Free:
 //   - ≤64 words: enter the fixed-length bucket by size-class (allocation already
 //     rounds up to the bucket's representative word count, so sizes within a
 //     bucket are uniform);
-//   - >64 words: enter the LARGE intrusive chain (word0=next, word1=block words),
-//     first-fit, only taken on an "exact hit" or when "the remainder >64 words
-//     can form an independent block" (to avoid out-of-bucket fragmentation waste).
+//   - >64 words: enter the LARGE intrusive chain (word0=next, word1=block words,
+//     word2=prev), first-fit, only taken on an "exact hit" or when "the remainder
+//     >64 words can form an independent block" (to avoid out-of-bucket
+//     fragmentation waste).
 //
-// No coalescing, no cross-class splitting (06 §2.2 P1 simplification).
+// LARGE blocks coalesce (issue #296): free LARGE blocks are also indexed by
+// their start and end offsets, so a returned block merges with the free LARGE
+// blocks directly before and after it, and a merged block that reaches bump
+// lowers bump instead of staying on the freelist (dlmalloc's top chunk).
+// Small buckets do not coalesce and are never split across classes.
 // Reused memory is dirty: the constructor must explicitly initialize all fields
 // and must not rely on fresh-zero (AllocString's NUL fill was changed to explicit
 // zeroing).
@@ -135,7 +140,7 @@ func (a *Arena) Free(ref GCRef, nbytes uint32) {
 		a.freeBytes += uint64(words) * 8
 		return
 	}
-	a.pushLarge(ref, words)
+	a.freeLarge(ref, words)
 }
 
 func itoa(v uint64) string {
@@ -168,15 +173,76 @@ func callerSite() string {
 	return out
 }
 
-// pushLarge hooks a >64-word block onto the head of its LARGE bucket
-// (word0=next, word1=words). Bucketed by largeSizeClass(words); a typical
-// power-of-2-word alloc hits a single bucket O(1).
-func (a *Arena) pushLarge(ref GCRef, words uint32) {
+// freeLarge returns a >64-word block, merging it with the free LARGE blocks
+// that end where it starts and start where it ends (issue #296). Both
+// neighbours are found through the address index, so a free costs a few map
+// lookups. A merged block that ends at bump is not kept: bump retreats to its
+// start instead, and the words are cleared because AllocBytes hands out memory
+// above bump without zero-fill.
+func (a *Arena) freeLarge(ref GCRef, words uint32) {
+	start, end := ref, ref+GCRef(words)*8
+	if prev, ok := a.largeByEnd[start]; ok {
+		a.unlinkLarge(prev, a.largeByStart[prev])
+		start = prev
+	}
+	if nw, ok := a.largeByStart[end]; ok {
+		a.unlinkLarge(end, nw)
+		end += GCRef(nw) * 8
+	}
+	if end == GCRef(a.bump) {
+		clear(a.words[start>>3 : end>>3])
+		if debugFreelist {
+			for at := start; at < end; at += 8 {
+				delete(a.freeSet, at)
+				delete(a.freeSite, at)
+			}
+		}
+		a.bump = uint32(start)
+		return
+	}
+	a.insertLarge(start, uint32((end-start)/8))
+}
+
+// insertLarge hooks a >64-word block onto the head of its LARGE bucket
+// (word0=next, word1=words, word2=prev) and records it in the address index.
+// Bucketed by largeSizeClass(words); a typical power-of-2-word alloc hits a
+// single bucket O(1). The caller has already merged the block with its free
+// neighbours.
+func (a *Arena) insertLarge(ref GCRef, words uint32) {
 	c := largeSizeClass(words)
-	a.words[ref>>3] = uint64(a.largeFreeHeads[c])
+	head := a.largeFreeHeads[c]
+	a.words[ref>>3] = uint64(head)
 	a.words[(ref>>3)+1] = uint64(words)
+	a.words[(ref>>3)+2] = 0
+	if !head.IsNull() {
+		a.words[(head>>3)+2] = uint64(ref)
+	}
 	a.largeFreeHeads[c] = ref
+	if a.largeByStart == nil {
+		a.largeByStart = map[GCRef]uint32{}
+		a.largeByEnd = map[GCRef]GCRef{}
+	}
+	a.largeByStart[ref] = words
+	a.largeByEnd[ref+GCRef(words)*8] = ref
 	a.freeBytes += uint64(words) * 8
+}
+
+// unlinkLarge removes a free LARGE block from its bucket and from the address
+// index (the doubly linked chain makes this O(1) wherever the block sits).
+func (a *Arena) unlinkLarge(ref GCRef, words uint32) {
+	next := GCRef(a.words[ref>>3])
+	prev := GCRef(a.words[(ref>>3)+2])
+	if prev.IsNull() {
+		a.largeFreeHeads[largeSizeClass(words)] = next
+	} else {
+		a.words[prev>>3] = uint64(next)
+	}
+	if !next.IsNull() {
+		a.words[(next>>3)+2] = uint64(prev)
+	}
+	delete(a.largeByStart, ref)
+	delete(a.largeByEnd, ref+GCRef(words)*8)
+	a.freeBytes -= uint64(words) * 8
 }
 
 // popSizeClass tries to pop a block from a fixed-length bucket (block size =
@@ -211,42 +277,36 @@ func (a *Arena) popSizeClass(c int) GCRef {
 func (a *Arena) popLarge(needWords uint32) GCRef {
 	c0 := largeSizeClass(needWords)
 	for cc := c0; cc < numLargeClasses; cc++ {
-		var prev GCRef
-		ref := a.largeFreeHeads[cc]
-		for !ref.IsNull() {
-			next := GCRef(a.words[ref>>3])
+		for ref := a.largeFreeHeads[cc]; !ref.IsNull(); ref = GCRef(a.words[ref>>3]) {
 			bw := uint32(a.words[(ref>>3)+1])
-			if bw >= needWords {
-				if prev.IsNull() {
-					a.largeFreeHeads[cc] = next
-				} else {
-					a.words[prev>>3] = uint64(next)
-				}
-				a.freeBytes -= uint64(bw) * 8
-				if debugFreelist {
-					for w := uint32(0); w < bw; w++ {
-						delete(a.freeSet, ref+GCRef(w*8))
-					}
-				}
-				if rem := bw - needWords; rem > 0 {
-					remRef := ref + GCRef(needWords*8)
-					if rem > largeThresholdWords {
-						if debugFreelist {
-							for w := uint32(0); w < rem; w++ {
-								a.freeSet[remRef+GCRef(w*8)] = 1
-							}
-						}
-						a.pushLarge(remRef, rem)
-					} else {
-						if c := floorClass(rem); c >= 0 {
-							a.Free(remRef, classWords(c)*8)
-						}
-					}
-				}
-				return ref
+			if bw < needWords {
+				continue
 			}
-			prev = ref
-			ref = next
+			a.unlinkLarge(ref, bw)
+			if debugFreelist {
+				for w := uint32(0); w < bw; w++ {
+					delete(a.freeSet, ref+GCRef(w*8))
+				}
+			}
+			// The block's free neighbours were merged into it when it was
+			// freed, and it does not end at bump, so the remainder needs no
+			// further coalescing.
+			if rem := bw - needWords; rem > 0 {
+				remRef := ref + GCRef(needWords*8)
+				if rem > largeThresholdWords {
+					if debugFreelist {
+						for w := uint32(0); w < rem; w++ {
+							a.freeSet[remRef+GCRef(w*8)] = 1
+						}
+					}
+					a.insertLarge(remRef, rem)
+				} else {
+					if c := floorClass(rem); c >= 0 {
+						a.Free(remRef, classWords(c)*8)
+					}
+				}
+			}
+			return ref
 		}
 	}
 	return 0
