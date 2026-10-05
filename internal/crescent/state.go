@@ -1003,8 +1003,9 @@ func (st *State) GCCountKB() float64 {
 // ArenaCapKB returns the arena backing's current **capacity** in KB (issue #11
 // direction 3). The difference from GCCountKB: GCCountKB measures "live bytes"
 // and shrinks on Collect; ArenaCapKB measures "backing slab capacity", reflecting
-// the real Go-heap residency (monotonically rising when grow-only). The pool
-// layer thresholds on this to decide whether to drop a fat state.
+// the real Go-heap residency (it only shrinks when a collection finds the slab
+// more than twice the expected need, see arena.Compact). The pool layer
+// thresholds on this to decide whether to drop a fat state.
 func (st *State) ArenaCapKB() float64 {
 	return float64(st.arena.Cap()) / 1024.0
 }

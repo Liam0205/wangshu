@@ -258,10 +258,10 @@ func (st *State) PromotionCount() int { return st.core.PromotionCount() }
 // loop with no budget barely crosses tiers).
 func (st *State) SafepointCalls() int64 { return st.core.SafepointCalls() }
 
-// GCCountKB returns the arena's currently-used KB (= the bump pointer; includes
-// free blocks on the freelist awaiting reuse). For long-run stability
-// observation: in steady state the freelist recycles blocks and this value
-// should be bounded.
+// GCCountKB returns the arena's currently-used KB (collectgarbage("count")):
+// the bump pointer minus the free blocks on the freelist awaiting reuse. For
+// long-run stability observation: in steady state the freelist recycles blocks
+// and this value should be bounded.
 func (st *State) GCCountKB() float64 { return st.core.GCCountKB() }
 
 // ArenaCapKB returns the arena backing's current **capacity** in KB (issue #11
@@ -269,8 +269,11 @@ func (st *State) GCCountKB() float64 { return st.core.GCCountKB() }
 //
 // Difference from GCCountKB: GCCountKB measures "live bytes" and falls back with
 // Collect; ArenaCapKB measures "backing slab capacity", reflecting the real Go
-// heap residency — in grow-only mode it increases monotonically and is not
-// shrunk by Collect (arena copy-compact pending issue #11 direction 1).
+// heap residency. Capacity doubles when the arena runs out; a collection swaps
+// the slab for a smaller one only when it is more than twice what the heap is
+// expected to need before the next collection (live bytes plus the next GC
+// threshold, with headroom; issue #296), and never under the wangshu_p3 build,
+// whose wazero memory cannot shrink.
 //
 // Typical use: a long-running State pool layer uses this to judge a fat-state
 // threshold, dropping the state rather than caching it when exceeded. More
@@ -288,8 +291,8 @@ func (st *State) ArenaCapKB() float64 { return st.core.ArenaCapKB() }
 // cadence → the arena's internal accounting grows monotonically. The host
 // calling this method periodically at pool-return / batch-completion points
 // keeps GCCountKB bounded. **Cost**: ~microseconds to milliseconds each
-// (depending on live-object scale). Does not shrink backing capacity (see
-// ArenaCapKB / issue #11 direction 1).
+// (depending on live-object scale). Shrinks the backing only when it is more
+// than twice the expected need (see ArenaCapKB).
 func (st *State) Collect() { st.core.Collect() }
 
 // MaybeCollectNow triggers a collect conditionally on the GC threshold (may
