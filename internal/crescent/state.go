@@ -1014,8 +1014,9 @@ func (st *State) ArenaCapKB() float64 {
 // collectgarbage("collect")). Issue #9 direction 2: let the host embedding layer
 // explicitly drive the GC cadence, avoiding the roundabout path of a
 // collectgarbage script call. Under short scripts / host-driven allocation,
-// calling it periodically keeps the arena's internal accounting bounded (but the
-// backing capacity does not shrink, see ArenaCapKB / issue #11).
+// calling it periodically keeps the arena's internal accounting bounded; the
+// backing shrinks only when it is more than twice the expected need (see
+// ArenaCapKB / arena.Compact).
 func (st *State) Collect() {
 	st.gc.Collect()
 }
