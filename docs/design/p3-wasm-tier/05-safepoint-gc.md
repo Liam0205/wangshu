@@ -21,7 +21,7 @@
 
 ### 0.1 这一篇要回答的问题
 
-P1 [06 §12](../p1-interpreter/06-memory-gc.md) 倒数第三条缺口原话(节录):
+P1 [06 §12](../p1-interpreter/06-memory-gc.md) 倒数第三条缺口当时的原话(节录;其中 VM↔host 边界后来在 #297 定为宿主函数返回后固定检查一次 GC,见 06 §7.1):
 
 > **层边界 safepoint 的具体形式**:§7.1 说层边界是可选 GC 检查点,但 P1 只有解释器层,层边界退化为 VM↔host 边界。「长时间纯计算不分配的循环如何周期 GC」——P1 靠分配点,无分配的死循环不会 GC(也无需,因没产生垃圾)。**P3+ 跨层时 safepoint 形式(循环回跳(back edge)检查点 vs 调用边界,对齐 `docs/design/roadmap.md` (§2) 异步抢占税解法)在 p3-wasm-tier 定。**
 
@@ -200,7 +200,7 @@ crescent ↔ gibbous 的 trampoline([04 §2 crescent→gibbous](./04-trampoline.
 
   代价是每次跨层进入 gibbous 多一次 `i32.load` + 恒不跳分支——**PW9 验收未观察到此边角触发**(差分 + GC stress 层间全 byte-equal),P3 首版基线下不插此检查(助手路径 + back edge gcPending 已覆盖)。若 PW10/后续实测发现极端长函数内存增长异常再启用(记入 §8 缺口)。
 
-**一句话**:层边界 safepoint 在 P3 是「可选的额外触发机会」(同 [06 §7.1](../p1-interpreter/06-memory-gc.md) 对 P1 层边界的定性),基线不启用,助手路径已足够覆盖。
+**一句话**:crescent↔gibbous 的层边界 safepoint 在 P3 是「可选的额外触发机会」,基线不启用，助手路径已足够覆盖。宿主函数调用不属于这里:gibbous 调宿主函数走 `doCall` / `doTailCall` 助手，经 `callHost` 返回后的检查点(#297,[06 §7.1](../p1-interpreter/06-memory-gc.md))收集。
 
 ### 1.3 循环 back edge:gcPending 检查
 
@@ -321,7 +321,7 @@ end
 
 ### 2.1 [06 §12](../p1-interpreter/06-memory-gc.md) 原话回顾
 
-P1 设计 06-memory-gc 在 §12「文档缺口 / 待决」里,**预设了 P3 接入时何处布 safepoint** 这个问题,把它显式委托给 P3 文档。原话(完整):
+P1 设计 06-memory-gc 在 §12「文档缺口 / 待决」里,**预设了 P3 接入时何处布 safepoint** 这个问题,把它显式委托给 P3 文档。当时的原话(完整;VM↔host 边界后来在 #297 定为宿主函数返回后检查一次 GC):
 
 > **层边界 safepoint 的具体形式**:§7.1 说层边界是可选 GC 检查点,但 P1 只有解释器层,层边界退化为 VM↔host 边界。「长时间纯计算不分配的循环如何周期 GC」——P1 靠分配点,无分配的死循环不会 GC(也无需,因没产生垃圾)。P3+ 跨层时 safepoint 形式(循环回跳(back edge)检查点 vs 调用边界,对齐 `docs/design/roadmap.md` (§2) 异步抢占税解法)在 p3-wasm-tier 定。
 
@@ -340,7 +340,7 @@ P1 设计 06-memory-gc 在 §12「文档缺口 / 待决」里,**预设了 P3 接
 #### 子问题 ① 层边界 safepoint 形式 → §1.2
 
 - **答**:层边界 = crescent↔gibbous↔host 的 trampoline([04 §2/§3](./04-trampoline.md)),与 [05 §5.1](../p1-interpreter/05-interpreter-loop.md) 的调用边界 safepoint 同位。
-- **形式定稿**:**基线不主动调 safepoint**(助手路径已覆盖,§1.2.2),仅在 PW9 验收发现极端长函数形式时按实测加(§1.2.3)。这与 [06 §7.1](../p1-interpreter/06-memory-gc.md) 对 P1 层边界的定性(「可选的额外触发机会」)一脉相承。
+- **形式定稿**:**基线不主动调 safepoint**(助手路径已覆盖,§1.2.2),仅在 PW9 验收发现极端长函数形式时按实测加(§1.2.3)。宿主函数调用另有固定检查点(`callHost` 返回后，#297,[06 §7.1](../p1-interpreter/06-memory-gc.md)),gibbous 经 `doCall` 助手调宿主函数时同样经过。
 
 #### 子问题 ② 纯计算循环周期 GC → §1.4
 
