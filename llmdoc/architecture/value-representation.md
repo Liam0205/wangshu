@@ -1,6 +1,6 @@
 # 架构:值表示与内存模型
 
-> 状态:**第 1 天架构承诺,已在 P1 完成**(NaN-boxed u64 + 自管 arena + mark-sweep GC + arena 原生表存储均已实现;长稳承诺轮后 **freelist 内存复用已完成**——20 个 size-class 定长桶 + LARGE 首次适配(`internal/arena/freelist.go`),sweep 真正归还字节供复用,并配套调用深度上限(Lua 20000 / host→Lua 重入 200,超限抛可恢复错误,proper tail call 不受限)与对象尺寸单一事实源(`internal/object/size.go`);值栈/CallInfo 仍为 Go slice,P3 迁移预留的接口不变,清单见 `docs/design/p1-interpreter/implementation-progress.md`)。源:`docs/design/roadmap.md` (§3),硬约束背景见 (§2)。
+> 状态:**第 1 天架构承诺,已在 P1 完成**(NaN-boxed u64 + 自管 arena + mark-sweep GC + arena 原生表存储均已实现;长稳承诺轮后 **freelist 内存复用已完成**——20 个 size-class 定长桶 + LARGE 首次适配，相邻的 LARGE 空闲块合并、顶部块退回 bump(#296,`internal/arena/freelist.go`),sweep 真正归还字节供复用,并配套调用深度上限(Lua 20000 / host→Lua 重入 200,超限抛可恢复错误,proper tail call 不受限)与对象尺寸单一事实源(`internal/object/size.go`);值栈/CallInfo 仍为 Go slice,P3 迁移预留的接口不变,清单见 `docs/design/p1-interpreter/implementation-progress.md`)。源:`docs/design/roadmap.md` (§3),硬约束背景见 (§2)。
 > 这是整个分层 VM 的中枢决策——一块自管线性内存贯穿值表示、各执行层、宿主 ABI。前置约束见 [[design-premises]]。
 
 ## 岔路口决策:NaN-boxing vs Go tagged struct

@@ -726,7 +726,7 @@ Go 堆内(crescent / gibbous 不共见,经整数 ID 桥接):
 
 - **freelist 是 arena 内的侵入式单链**([06](../p1-interpreter/06-memory-gc.md) §2.2):回收的对象 `word0` 复用为「下一个空闲块的 GCRef」。链头存在 Go 端 `Arena.freeHeads [numSizeClasses]GCRef`,链节点的 `word0` 在 arena 内。
 - **P3 build 下**:链头仍在 Go 端(`Arena` struct 字段),链节点 `word0` 在 wazero memory(共见 backing)。**freelist 的逻辑形式完全不变**——`freelistPop` / `freelistPush` 经 `arena.words[ref>>3]` 读写,P3 build 下这块即 wazero memory。
-- **size-class 划分**([06](../p1-interpreter/06-memory-gc.md) §2.2):20 个定长桶 + LARGE 首次适配链,`internal/arena/freelist.go` 已完成。P3 build 下不动。
+- **size-class 划分**([06](../p1-interpreter/06-memory-gc.md) §2.2 / §2.4):20 个定长桶 + LARGE 首次适配链(相邻空闲块合并，顶部块退回 bump,#296),`internal/arena/freelist.go` 已完成。P3 build 下不动;LARGE 空闲块的地址索引是 Go 端的两张 map,同样不进 wazero memory。P3 下 `Compact` 不能缩小线性内存，容量靠合并和 bump 回退控制。
 - **gibbous 是否操作 freelist**:**不操作**——gibbous 不分配,所有 `Alloc` / `freelistPop` 调用都在 Go 端的 imported 助手内。从 freelist 视角看,gibbous 是只读 mutator(只读 arena 内对象,不改 freelist)。
 
 > **对比一个错误的设计倾向**:有人可能想「让 gibbous 在快路径 inline freelistPop」以省一次跨层。这违反「gibbous 不分配」基线,且需要在 Wasm 侧重写 freelist 协议——P3 阶段一律不做(同 §5.3 反例的判断)。
