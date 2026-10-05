@@ -175,8 +175,7 @@ sizeClass(words):
 `freelistPop` 弹出时再由 `initHeader` 重写 word0 为新 GCHeader。非满桶的 size-class 把请求向上取整到桶的代表字数
 (略微浪费,但保证同桶对象尺寸兼容复用)——故 freelist 复用要求**桶内尺寸统一**,实现时按桶代表字数分配。
 
-> P1 简化:freelist 仅在 sweep 阶段回填(把白对象按 size-class 串入对应桶)。不做空闲块合并(coalescing)、
-> 不做跨 class 切分。碎片由「bump + 偶尔 grow」吸收。增量/分代 GC(P3+)再评估是否需要 coalescing。
+> 小对象桶不合并相邻空闲块，也不跨 class 切分:同一桶里的块大小一样，复用不会留碎片。会合并的只有 LARGE 块(§2.4)。
 
 ### 2.3 freelist 与 bump 的协同
 
@@ -186,17 +185,23 @@ sizeClass(words):
 
 ### 2.4 大对象(LARGE)
 
-字数 > 64(512 字节)的对象(大字符串、大 table 的 array/node 段、大 userdata payload、thread 值栈)
-**不进 size-class freelist**(否则大块碎片囤积浪费)。大对象仍从 bump 区线性分配,sweep 回收时:
+字数 > 64(512 字节)的对象(大字符串、大 table 的 array/node 段、大 userdata payload、协程值栈与 CallInfo 段)
+**不进 size-class 定长桶**,走 LARGE freelist(`internal/arena/freelist.go`):
 
-- P1:大对象死后其字节**暂不回收进 freelist**,留待整体 grow 的 realloc 时被压缩——但 P1 不做压缩(见 §3),
-  故 P1 大对象死后空间**就地浪费到下次 full GC 后 compaction**。为避免 P1 大对象空间无限泄漏,P1 采取折中:
-  **大对象也按精确字数串入一个「LARGE freelist(按字数排序的简单 free 块列表,首次适配)」**,sweep 回填,分配时首次适配复用。
-  这是 P1 唯一的变长 freelist;小对象走 size-class 定长桶。
-- 首次适配(first-fit)足够:大对象分配频率低,链表短,O(n) 扫描可接受。
+- **分桶 + 首次适配**:按字数分进 24 个 2 的幂桶(桶 i 装 `(2^(6+i), 2^(7+i)]` 字),分配从所需字数对应的桶开始逐桶往上找，
+  桶内首次适配。取到的块比请求大时切开：余量超过 64 字就作为新的 LARGE 块放回;不超过 64 字就向下取整放进小对象桶。
+- **合并相邻空闲块**(#296):空闲 LARGE 块在桶里是双向链(word0 = next,word1 = 字数,word2 = prev),另外在 Go 侧按
+  起始偏移和结束偏移各建一张索引。归还 LARGE 块时，先查有没有正好在它前面结束、或正好在它后面开始的空闲 LARGE 块，
+  有就从各自的桶里摘下来合成一块。已分配的块不带边界标记，所以只合并 LARGE 与 LARGE,小对象块不参与。
+- **顶部块退回 bump**:合并后的块如果正好结束在 bump,就不放回 freelist,而是把 bump 退到它的起点(dlmalloc 的 top
+  chunk 做法)。bump 之上的内存分配时不再清零，所以退回前把这段清零。这样 bump 跟着最高的存活块走，不再只增不减。
+
+不合并之前，大块尺寸随时间略微增长的负载(循环里反复拼接变长的字符串、协程值栈逐次翻倍)每次都找不到够大的空闲块，
+全部从 bump 新切，arena 容量只增不减(#296 的探针里存活数据约 160 KB,arena 涨到几百 MB)。
 
 > 决策记录:P1 不做 compaction(对象搬迁需重写所有指向它的 GCRef,等于实现「栈移动税」的 arena 版,P1 不付)。
-> 偏移寻址使 compaction **未来可行**(搬迁后批量重写偏移,无需 Go 指针修正),留给 P3+ 增量 GC 评估。见 §10 缺口。
+> 偏移寻址使 compaction **未来可行**(搬迁后批量重写偏移,无需 Go 指针修正),留给 P3+ 增量 GC 评估。见 §12 缺口。
+> 合并与 bump 回退不搬迁对象，只改空闲块的记账，所以不受这条限制。
 
 ---
 
@@ -228,6 +233,13 @@ realloc 后偏移语义不变(`words[ref>>3]` 自动指向新 backing 的同一�
 
 扩容策略:**翻倍**(`cap *= 2`),摊还 O(1)。初始容量可配(默认如 64 KiB);上限受 GCRef 48-bit 与 `bump uint32`(本设计 4 GiB)约束——
 单 arena 最大 4 GiB(`bump`/`cap` 用 uint32)。超 4 GiB 需求(罕见)留待把 bump/cap 升 uint64 + GCRef 用满 48-bit(256 TiB),P1 不做。
+
+**缩容(`Arena.Compact`,#11 / #296)**:每次收集结束时，收集器按 GC 水位算出下次收集前堆预计要用到的大小
+`target = (live + live × GCPAUSE / 100) × 1.25`(live 是本轮清扫后的存活字节,GCPAUSE 默认 200,即 3.75 × live),
+传给 `Compact`。新容量取 `max(target, bump, 64 KiB)`;只有当前容量超过它的两倍时才换成这个大小的新 slab,拷贝 `[0, bump)`。
+比例挂在 GC 水位上，而不是挂在 bump 上：只缩到 bump 时，下一轮分配一涨就要翻倍扩容，扩容和缩容每轮各拷一次整块
+slab(#296 里 frag 探针每轮都这样来回);两倍的余量与翻倍扩容对应，稳态下容量不会来回变。P3 构建收养 wazero 线性内存，
+无法缩小,`Compact` 什么都不做，这时控制内存靠 §2.4 的合并和 bump 回退。
 
 ---
 
@@ -401,7 +413,7 @@ scanObject(ref):
 mark 结束:存活对象全黑,死对象全保持 deadWhite,gray stack 空。
 
 > **gray stack 溢出**:对象图极深(如长链表)时 gray stack 可能很大。P1 用 Go slice 自动扩容,可接受;
-> 极端内存压力下(标记自身要分配 gray stack)是隐患,见 §10 缺口(未来可用「对象内 gray 链」复用 gcnext 位避免额外分配,Lua 5.1 即如此)。
+> 极端内存压力下(标记自身要分配 gray stack)是隐患,见 §12 缺口(未来可用「对象内 gray 链」复用 gcnext 位避免额外分配,Lua 5.1 即如此)。
 
 ---
 
@@ -466,7 +478,10 @@ GC 只在两类受控位置介入(safepoint),**绝不异步打断**:
 
 1. **分配点**:`Arena.Alloc`(§2.1)内存不足时触发 GC。这是**唯一**的主动 GC 入口(STW 下)。
 2. **层边界**:解释器 ↔ 编译层(P3+)、VM ↔ host 的边界。P1 只有解释器层,层边界退化为「VM ↔ host 调用边界」——
-   可作为 GC 检查点(host 调用前后栈一致,适合 GC),但 P1 主要靠分配点触发,层边界检查是**可选的额外触发机会**(用于长时间不分配的循环也能周期 GC)。
+   可作为 GC 检查点(host 调用前后栈一致,适合 GC)。宿主函数返回、结果写进栈槽之后有一个检查点(`callHost` 末尾
+   调 `MaybeCollect`,#297):宿主函数自己分配时只记账、不收集，只靠宿主函数分配的循环(反复 `string.rep`、`string.format`,
+   或嵌入方注册的函数)原来碰不到任何检查点,GC 从不触发，直到撞上 arena 上限。lua5.1 在每个会分配的 API 里调
+   `luaC_checkGC`,效果相同。
 
 **不在任意 PC 抢占 GC**(对比 `docs/design/roadmap.md` (§2) 的「异步抢占税」):望舒自管 GC 是协作式的,
 GC 只在 mutator 主动调 Alloc(或到达层边界检查点)时发生,故 GC 触发时 mutator 一定处于**已知的、值一致的状态**。
@@ -480,7 +495,7 @@ GC 只在 mutator 主动调 Alloc(或到达层边界检查点)时发生,故 GC �
 | `NEWTABLE` | Table 头 + array 段 + node 段(3 次 Alloc) | 是 |
 | `CLOSURE` | Lua Closure 对象(+ 可能新建 Upvalue) | 是 |
 | `CONCAT` | 拼接结果新字符串(可能多个中间串) | 是 |
-| `CALL`/`TAILCALL`(host 被调) | host 内部可能分配(见 §6) | 间接 |
+| `CALL`/`TAILCALL`(host 被调) | host 内部可能分配(见 §6) | 是(host 返回后，§7.1) |
 | 产生新字符串的算术/转换(如 `tostring`、数字→串) | 新字符串 | 是 |
 | `SETLIST` | 可能触发表 array 段扩容(rehash → 新 array 段) | 是(扩容时) |
 | `SETTABLE`/`SETGLOBAL`(触发 rehash) | 新 array/node 段(rehash) | 是(rehash 时) |
@@ -724,7 +739,7 @@ func hashString(b []byte) uint32 {
 > 若 [12](./12-testing-difftest.md) 最终选「宽松口径」(`pairs` 输出排序后比较),JSHash 也无害(仍是良好分布的哈希)。**JSHash 是两种口径下的占优选择。**
 
 **hash flooding 注意**:Lua 5.2+ 给 hash 加随机 seed 防 DoS([01](./01-value-object-model.md) 锁定 5.1,不引入)。望舒沿用 5.1 无 seed
-(差分一致优先;嵌入式宿主负载非对抗性,DoS 风险低)。若未来宿主面对不可信脚本,可加 seed——但那会破坏与官方的哈希一致性(差分豁免),属权衡,记 §10 缺口。
+(差分一致优先;嵌入式宿主负载非对抗性,DoS 风险低)。若未来宿主面对不可信脚本,可加 seed——但那会破坏与官方的哈希一致性(差分豁免),属权衡,记 §12 缺口。
 
 ### 9.4 写屏障接口(P1 空实现,为增量 GC 预留)
 
@@ -849,9 +864,10 @@ GC 主流程(§8.2)的两个终结相关步骤:
 
 ## 12. 文档缺口 / 待决(记入 memory/doc-gaps)
 
-- **compaction(对象搬迁)未做**:P1 不做堆压缩(§2.4/§3),大对象死后空间靠 LARGE freelist 首次适配复用,不合并。
+- **compaction(对象搬迁)未做**:P1 不做堆压缩(§2.4/§3),大对象死后空间靠 LARGE freelist 合并相邻空闲块、首次适配复用。
   偏移寻址使 compaction 未来可行(搬迁后批量重写偏移),但**搬迁需更新所有 GCRef**(含开放 upvalue 定位、IC slot 缓存的槽索引)——
-  代价与收益待 P3+ 增量 GC 一并评估。当前缺口:**长期运行下大对象 freelist 的碎片化程度**无数据,需实现后压测。
+  代价与收益待 P3+ 增量 GC 一并评估。存活的大块夹在中间时，两侧的空闲块仍无法合并;#296 的两个探针在合并后 arena 都在
+  几 MB 以内，更一般负载下的碎片程度还没有数据。
 - **gray stack 在内存压力下的分配**:mark 用 Go slice gray stack(§5.3),极端内存压力(GC 自身要扩 gray stack)是隐患。
   Lua 5.1 用「对象内 gray 链」(复用对象字段串灰对象,零额外分配)规避。望舒 P1 用 slice 简单,但**未定**是否在 OOM 边界稳健;
   未来可切「gcnext 兼作 gray 链」(sweep 链与 gray 链分时复用同一字段)。记缺口。

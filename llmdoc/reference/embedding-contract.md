@@ -73,12 +73,12 @@
 **arena 容量定制 + 观测**(issue #11):
 
 - `Options.InitialArenaBytes` / `Options.MaxArenaBytes`:`NewState` 时定制 arena 初始容量与 fail-fast 上限;
-- `State.GCCountKB() float64`:返回 arena 当前 **live bytes**(bump 指针,含 freelist 待复用块),随 Collect 回落;
-- `State.ArenaCapKB() float64`:返回 arena **backing slab 容量**,反映真实 Go 堆驻留——grow-only 模式下单调上涨、不被 Collect 缩。pool 层据此判 fat state 阈值(比 GCCountKB 准,后者被 sweep 隐藏了 latched high-water);底层 arena Compact 在 Collect 末尾缩 backing slab 到 `max(bump, 64 KiB)` 缓解高水位 latched(默认 build 生效;P3 收养 wazero linear memory 模式 no-op)。
+- `State.GCCountKB() float64`:返回 arena 当前已用字节(bump 指针减去 freelist 上待复用的空闲块),随 Collect 回落;
+- `State.ArenaCapKB() float64`:返回 arena **backing slab 容量**,反映真实 Go 堆驻留。pool 层据此判 fat state 阈值(比 GCCountKB 准，后者被 sweep 隐藏了 latched high-water)。容量不够时翻倍;Collect 末尾的 arena `Compact` 按 GC 水位算出下次收集前预计要用的大小(`(live + 下次阈值) × 1.25`),当前容量超过它与 bump 中较大者的两倍时才缩到那个大小(#296,默认 build 与 P4 生效;P3 收养 wazero linear memory,不缩)。
 
 **GC 节奏显式驱动**(issue #9):
 
-- `State.Collect()`:强制一次 full sweep(对应 `collectgarbage("collect")`),免走脚本调用迂回。典型在 pool 归还点 / 批次完成点周期调用,保持 GCCountKB 有界。代价 ~微秒到毫秒级(取决 live 规模),不缩 backing 容量;
+- `State.Collect()`:强制一次 full sweep(对应 `collectgarbage("collect")`),免走脚本调用迂回。典型在 pool 归还点 / 批次完成点周期调用,保持 GCCountKB 有界。代价 ~微秒到毫秒级(取决 live 规模);backing 容量只在超过预计用量两倍时才缩(见上面 `ArenaCapKB`);
 - `State.MaybeCollectNow()`:按阈值条件触发(命中才 collect,否则 no-op),等价让 host 触发一次 safepoint 检查。比 Collect 廉价但不保证 sweep,强约束需 sweep 直接调 Collect;
 - `State.SetHostTriggeredCollect(on bool)`:**experimental opt-in,默认 off**。开启后任何 host alloc 跨 GC 阈直接 sweep。⚠️ **安全约定**:调用方须保证所有 transient GCRef 都 reachable from GC root——current stdlib + string intern 的 mid-construction transient GCRef 未全经 pin/shadow stack 登记,**未审计前生产开启有 UAF 风险**(已知 break:luasuite gc/literals/nextvar/pm/strings)。**推荐替代**:用 `Collect()` / `MaybeCollectNow()` 显式 cadence 控制(production-safe)。
 

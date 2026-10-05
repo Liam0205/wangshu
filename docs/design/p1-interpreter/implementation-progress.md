@@ -632,6 +632,29 @@
   在每次收集后缩容、再扩栈时扩回，变慢)、#297(只靠宿主函数分配的脚本循环碰不到 safepoint,GC 从不触发)。两处在
   #294 之前的 `082a2cd` 上就能复现。
 
+- **arena 大块碎片与只靠宿主函数分配的循环(2026-10-05,#296 / #297)**:#290-#292 一轮审查登记的两处存量差异。
+  两者互相牵连：只给 #297 加 safepoint 时，收集一频繁，每轮收集末尾的 `Compact` 把 slab 缩到 bump,下一个变长的大
+  字符串又让 `grow64` 翻倍扩回，`string.rep` 递增长度的循环照样撞上 2 GiB 上限，所以先修 #296。
+
+  | 问题 | 位置 | 根因与修法 |
+  |---|---|---|
+  | 大块尺寸逐渐变大的循环让 arena 只增不减(#296) | `internal/arena/freelist.go`、`arena.go`、`internal/gc/collector.go` | LARGE 空闲块从不合并：反复拼接变长的字符串、协程值栈逐次翻倍时，没有一块空闲块够大，每块都从 bump 新切;每轮收集又把 slab 缩到 bump,下一轮再翻倍，整块来回拷贝。现在空闲 LARGE 块按起止偏移建索引，归还时与前后相邻的空闲 LARGE 块合并，合并后正好结束在 bump 的块让 bump 退回(清零后);`Compact` 改为按 GC 水位留余量:`target = (live + 下次阈值) × 1.25`,容量超过 `max(target, bump, 64 KiB)` 两倍时才缩到这个大小。小对象桶不变。见 [06](./06-memory-gc.md) §2.4、§3 |
+  | 只在宿主函数里分配的循环从不收集(#297) | `internal/crescent/host.go::callHost` | 宿主函数分配只记账、不收集，自动检查点只有会分配的 opcode。宿主函数返回、结果写进栈槽之后调一次 `MaybeCollect`,此时宿主函数产生的值都在栈上，参数回到调用方的寄存器,Go 侧不持有临时值;lua5.1 在会分配的 API 里调 `luaC_checkGC`。见 [06](./06-memory-gc.md) §7.1 |
+
+  数据(默认构建，括号里是 lua5.1):拼接探针 `collectgarbage("count")` 峰值 2530 KB → 160 KB(212 KB),arena 容量
+  407 MB → 1.3 MB,耗时 92 s → 4 s(1.5 s);深协程探针 11.3 s → 0.9 s(0.24 s),arena 227 MB → 3.4 MB;递增 `string.rep`
+  探针从撞上 2 GiB 上限变为峰值 8.8 MB(9.2 MB),固定长度 `string.rep` 探针 4993 KB → 211 KB(389 KB)。剩下的耗时差距
+  在拼接本身的拷贝和解释器调用开销上，不在 arena。P3 下 `Compact` 不缩，同样几个探针的容量在 16 MB 以内。
+
+  验证:`internal/arena/coalesce_test.go` 覆盖向前、向后、双向合并，从桶中间摘块,bump 回退及其清零，以及随机分配 /
+  释放序列下的模型检查(活块与空闲块不重叠、相邻空闲块都已合并、`freeBytes` 与链上一致),打开 `debugFreelist` 也通过;
+  去掉清零或去掉向前合并，对应用例失败。依赖「释放后块留在 freelist」的旧 freelist 用例在块后垫一个小块。
+  `internal/gc` 加一条收集后容量等于 `(live × 3) × 1.25` 的用例。regression 两个文件
+  (`issue296_arena_fragmentation_test.go`、`issue297_host_allocation_gc_test.go`)在修复前都失败。探针在 P1、P3、P4 的
+  不升层 / force-all / auto 七种配置下输出相同，打开 GC 压力模式也一样;宿主函数回调宿主函数的场景(`gsub` 带函数 /
+  表替换、`sort` 带比较函数、`xpcall` 带宿主处理函数、`__index` 为宿主表等)在这些配置和压力模式下与 lua5.1 一致。
+  宿主调用密集的循环(500 万次 `math.floor`)耗时不变。
+
 ## 相关
 
 [00-overview](./00-overview.md) · [../engineering](../engineering.md) ·
