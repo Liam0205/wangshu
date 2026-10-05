@@ -815,7 +815,7 @@ helper 表(jitContext.helperTab)的典型条目(承 [../p3-wasm-tier/04-trampoli
 | `h_close_upvals` | CLOSE / RETURN 时 close upvalues | [../p1-interpreter/05-interpreter-loop](../p1-interpreter/05-interpreter-loop.md) §8.3 closeUpvals | $h_close |
 | ...其它 | (per-opcode 慢路径) | (与 P1 相同) | (per-opcode 相同) |
 
-helper 集与 P3 相同,正反映 [./02-template-direction.md](./02-template-direction.md) §4 P4 边界:**只换执行引擎,不重新发明慢路径逻辑**。Go 侧的 helper 函数与 P3 imported helpers 是同一份代码(同样调 P1 的 `Arena.Alloc` / `metamethodCall` / 等),区别仅在「物理通道」:
+helper 集与 P3 相同,正反映 [./02-template-direction.md](./02-template-direction.md) §4 P4 边界:**只换执行引擎,不重新发明慢路径逻辑**。Go 侧的 helper 函数与 P3 imported helpers 是同一份代码(同样调 P1 的分配函数 / 元方法调用 / 末尾的 `safepoint` 等),区别仅在「物理通道」:
 
 | | P3 通道 | P4 通道 |
 |---|---|---|
@@ -1008,7 +1008,7 @@ P3 PW6 完成了「`h_call` 返回 i64 同载新 base 刷新 + 错误负哨兵�
 
 **JIT 生成码自身从不分配**(承 [../p3-wasm-tier/05-safepoint-gc](../p3-wasm-tier/05-safepoint-gc.md) §1.1)——所有 NEWTABLE / SETLIST / CLOSURE / CONCAT / 字符串 intern / 表 rehash 触发的分配,都经 trampoline 出到对应 helper。helper 分配并记账，末尾的检查点(`safepoint` → `MaybeCollect`)若越 GC 阈值则 collect,完成后 helper 返回(经 §4.3.1 续跑通道),JIT 重 load arenaBase 续跑。
 
-**P4 与 P3 的逻辑等价**:同一个 Go 侧 helper 函数体(同一份 `Arena.Alloc` + `gc.Collect` 调用),只换跨层物理通道。
+**P4 与 P3 的逻辑等价**:同一个 Go 侧 helper 函数体(同一份分配 + 记账 + 末尾 `safepoint` 调用),只换跨层物理通道。
 
 #### 6.2.2 层边界
 
