@@ -168,7 +168,7 @@ crescent ↔ gibbous 的 trampoline([04 §2 crescent→gibbous](./04-trampoline.
 ;; status=0:返回值已回填 R(A..)（共见值栈槽,被调方写),直线继续
 ```
 
-这个 `call $h_call` 的执行边界(进出 Go)就是层边界 safepoint 的物理位置——Go 侧 `$h_call` 体内,被调的 crescent 帧/host fn 各自的分配点会触发 GC([04 §3](./04-trampoline.md) 分派表),与 P1 的调用边界 safepoint([05 §7](../p1-interpreter/05-interpreter-loop.md))同构。**层边界的 GC 安全性来自「出 Wasm 时本帧栈一致」**(参数已在 R(A..) 槽、返回值写回 R(A..) 槽,共见值栈,GC 扫得到,§3)。
+这个 `call $h_call` 的执行边界(进出 Go)就是层边界 safepoint 的物理位置——Go 侧 `$h_call` 体内，被调的 crescent 帧在自己的分配点触发 GC,host fn 在返回后经 `callHost` 的检查点触发(#297)([04 §3](./04-trampoline.md) 分派表),与 P1 的调用边界 safepoint([05 §7](../p1-interpreter/05-interpreter-loop.md))同构。**层边界的 GC 安全性来自「出 Wasm 时本帧栈一致」**(参数已在 R(A..) 槽、返回值写回 R(A..) 槽,共见值栈,GC 扫得到,§3)。
 
 #### 1.2.2 trampoline 是否需要主动调 safepoint:可选
 
@@ -176,7 +176,7 @@ crescent ↔ gibbous 的 trampoline([04 §2 crescent→gibbous](./04-trampoline.
 
 - **crescent → gibbous 方向**:进入 gibbous 后,第一个分配点(§1.1)或 back edge(§1.3)就会处理 pending。trampoline 本身不分配,无需在此 GC。
 - **gibbous → crescent 方向**:经 `$h_call` 调度助手出去,被调 crescent 帧自己跑解释器主循环([05 §5.3](../p1-interpreter/05-interpreter-loop.md)),其分配点会处理 pending。
-- **gibbous → host 方向**:host fn 内部若分配,经其 `Arena.Alloc` 触发,与 P1 同。
+- **gibbous → host 方向**:host fn 内部的分配只经 `AllocCharge` 记账、不收集;收集发生在 host fn 返回、结果写回栈槽之后 `callHost` 的检查点(`afterHostCall`,#297,[06 §7.1](../p1-interpreter/06-memory-gc.md)),与 P1 同。打开 `SetHostTriggeredCollect(true)` 时，分配越过阈值也会立刻收集(默认关闭)。
 
 所以**助手路径已覆盖**绝大多数回收时机,trampoline 主动 safepoint 是冗余的。
 
@@ -360,7 +360,7 @@ P1 设计 06-memory-gc 在 §12「文档缺口 / 待决」里,**预设了 P3 接
 |---|---|---|
 | 布点哲学:**受控位置才允许 runtime 介入**([05 §5.1](../p1-interpreter/05-interpreter-loop.md)) | **受控位置才允许 runtime 介入**(§0.2) | **一字不改** |
 | 分配点:分配 opcode 内调 Alloc,Alloc 内 collect([06 §8.2](../p1-interpreter/06-memory-gc.md)) | 分配点:分配 opcode 翻译为助手调用,助手内 collect(§1.1) | **载体变(opcode→助手),机制同** |
-| 层边界:VM↔host 边界,可选检查点([06 §7.1](../p1-interpreter/06-memory-gc.md)) | 层边界:crescent↔gibbous↔host trampoline,可选(§1.2) | **多了 crescent↔gibbous,但定性同(可选)** |
+| 层边界:VM↔host 边界，宿主函数返回后固定检查一次(#297,[06 §7.1](../p1-interpreter/06-memory-gc.md)) | 层边界:crescent↔gibbous trampoline,可选(§1.2);调宿主函数仍经 `callHost` 的固定检查点 | **多了 crescent↔gibbous,只有这一处是可选的** |
 | 回收时机检查:opcode 末尾 `if vm.gcPending`([05 §5.3](../p1-interpreter/05-interpreter-loop.md)) | 回收时机检查:back edge `(if (i32.load $gcPending))`(§1.3) | **同一个 gcPending 检查,位置从 opcode 末尾搬到 back edge** |
 | 纯计算不分配 ⇒ 不 GC([06 §12](../p1-interpreter/06-memory-gc.md)) | 纯计算不分配 ⇒ 不 GC(§1.4) | **结论一致** |
 | GC 根:R5 自动可达(栈在 arena)([06 §5.1](../p1-interpreter/06-memory-gc.md)) | GC 根:R5 原样覆盖(寄存器=栈槽)(§3) | **零新增(基线 memory-resident)** |
