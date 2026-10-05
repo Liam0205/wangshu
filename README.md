@@ -282,7 +282,7 @@ st := wangshu.NewState(wangshu.Options{
 
 ```go
 st.GCCountKB()  // 当前已用 KB（live bytes；随 Collect 回落）
-st.ArenaCapKB() // arena backing 容量 KB（grow-only；pool 层据此判 fat state 阈值）
+st.ArenaCapKB() // arena backing 容量 KB（不够时翻倍；收集后超过预计用量两倍才缩，wangshu_p3 构建不缩；pool 层据此判 fat state 阈值）
 st.PromotionCount() // 已升层 proto 数（testing-only 白盒断言）
 ```
 

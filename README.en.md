@@ -283,7 +283,7 @@ Statistics:
 
 ```go
 st.GCCountKB()  // currently used KB (live bytes; drops after Collect)
-st.ArenaCapKB() // arena backing capacity in KB (grow-only; the pool layer uses this as its fat-state threshold)
+st.ArenaCapKB() // arena backing capacity in KB (doubles when full; a collection shrinks it only when it is over twice the expected need, never under wangshu_p3; the pool layer uses this as its fat-state threshold)
 st.PromotionCount() // number of promoted Protos (testing-only white-box assertion)
 ```
 
