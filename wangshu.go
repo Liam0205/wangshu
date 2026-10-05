@@ -319,8 +319,9 @@ func (st *State) MaybeCollectNow() { st.core.MaybeCollectNow() }
 // **Not recommended for production before mid-construction pin safety is
 // audited**: the current stdlib (string.gsub etc.) + string intern's transient
 // GCRefs are not all explicitly registered via pin/shadow stack, and the
-// allocation helpers behind NewTable/NewArrayTable root the new object only after
-// charging it, so enabling it introduces UAF risk. Known breaks: luasuite gc.lua / literals.lua /
+// allocation helpers behind the public table constructors (NewTable,
+// NewArrayTable and its typed variants) root the new object only after charging
+// it, so enabling it introduces UAF risk. Known breaks: luasuite gc.lua / literals.lua /
 // nextvar.lua / pm.lua / strings.lua etc. (measured 2026-06-16).
 //
 // **Recommended alternative**: use Collect() / MaybeCollectNow() for explicit

@@ -1035,7 +1035,9 @@ func (st *State) MaybeCollectNow() {
 // **Opt-in, off by default** — enabling requires the caller to guarantee all
 // transient GCRefs are pin/shadow-stack reachable. See the
 // gc.Collector.SetHostTriggeredCollect godoc for the detailed safety contract.
-// The current stdlib/intern paths have mid-construction transients, **so enabling
+// The current stdlib/intern paths have mid-construction transients, and the
+// allocation helpers link a new object on the sweep chain and charge it before it
+// is rooted (the public table constructors PinRef only afterwards), **so enabling
 // in production is not recommended before audit**; the recommended approach is
 // explicit cadence control via Collect() / MaybeCollectNow() (issue #9 direction 2).
 func (st *State) SetHostTriggeredCollect(on bool) {

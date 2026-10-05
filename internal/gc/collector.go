@@ -50,7 +50,7 @@ type Collector struct {
 	stressMode          bool   // high-frequency stress mode: force Collect at every safepoint (12 §5)
 	stopped             bool   // collectgarbage("stop"): automatic GC paused (explicit Collect unaffected)
 	collecting          bool   // true during Collect (host-trigger AllocCharge re-entry guard, issue #9 direction 1)
-	hostTrigger         bool   // an AllocCharge crossing the threshold triggers collect (issue #9 direction 1, opt-in; existing stdlib/intern paths have mid-construction transient GCRefs not pinned, so default false to avoid breakage)
+	hostTrigger         bool   // an AllocCharge crossing the threshold triggers collect (issue #9 direction 1, opt-in; stdlib/intern and the link-then-charge allocation helpers leave transient GCRefs unrooted, so default false to avoid breakage)
 
 	// gcPending flag (P3 PW9): reflects "whether MaybeCollect will actually Collect",
 	// mirrored into a fixed word of the arena (linear memory) so gibbous FORLOOP
@@ -248,8 +248,8 @@ func (c *Collector) Account(nbytes uint32) {
 // **unsafe** (default false, so none of this is reached):
 //   - every allocation that links the new object on the sweep chain before its own
 //     AllocCharge and roots it only afterwards: allocTable, allocLuaClosure,
-//     allocOpenUpvalue, NewUserdata, MakeHostClosure, and through them the public
-//     NewTable/NewArrayTable (PinRef runs after the charge)
+//     allocOpenUpvalue, NewUserdata, MakeHostClosure, and through them the public table
+//     constructors (NewTable, NewArrayTable and its typed variants: PinRef runs after the charge)
 //   - mid-intern (b []byte still on the Go stack, new strRef linked on the sweep chain but not
 //     yet in the table); reached from the public SetGlobal/GetGlobal as well
 //   - multi-step allocations inside an opcode (an object not yet stored in a register when the
