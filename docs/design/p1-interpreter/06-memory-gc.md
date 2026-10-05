@@ -102,7 +102,7 @@ Thread 的 valueStack/callInfo 同理。这是「逻辑对象」与「物理分�
 
 1. **freelist 命中**:若请求字数落在某 size-class 且该 class 的 freelist 非空,弹出复用(O(1))。
 2. **bump 分配**:freelist 落空,从 `bump` 处线性切走 `words*8` 字节,`bump += words*8`。
-3. **bump 越界**:`bump + need > cap`,触发 **GC**(§7);GC 后仍不足则 **grow arena**(§3)再分配。
+3. **bump 越界**:`bump + need > cap`,**grow arena**(§3)再分配。是否收集与 arena 够不够无关，看分配记账是否越过阈值(§7.1、§8.3)。
 
 ```go
 // internal/arena —— 核心分配入口
@@ -111,8 +111,8 @@ Thread 的 valueStack/callInfo 同理。这是「逻辑对象」与「物理分�
 // words: 对象总字数(含 GCHeader,已按 §1.3 算好并 8 对齐)。
 // 返回新对象的 GCRef(字节偏移);保证 words[ref>>3]..words[ref>>3+words-1] 可写。
 //
-// 关键约定:Alloc 是**唯一的 safepoint 候选点**(见 §7)。调用方必须保证调用前所有
-// 活跃 Value 都从根可达(在 Lua 栈上,或已 push 进 shadow stack),因为 Alloc 内部可能触发 GC。
+// 关键约定:分配路径是主要的 safepoint 候选点(其余见 §7.1)。调用方必须保证到达 safepoint 时所有
+// 活跃 Value 都从根可达(在 Lua 栈上,或已 push 进 shadow stack)。
 func (a *Arena) Alloc(otype value.OBJType, words uint32) value.GCRef {
     need := words * 8
     sc := sizeClass(words)
@@ -134,6 +134,10 @@ func (a *Arena) Alloc(otype value.OBJType, words uint32) value.GCRef {
     return ref
 }
 ```
+
+> 上面是设计阶段的示意。实际实现里 `Arena.AllocBytes` 只做 freelist / bump / grow,不收集(`internal/arena/arena.go`);
+> 对象头和 sweep 链由 `object.Alloc*` 与 `Collector.LinkSweep` 写入，分配量由 `Collector.AllocCharge` 记账，收集在
+> §7.1 的检查点按阈值发生。
 
 `initHeader` 把新对象 color 置为**当前分配白**(allocator white,§4.3),并清 `gcnext`;`linkSweep` 把对象挂到 sweep 全链头部
 (`obj.gcnext = sweepHead; sweepHead = ref; obj.hasGCNext=1`)。新生对象天然是白色(未标记),若本轮 GC 已过 mark 阶段(STW 下不会发生,见 §7),需特别处理——STW 模型里 mark 与 mutator 不交错,无此问题。
@@ -207,7 +211,7 @@ sizeClass(words):
 
 ## 3. arena 扩容(grow):偏移寻址的额外红利
 
-bump 越界且 GC 后仍不足时,整体扩容:
+bump 越界时整体扩容(实际实现里 grow 前不收集，见 §2.1 示意下的说明):
 
 ```go
 func (a *Arena) grow(minBytes uint32) {
@@ -476,7 +480,8 @@ host function 签名(见 [10-stdlib](./10-stdlib.md))拿到一个执行上下文
 
 GC 只在两类受控位置介入(safepoint),**绝不异步打断**:
 
-1. **分配点**:`Arena.Alloc`(§2.1)内存不足时触发 GC。这是主要的主动 GC 入口(STW 下);第 2 条里宿主函数返回后的检查点是另一处(#297)。
+1. **分配点**:会分配的 opcode 结束时(`safepoint`),以及 `coroutine.create` 等分配 API 分配之前，检查分配记账是否越过阈值(§8.3),
+   越过就 STW 收集。arena 容量不够只会 grow(§3),不触发 GC。这是主要的主动 GC 入口;另见第 2 条宿主函数返回后的检查点(#297)。
 2. **层边界**:解释器 ↔ 编译层(P3+)、VM ↔ host 的边界。P1 只有解释器层,层边界退化为「VM ↔ host 调用边界」——
    可作为 GC 检查点(host 调用前后栈一致,适合 GC)。宿主函数返回、结果写进栈槽之后有一个检查点(`callHost` 末尾
    调 `MaybeCollect`,#297):宿主函数自己分配时只记账、不收集，只靠宿主函数分配的循环(反复 `string.rep`、`string.format`,
