@@ -381,6 +381,7 @@ func (st *State) callHost(th *thread, funcIdx, nargs, nresults int) *LuaError {
 			th.setSlot(dst+k, results[k])
 		}
 		th.setTop(dst + n)
+		st.afterHostCall()
 		return nil
 	}
 	want := nresults
@@ -405,5 +406,16 @@ func (st *State) callHost(th *thread, funcIdx, nargs, nresults int) *LuaError {
 		th.ensureStack(frameTop)
 		th.setTop(frameTop)
 	}
+	st.afterHostCall()
 	return nil
+}
+
+// afterHostCall is the safepoint after a host function returns, once its results are on the stack:
+// a host function charges what it allocates but never collects itself, so a loop whose only
+// allocations happen inside host functions (string.rep, string.format, table.concat, ...) reached
+// no other safepoint and grew until the arena limit (#297). lua5.1 checks the GC inside each
+// allocating API call (luaC_checkGC); here every value the host function produced is already in a
+// stack slot, its arguments are back in the caller's registers, and nothing transient is held in Go.
+func (st *State) afterHostCall() {
+	st.gc.MaybeCollect()
 }
