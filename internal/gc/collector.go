@@ -50,7 +50,7 @@ type Collector struct {
 	stressMode          bool   // high-frequency stress mode: force Collect at every safepoint (12 §5)
 	stopped             bool   // collectgarbage("stop"): automatic GC paused (explicit Collect unaffected)
 	collecting          bool   // true during Collect (host-trigger AllocCharge re-entry guard, issue #9 direction 1)
-	hostTrigger         bool   // host alloc crossing the threshold triggers collect (issue #9 direction 1, opt-in; existing stdlib/intern paths have mid-construction transient GCRefs not pinned, so default false to avoid breakage)
+	hostTrigger         bool   // an AllocCharge crossing the threshold triggers collect (issue #9 direction 1, opt-in; existing stdlib/intern paths have mid-construction transient GCRefs not pinned, so default false to avoid breakage)
 
 	// gcPending flag (P3 PW9): reflects "whether MaybeCollect will actually Collect",
 	// mirrored into a fixed word of the arena (linear memory) so gibbous FORLOOP
@@ -206,6 +206,8 @@ func (c *Collector) LinkSweep(ref arena.GCRef) {
 // PinRef) are reachable from a GC root; ② intermediate transient GCRefs (e.g. newArr/newNode
 // inside rehash), though not on the sweep chain, are not reclaimed since sweep only walks the
 // chain. So a "mid-path triggered collect" on the host path is safe for all valid paths.
+// With the switch on this applies to every AllocCharge caller, including the interpreter's
+// own multi-step allocations inside an opcode, not only the host public API.
 //
 // **non-reentrancy guard**: any AllocCharge triggered inside collect (e.g. a finalizer calling
 // host code that in turn calls a host public API) is intercepted by the collecting guard,
@@ -226,8 +228,9 @@ func (c *Collector) Account(nbytes uint32) {
 	c.updateGCPending()
 }
 
-// SetHostTriggeredCollect toggles whether host alloc crossing the threshold triggers
-// collect directly (issue #9 direction 1).
+// SetHostTriggeredCollect toggles whether an allocation charged through AllocCharge that
+// crosses the threshold triggers collect directly (issue #9 direction 1). Account never
+// collects, switch or not.
 //
 // **opt-in contract**: once enabled, any AllocCharge call may Collect immediately when
 // bytesAllocSince crosses the threshold. The caller (host public API / stdlib, etc.) must

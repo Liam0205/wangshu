@@ -307,8 +307,8 @@ func (st *State) Collect() { st.core.Collect() }
 // sweep should call Collect directly.
 func (st *State) MaybeCollectNow() { st.core.MaybeCollectNow() }
 
-// SetHostTriggeredCollect toggles host-alloc crossing the threshold triggering
-// GC directly (issue #9 direction 1, **experimental opt-in**).
+// SetHostTriggeredCollect toggles whether an object allocation crossing the GC
+// threshold collects directly (issue #9 direction 1, **experimental opt-in**).
 //
 // **Off by default** — once enabled, any alloc (NewTable/SetIndex/rehash/
 // intern/stdlib alloc...) that crosses the GC threshold sweeps immediately.

@@ -1030,8 +1030,8 @@ func (st *State) MaybeCollectNow() {
 	st.gc.MaybeCollect()
 }
 
-// SetHostTriggeredCollect toggles host-alloc crossing-threshold directly
-// triggering collect (issue #9 direction 1).
+// SetHostTriggeredCollect toggles whether any allocation charged through
+// AllocCharge that crosses the threshold collects directly (issue #9 direction 1).
 // **Opt-in, off by default** — enabling requires the caller to guarantee all
 // transient GCRefs are pin/shadow-stack reachable. See the
 // gc.Collector.SetHostTriggeredCollect godoc for the detailed safety contract.
