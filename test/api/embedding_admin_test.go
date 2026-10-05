@@ -49,8 +49,8 @@ func TestArenaOptions_MaxBytesFailFast(t *testing.T) {
 	}
 }
 
-// TestArenaCapKB_TracksGrow verifies ArenaCapKB rises monotonically with large allocations
-// (grow-only, issue #11 current state).
+// TestArenaCapKB_TracksGrow verifies ArenaCapKB grows when large allocations exceed the current
+// capacity (a collection may shrink it again, see TestCompact_ShrinkAfterTransientPeak).
 func TestArenaCapKB_TracksGrow(t *testing.T) {
 	st := wangshu.NewState(wangshu.Options{InitialArenaBytes: 16 * 1024})
 	cap0 := st.ArenaCapKB()
