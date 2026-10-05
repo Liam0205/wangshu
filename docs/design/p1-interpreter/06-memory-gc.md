@@ -878,8 +878,8 @@ GC 主流程(§8.2)的两个终结相关步骤:
 - **string table 冲突链放 Go 侧的内存账**:§9.1 决策 bucket 用 Go slice(`[][]GCRef`)而非侵入 String 对象。
   好处:不占 String 对象字段、不与 sweep 链冲突;代价:这部分索引内存在 Go 堆(随串数增长),且 rehash buckets 是 Go 侧操作。
   **未定**:超大字符串集(百万串)下 Go 侧 bucket 内存与 rehash 开销是否需改「侵入式 + arena 内链」。记缺口。
-- **层边界 safepoint 的具体形式**:§7.1 说层边界是可选 GC 检查点,但 P1 只有解释器层,层边界退化为 VM↔host 边界。
-  「长时间纯计算不分配的循环如何周期 GC」——P1 靠分配点,无分配的死循环不会 GC(也无需,因没产生垃圾)。
+- **层边界 safepoint 的具体形式**:P1 只有解释器层，层边界退化为 VM↔host 边界，这一处已定：宿主函数返回后检查一次 GC
+  (§7.1,#297)。「长时间纯计算不分配的循环如何周期 GC」——P1 靠分配点，无分配的死循环不会 GC(也无需，因没产生垃圾)。
   P3+ 跨层时 safepoint 形式(循环回跳(back edge)检查点 vs 调用边界,对齐 `docs/design/roadmap.md` (§2) 异步抢占税解法)在 [p3-wasm-tier](../p3-wasm-tier/03-memory-model.md) 定。
 - **与 [05-interpreter-loop](./05-interpreter-loop.md) 的接口**:本文假设 05 提供「running thread 寄存器」「CallInfo 帧布局(mark 需知帧内哪些字是 Value)」
   「CONCAT/多步构造把中间结果写进寄存器槽(§7.2)」。05 尚未创建,这些接口**待 05 定稿后回填校验**。
