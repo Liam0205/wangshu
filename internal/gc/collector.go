@@ -206,8 +206,10 @@ func (c *Collector) LinkSweep(ref arena.GCRef) {
 // PinRef) are reachable from a GC root; ② intermediate transient GCRefs (e.g. newArr/newNode
 // inside rehash), though not on the sweep chain, are not reclaimed since sweep only walks the
 // chain. So a "mid-path triggered collect" on the host path is safe for all valid paths.
-// With the switch on this applies to every AllocCharge caller, including the interpreter's
-// own multi-step allocations inside an opcode, not only the host public API.
+// The argument covers only the host public API. With the switch on, a collect can fire
+// from every AllocCharge caller, including multi-step allocations inside an opcode (an
+// object already linked on the sweep chain but not yet stored in a register), which it does
+// not cover; see SetHostTriggeredCollect for the unsafe paths.
 //
 // **non-reentrancy guard**: any AllocCharge triggered inside collect (e.g. a finalizer calling
 // host code that in turn calls a host public API) is intercepted by the collecting guard,
