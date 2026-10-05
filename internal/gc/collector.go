@@ -202,13 +202,14 @@ func (c *Collector) LinkSweep(ref arena.GCRef) {
 // safepoints not frequently crossed).
 //
 // **half-constructed object safety**: a mid-path collect is safe for a GCRef that is
-// ① already reachable from a GC root (the Table returned by NewTable is registered
-// immediately via PinRef) or ② not on the sweep chain at all (e.g. newArr/newNode inside
-// rehash), since sweep only walks the chain. It is not safe for an object that is already
-// linked on the sweep chain but not yet reachable from a root: string intern (also reached
-// from the public SetGlobal/GetGlobal through the name), multi-step allocations inside an
-// opcode, and the other unsafe paths listed under SetHostTriggeredCollect. With the switch
-// off (the default) no AllocCharge collects, so none of these matter.
+// ① already reachable from a GC root before the charge (MakeHostClosureKeeping pushes the
+// closure on the shadow stack first) or ② not on the sweep chain at all (e.g. newArr/newNode
+// inside rehash), since sweep only walks the chain. It is not safe for an object that is
+// already linked on the sweep chain but not yet reachable from a root, and most allocation
+// helpers (allocTable, allocLuaClosure, NewUserdata, MakeHostClosure, Intern, ...) link
+// first and charge second, so the object can be swept in its own charge; see the unsafe
+// list under SetHostTriggeredCollect. With the switch off (the default) no AllocCharge
+// collects, so none of these matter.
 //
 // **non-reentrancy guard**: any AllocCharge triggered inside collect (e.g. a finalizer calling
 // host code that in turn calls a host public API) is intercepted by the collecting guard,
@@ -236,20 +237,23 @@ func (c *Collector) Account(nbytes uint32) {
 // **opt-in contract**: once enabled, any AllocCharge call may Collect immediately when
 // bytesAllocSince crosses the threshold. The caller (host public API / stdlib, etc.) must
 // guarantee: **all transient GCRefs are reachable from a GC root** (in the pin table /
-// pushed on the shadow stack / already on the sweep chain and mark-able). Otherwise a
+// pushed on the shadow stack / reachable from another root). Being linked on the sweep chain
+// only makes an object a sweep candidate; it does not keep it alive. Otherwise a
 // mid-construction GCRef gets wrongly reclaimed = UAF.
 //
-// **wangshu public API safety** (targeting enablement in wangshu.NewState):
-//   - NewTable/NewArrayTable return values registered as a GC root immediately via PinRef ✓
+// **safe under the switch**:
 //   - transient newArr/newNode inside rehash are not LinkSweep'd → sweep does not reclaim ✓
-//   - on the SetGlobal path, globals itself is an R5 root ✓, but interning the name is not
-//     (see mid-intern below)
+//   - MakeHostClosureKeeping pushes the closure on the shadow stack before its charge ✓
 //
-// **unsafe** (default false, so current stdlib/intern passes):
+// **unsafe** (default false, so none of this is reached):
+//   - every allocation that links the new object on the sweep chain before its own
+//     AllocCharge and roots it only afterwards: allocTable, allocLuaClosure,
+//     allocOpenUpvalue, NewUserdata, MakeHostClosure, and through them the public
+//     NewTable/NewArrayTable (PinRef runs after the charge)
 //   - mid-intern (b []byte still on the Go stack, new strRef linked on the sweep chain but not
 //     yet in the table); reached from the public SetGlobal/GetGlobal as well
-//   - multi-step allocations inside an opcode (e.g. a closure or table linked on the sweep
-//     chain, then another AllocCharge before it is stored in a register)
+//   - multi-step allocations inside an opcode (an object not yet stored in a register when the
+//     next AllocCharge runs)
 //   - metamethod callback holding a transient Lua-level Value
 //   - transient before public-facing fromInnerWithPin
 //

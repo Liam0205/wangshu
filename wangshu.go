@@ -313,12 +313,14 @@ func (st *State) MaybeCollectNow() { st.core.MaybeCollectNow() }
 // **Off by default** — once enabled, any alloc (NewTable/SetIndex/rehash/
 // intern/stdlib alloc...) that crosses the GC threshold sweeps immediately.
 // **Safety contract**: the caller guarantees all transient GCRefs are reachable
-// from a GC root (pin table / shadow stack / already on a sweep chain).
+// from a GC root (pin table / shadow stack / another root); being linked on the
+// sweep chain does not keep an object alive.
 //
 // **Not recommended for production before mid-construction pin safety is
 // audited**: the current stdlib (string.gsub etc.) + string intern's transient
-// GCRefs are not all explicitly registered via pin/shadow stack, so enabling it
-// introduces UAF risk. Known breaks: luasuite gc.lua / literals.lua /
+// GCRefs are not all explicitly registered via pin/shadow stack, and the
+// allocation helpers behind NewTable/NewArrayTable root the new object only after
+// charging it, so enabling it introduces UAF risk. Known breaks: luasuite gc.lua / literals.lua /
 // nextvar.lua / pm.lua / strings.lua etc. (measured 2026-06-16).
 //
 // **Recommended alternative**: use Collect() / MaybeCollectNow() for explicit
