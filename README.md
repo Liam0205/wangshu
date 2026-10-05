@@ -291,7 +291,7 @@ st.PromotionCount() // 已升层 proto 数（testing-only 白盒断言）
 ```go
 st.Collect()           // 强制一次 full GC sweep
 st.MaybeCollectNow()   // 依 host trigger 阈值判是否 collect（非强制）
-st.SetHostTriggeredCollect(true) // opt-in：任何分配跨阈值都立刻 collect（要求 transient GCRef 全 pin）
+st.SetHostTriggeredCollect(true) // opt-in：对象分配跨阈值即立刻 collect（要求 transient GCRef 全 pin）
 ```
 
 短脚本高频调用场景推荐用 `CallInto` 复用返回值切片，走零分配路径：
