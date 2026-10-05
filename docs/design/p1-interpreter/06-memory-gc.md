@@ -137,7 +137,7 @@ func (a *Arena) Alloc(otype value.OBJType, words uint32) value.GCRef {
 
 > 上面是设计阶段的示意。实际实现里 `Arena.AllocBytes` 只做 freelist / bump / grow,不收集(`internal/arena/arena.go`);
 > 对象头和 sweep 链由 `object.Alloc*` 与 `Collector.LinkSweep` 写入，分配量由 `Collector.AllocCharge` 记账，收集在
-> §7.1 的检查点按阈值发生。
+> §7.1 的检查点按阈值发生(默认如此;打开实验性的 `SetHostTriggeredCollect(true)` 后,`AllocCharge` 越过阈值也会立刻收集)。
 
 `initHeader` 把新对象 color 置为**当前分配白**(allocator white,§4.3),并清 `gcnext`;`linkSweep` 把对象挂到 sweep 全链头部
 (`obj.gcnext = sweepHead; sweepHead = ref; obj.hasGCNext=1`)。新生对象天然是白色(未标记),若本轮 GC 已过 mark 阶段(STW 下不会发生,见 §7),需特别处理——STW 模型里 mark 与 mutator 不交错,无此问题。
@@ -467,6 +467,8 @@ host function 签名(见 [10-stdlib](./10-stdlib.md))拿到一个执行上下文
   `table.create` 新建的表)在「写回 Lua 栈之前」处于 Go 栈持有窗口,**必须 `Push`/`defer Pop`**。
 - 一旦中间对象**写回到 Lua 栈槽 / 已存活的表 / 全局**,它就经 R5/R1 等可达,可从 shadow stack `Pop`(此后栈/表当根)。
 - **多步分配**:host 连续分配 A 再分配 B(分配 B 时可能触发 GC),A 必须先 Push,否则分配 B 触发的 GC 会回收 A。
+  默认配置下宿主侧分配只记账、不收集(§7.1),但打开 `SetHostTriggeredCollect(true)`、或两次分配之间回调了 Lua 函数 /
+  `collectgarbage` 时都会收集，所以仍按「可能触发」来写。
   规则简记:**「下一次可能触发 GC 的分配之前,所有已持有但未上 Lua 栈/表的 arena 引用都要在 shadow stack 上」**。
 
 > 这条约定是 stdlib 实现的**纪律**(类似写 C 扩展时管理 `lua_State` 栈的纪律)。差分测试不直接测它,
@@ -480,7 +482,7 @@ host function 签名(见 [10-stdlib](./10-stdlib.md))拿到一个执行上下文
 
 GC 只在两类受控位置介入(safepoint),**绝不异步打断**:
 
-1. **分配点**:会分配的 opcode 结束时(`safepoint`),以及 `coroutine.create` 等分配 API 分配之前，检查分配记账是否越过阈值(§8.3),
+1. **分配点**:会分配的 opcode 结束时(`safepoint`),以及 `coroutine.create` 分配新协程之前，检查分配记账是否越过阈值(§8.3),
    越过就 STW 收集。arena 容量不够只会 grow(§3),不触发 GC。这是主要的主动 GC 入口;另见第 2 条宿主函数返回后的检查点(#297)。
 2. **层边界**:解释器 ↔ 编译层(P3+)、VM ↔ host 的边界。P1 只有解释器层,层边界退化为「VM ↔ host 调用边界」——
    可作为 GC 检查点(host 调用前后栈一致,适合 GC)。宿主函数返回、结果写进栈槽之后有一个检查点(`callHost` 末尾
@@ -489,11 +491,11 @@ GC 只在两类受控位置介入(safepoint),**绝不异步打断**:
    `luaC_checkGC`,效果相同。
 
 **不在任意 PC 抢占 GC**(对比 `docs/design/roadmap.md` (§2) 的「异步抢占税」):望舒自管 GC 是协作式的,
-GC 只在 mutator 主动调 Alloc(或到达层边界检查点)时发生,故 GC 触发时 mutator 一定处于**已知的、值一致的状态**。
+GC 只在 mutator 主动到达检查点(分配 opcode 结束时的 `safepoint`、宿主函数返回后等)时发生,故 GC 触发时 mutator 一定处于**已知的、值一致的状态**。
 
 ### 7.2 哪些 opcode 可能触发 GC(承 [02-bytecode-isa](./02-bytecode-isa.md))
 
-解释器循环里,**会分配 arena 对象的 opcode** 是 GC 触发点(因其内部调 Alloc):
+解释器循环里,**会分配 arena 对象的 opcode** 是 GC 触发点(它们分配并记账，结束时调 `safepoint` 按阈值检查):
 
 | opcode([02](./02-bytecode-isa.md) §4) | 分配什么 | GC 触发点 |
 |---|---|---|
@@ -517,14 +519,14 @@ GC 只在 mutator 主动调 Alloc(或到达层边界检查点)时发生,故 GC �
 ### 7.3 STW 下的简单性
 
 stop-the-world = GC 触发时**暂停 mutator,完整跑完 mark+sweep,再恢复**。在 P1 单 goroutine 解释器里,
-「暂停 mutator」是**天然的**:Alloc 是普通函数调用,GC 在其内同步执行,执行 GC 时根本没有其它代码在跑——
+「暂停 mutator」是**天然的**:检查点(`safepoint` / 宿主调用返回后)是普通函数调用,GC 在其内同步执行,执行 GC 时根本没有其它代码在跑——
 无需真实的 stop-the-world 协调(无并发线程要停)。这是 P1 选 STW 的最大红利:
 
 - **mark 看到的对象图是静止的**——遍历期间无 mutator 修改,无需写屏障(§9)维持三色不变式。
 - **根集合是静止的**——R1..R9 在 GC 期间不变,枚举一次即可。
 - **sweep 是静止的**——无并发分配干扰 sweep 链遍历。
 
-整个 GC 是 Alloc 调用栈里的一段同步代码,**正确性推理退化为单线程顺序逻辑**。代价是 GC 暂停时间 = 全堆 mark+sweep
+整个 GC 是解释器调用栈里的一段同步代码,**正确性推理退化为单线程顺序逻辑**。代价是 GC 暂停时间 = 全堆 mark+sweep
 (对 P1 的「更好的 gopher-lua」目标可接受;增量化是 P3+ 的事,届时双白+写屏障+gray 链已就位,见 §4.3/§9)。
 
 ---
@@ -581,17 +583,18 @@ func (c *Collector) collect() {              // STW full GC,一趟跑完
 > **阶段顺序定稿(承 [07](./07-metatables-metamethods.md) §13.4)**:`mark → separateFinalizers(复活)→ clearWeakTables → sweep → runFinalizers`。cleartable 在 separateFinalizers **之后**——finalizer 复活的对象已被重新标活,不会被弱表误清;在 sweep **之前**——entry 移除必须发生在弱侧对象内存被回收前(清的是「本轮判死」的引用)。
 
 ```go
-// Alloc 内的触发判断(§2.1 maybeCollect):
-func (c *Collector) maybeCollect(need uint32) {
-    if c.arena.bump+need > c.threshold {     // 分配量驱动(§8.3),非「容量满才回收」
-        c.collect()
+// 检查点的触发判断(Collector.MaybeCollect,在 §7.1 的检查点调用,不在 Arena 分配函数里):
+func (c *Collector) MaybeCollect() {
+    if c.stopped { return }
+    if c.stressMode || c.bytesAllocSince >= c.threshold {   // 分配量驱动(§8.3),非「容量满才回收」
+        c.Collect()
     }
 }
 ```
 
-注意 `maybeCollect` 的触发条件是 **`bump > threshold`**(分配量驱动 pacing,§8.3),不是「bump 触及 cap」——
-后者(触及 cap)是 grow 的条件(§3)。即:正常情况 GC 在 arena 用到 threshold 时主动回收(回收够则不 grow);
-只有 GC 后存活仍逼近 cap 才 grow。两个阈值分工:**threshold 控制 GC 频率,cap 控制物理扩容**。
+注意触发条件是 **自上次收集以来记账的分配量 ≥ threshold**(分配量驱动 pacing,§8.3),不是「bump 触及 cap」——
+后者(触及 cap)是 grow 的条件(§3),分配时立刻 grow,不先收集。两个阈值分工:**threshold 控制 GC 频率,cap 控制物理扩容**。
+默认如此;打开 `SetHostTriggeredCollect(true)` 后,宿主侧 `AllocCharge` 越过阈值也会立刻收集(实验性，默认关闭)。
 
 ### 8.3 GC pacing / 触发阈值(分配量驱动)
 
@@ -760,7 +763,7 @@ P1 STW **不需要写屏障**(§7.3:mark 期间 mutator 暂停,三色不变式�
 // 或把 child 标灰(forward barrier)。
 //
 // P1:STW 无并发标记,parent 写入时要么 GC 没在跑(mutator 全程独占),
-// 要么 GC 是同步原子的(Alloc 内一次跑完),不存在「黑指白且 mark 已略过」窗口 ⇒ 空实现。
+// 要么 GC 是同步原子的(在检查点一次跑完),不存在「黑指白且 mark 已略过」窗口 ⇒ 空实现。
 func (c *Collector) writeBarrier(parent value.GCRef, child value.Value) {
     // P1: no-op.
     // P3+: if isBlack(parent) && isWhite(child) && c.incrementalMarking {
@@ -822,7 +825,7 @@ GC 主流程(§8.2)的两个终结相关步骤:
    仍可达的(未死)userdata 留在 `finalizeList` 等以后几轮。
 2. **`runFinalizers()`(sweep 后)**:**逆序**遍历 `toRunFinalizers`,对每个调 `__gc(ud)`:
    - 在**安全点**调用(此刻 GC 已完成 mark+sweep,处于一致状态);
-   - 调用期间**禁止再触发 GC**(置 `c.gcRunning=false` 或等价标志,Alloc 内 `maybeCollect` 检查此标志跳过)——
+   - 调用期间**禁止再触发 GC**(置 `c.gcRunning=false` 或等价标志,`MaybeCollect` 检查此标志跳过;实现里是 `Collector.collecting`)——
      防终结器内分配触发嵌套 GC 破坏顺序(对齐 Lua `GCTM` 停步语义);
    - 终结器是 host function(`__gc` 通常宿主用 C/Go 写),经 host 调用约定执行(§6.3);
    - 终结器抛错:Lua 5.1 用 `luaD_pcall` 保护,望舒同样**保护调用**(终结器错误不应崩 VM;记日志,见 [09-errors-pcall](./09-errors-pcall.md))。

@@ -768,7 +768,7 @@ GETGLOBAL/SETGLOBAL 是「目标表恒为 globals」的表访问特例(02 §4):
 ```
 
 - NEWTABLE 带「预分配」语义但不带 IC——它创建新表无 IC 价值。
-- 关键设计:**gibbous 代码自身从不分配**(承 [00-overview](./00-overview.md) §8 + [05-safepoint-gc](./05-safepoint-gc.md) §3)。所有分配(NEWTABLE/CONCAT/CLOSURE/rehash)经 imported 助手回 Go,分配与 GC 都在助手内同步完成(同 P1 的 Alloc 内同步 collect,[../p1-interpreter/06](../p1-interpreter/06-memory-gc.md) §8.2),助手返回时 GC 已完成,Wasm 侧无感(memory-resident 寄存器使根天然可见)。
+- 关键设计:**gibbous 代码自身从不分配**(承 [00-overview](./00-overview.md) §8 + [05-safepoint-gc](./05-safepoint-gc.md) §3)。所有分配(NEWTABLE/CONCAT/CLOSURE/rehash)经 imported 助手回 Go,分配与 GC 都在助手内同步完成(助手末尾的 `safepoint` 按阈值 collect,同 P1 分配 opcode 结束时的检查点,[../p1-interpreter/06](../p1-interpreter/06-memory-gc.md) §7.1),助手返回时 GC 已完成,Wasm 侧无感(memory-resident 寄存器使根天然可见)。
 - `$h_newtable` 助手:`func(base int32, b int32, c int32) uint64`,内部 `asz := Fb2Int(b); hsz := Fb2Int(c); t := st.allocTable(asz, roundUpPow2(hsz)); return MakeGC(TagTable, t)`——复用 execute.go 121-127 行。
 - 与解释器同构(execute.go 121-127 行):助手内完全复用,同构天然。
 

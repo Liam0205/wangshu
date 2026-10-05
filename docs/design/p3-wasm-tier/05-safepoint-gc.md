@@ -68,7 +68,7 @@ P1 解释器 [05 §5.1](../p1-interpreter/05-interpreter-loop.md) 的 safepoint 
 
 | 类别 | 物理位置 | 介入机制 | 触发频率 | 对齐 P1 |
 |---|---|---|---|---|
-| **§1.1 分配点** | gibbous 代码**自身从不分配**;分配全在 imported 助手内 | 助手回 Go,Go 侧同步 collect(同 [06 §8.2](../p1-interpreter/06-memory-gc.md) Alloc 内 collect) | 与 P1 同(分配频率) | [05 §5.2](../p1-interpreter/05-interpreter-loop.md) 分配点清单 |
+| **§1.1 分配点** | gibbous 代码**自身从不分配**;分配全在 imported 助手内 | 助手回 Go,助手末尾的 `safepoint` 按阈值同步 collect(同 [06 §7.1](../p1-interpreter/06-memory-gc.md) 分配 opcode 结束时的检查点) | 与 P1 同(分配频率) | [05 §5.2](../p1-interpreter/05-interpreter-loop.md) 分配点清单 |
 | **§1.2 层边界** | crescent↔gibbous 的 trampoline([04 §2/§3](./04-trampoline.md)) | trampoline 进出是天然检查点 | 跨层调用频率 | [05 §5.1](../p1-interpreter/05-interpreter-loop.md) 调用边界 safepoint |
 | **§1.3 back edge** | 循环 back edge(FORLOOP/TFORLOOP/JMP 向后) | `(if (i32.load $gcPending) (call $h_safepoint))` | 每迭代一次(分支几乎恒不跳) | [05 §5.3](../p1-interpreter/05-interpreter-loop.md) opcode 末尾检查 |
 
@@ -106,7 +106,7 @@ P1 解释器 [05 §5.1](../p1-interpreter/05-interpreter-loop.md) 的 safepoint 
 ;; status=0:新表已写回 R(A)（即 valueStack[base+A]）,GC 已在助手内完成,直线继续
 ```
 
-`$h_safepoint`(back edge 用,§1.3)与 `$h_newtable`(此处)都是**imported Go 函数**——它们的执行体就是 Go 侧的对应逻辑。`$h_newtable` 的 Go 侧执行体 = P1 的 `NEWTABLE` opcode 实现(同一份 `Arena.Alloc` 调用路径,[06 §8.2](../p1-interpreter/06-memory-gc.md)):
+`$h_safepoint`(back edge 用,§1.3)与 `$h_newtable`(此处)都是**imported Go 函数**——它们的执行体就是 Go 侧的对应逻辑。`$h_newtable` 的 Go 侧执行体 = P1 的 `NEWTABLE` opcode 实现(同样的分配、记账，末尾同样调 `safepoint`,[06 §7.1](../p1-interpreter/06-memory-gc.md);下图是设计阶段的示意，实现里没有单独的 `gcPending` 判断，而是 `safepoint` → `MaybeCollect` 按阈值收集):
 
 ```
 gibbous 直线代码执行到上面的 (call $h_newtable ...):
@@ -115,7 +115,7 @@ gibbous 直线代码执行到上面的 (call $h_newtable ...):
        ▼  Go 侧助手体(= P1 06 §8.2 的 Alloc 路径)
      th := vm.runningThread()              // 取 running thread(R5 现场)
      ref := arena.Alloc(tableSize)         // ← 越过 GC 阈值则置 gcPending
-     if vm.gcPending {                     // 06 §8.2:Alloc 内同步 collect
+     if vm.gcPending {                     // 实现:助手末尾 safepoint → MaybeCollect
          vm.gc.Collect()                   // STW mark-sweep,跑完才返回(§5.1)
          vm.gcPending = false              // 清 pending(本次已回收)
      }
@@ -127,7 +127,7 @@ gibbous 直线代码执行到上面的 (call $h_newtable ...):
   gibbous 直线继续(R(A) 已是新表,GC 已完成)
 ```
 
-**关键:助手返回时 GC 已完成,Wasm 侧无感**。gibbous 直线代码不需要知道「刚才助手内跑了一次 full GC」——它只看到 `$h_newtable` 返回了 status 0,R(A) 槽里是新表。这与 P1 解释器里「`NEWTABLE` opcode 调 Alloc → Alloc 内 collect → 继续下一条 opcode」**完全同构**,只是中间多了一次跨层 `call`。
+**关键:助手返回时 GC 已完成,Wasm 侧无感**。gibbous 直线代码不需要知道「刚才助手内跑了一次 full GC」——它只看到 `$h_newtable` 返回了 status 0,R(A) 槽里是新表。这与 P1 解释器里「`NEWTABLE` opcode 分配 → opcode 结束时 `safepoint` 按阈值 collect → 继续下一条 opcode」**完全同构**,只是中间多了一次跨层 `call`。
 
 > **为什么分配点的「Wasm 实代码」只有一行 call**:这正是 §1.1 的核心论断「gibbous 自身从不分配」的直接体现——分配点在 gibbous 代码里的全部形式就是「调助手 + 查 status」。GC 的全部逻辑(Alloc、collect、根枚举)都在 Go 侧助手里,Wasm 侧一条 GC 指令都没有。这与 §1.3 back edge(Wasm 侧有 `i32.load $gcPending` 检查)形成对比:**分配点的 GC 完全在 Go 侧(Wasm 无感),back edge 的 GC 触发判定在 Wasm 侧(一次 load + 分支)、collect 在 Go 侧。**
 
@@ -257,7 +257,7 @@ end
 
 翻译后,循环体内的 `SETTABLE` 经 `$h_settable` 助手回 Go。**绝大多数迭代**:键已在表内(无 rehash),助手不分配,`gcPending` 不变。**偶发迭代**:写新键触发 rehash,助手内 `Arena.Alloc` 越过阈值置 `gcPending`——但此时助手**可能选择不立即 collect**(为了不在每次 rehash 都 STW;具体 pacing 策略见 [06 §8.3](../p1-interpreter/06-memory-gc.md))。
 
-> **澄清:Alloc 内 collect vs 推迟 collect 两种做法**。[06 §8.2](../p1-interpreter/06-memory-gc.md) 的基线是「Alloc 越阈值即同步 collect」(本文 §1.1.2 即按此)。但 [06 §8.3](../p1-interpreter/06-memory-gc.md) 的 pacing 允许「置 pending,延到 safepoint 再 collect」的变体(解释器即如此:[05 §5.3](../p1-interpreter/05-interpreter-loop.md) 的 `if vm.gcPending` 在 opcode 末尾才 collect,Alloc 只置 pending)。**两种做法 P3 都支持**:
+> **澄清:Alloc 内 collect vs 推迟 collect 两种做法**(设计阶段的讨论;实现取的是第三种：分配只记账，分配 opcode / 助手结束时的 `safepoint` 按阈值同步 collect,见 [06 §7.1](../p1-interpreter/06-memory-gc.md),所以助手返回时已经收集过，下面第一条的结论成立)。设计稿 06 §8.2 原先的基线是「Alloc 越阈值即同步 collect」(本文 §1.1.2 即按此)。但 [06 §8.3](../p1-interpreter/06-memory-gc.md) 的 pacing 允许「置 pending,延到 safepoint 再 collect」的变体(解释器即如此:[05 §5.3](../p1-interpreter/05-interpreter-loop.md) 的 `if vm.gcPending` 在 opcode 末尾才 collect,Alloc 只置 pending)。**两种做法 P3 都支持**:
 > - 若 P1/P3 取「Alloc 内立即 collect」:`gcPending` 在助手返回时已是 false,back edge 检查恒不跳——back edge safepoint 退化为纯保险(零开销,never taken)。
 > - 若 P1/P3 取「Alloc 置 pending、safepoint 才 collect」:助手返回时 `gcPending=true`,**back edge safepoint 正是兑现这次推迟 collect 的地方**。
 > **P3 的 back edge safepoint 对两种做法都正确**——它只是「若有 pending 就 collect」,不关心 pending 是谁置的、何时置的。这与 [05 §5.3](../p1-interpreter/05-interpreter-loop.md) 解释器的 `if vm.gcPending` 语义完全一致。
@@ -359,7 +359,7 @@ P1 设计 06-memory-gc 在 §12「文档缺口 / 待决」里,**预设了 P3 接
 | P1 解释器(05/06) | P3 编译层(本文) | 同构关系 |
 |---|---|---|
 | 布点哲学:**受控位置才允许 runtime 介入**([05 §5.1](../p1-interpreter/05-interpreter-loop.md)) | **受控位置才允许 runtime 介入**(§0.2) | **一字不改** |
-| 分配点:分配 opcode 内调 Alloc,Alloc 内 collect([06 §8.2](../p1-interpreter/06-memory-gc.md)) | 分配点:分配 opcode 翻译为助手调用,助手内 collect(§1.1) | **载体变(opcode→助手),机制同** |
+| 分配点:分配 opcode 分配并记账，结束时 `safepoint` 按阈值 collect([06 §7.1](../p1-interpreter/06-memory-gc.md)) | 分配点:分配 opcode 翻译为助手调用，助手末尾 `safepoint` collect(§1.1) | **载体变(opcode→助手),机制同** |
 | 层边界:VM↔host 边界，宿主函数返回后固定检查一次(#297,[06 §7.1](../p1-interpreter/06-memory-gc.md)) | 层边界:crescent↔gibbous trampoline,可选(§1.2);调宿主函数仍经 `callHost` 的固定检查点 | **多了 crescent↔gibbous,只有这一处是可选的** |
 | 回收时机检查:opcode 末尾 `if vm.gcPending`([05 §5.3](../p1-interpreter/05-interpreter-loop.md)) | 回收时机检查:back edge `(if (i32.load $gcPending))`(§1.3) | **同一个 gcPending 检查,位置从 opcode 末尾搬到 back edge** |
 | 纯计算不分配 ⇒ 不 GC([06 §12](../p1-interpreter/06-memory-gc.md)) | 纯计算不分配 ⇒ 不 GC(§1.4) | **结论一致** |
@@ -777,7 +777,7 @@ func (c *Collector) writeBarrier(parent value.GCRef, child value.Value) {
 
 承 ../p3-wasm-tier.md §10 不变式 5(基线 memory-resident + locals 写回纪律),本文聚合 GC 相关不变式:
 
-1. **gibbous 不直接分配,经助手回 Go**(§1.1):所有触发分配的 opcode(NEWTABLE/SETLIST/CLOSURE/CONCAT/字符串 intern/SETTABLE 写新键 rehash/SETGLOBAL rehash)翻译为 imported 助手调用,分配 + GC 都在助手内([06 §8.2](../p1-interpreter/06-memory-gc.md) Alloc 内 collect)。gibbous 直线代码里没有任何 arena 分配指令。
+1. **gibbous 不直接分配,经助手回 Go**(§1.1):所有触发分配的 opcode(NEWTABLE/SETLIST/CLOSURE/CONCAT/字符串 intern/SETTABLE 写新键 rehash/SETGLOBAL rehash)翻译为 imported 助手调用,分配 + GC 都在助手内(助手末尾 `safepoint` 按阈值 collect,[06 §7.1](../p1-interpreter/06-memory-gc.md))。gibbous 直线代码里没有任何 arena 分配指令。
 
 2. **三类 safepoint 不漏:分配点 / 层边界 / back edge**(§1):
    - 分配点(§1.1):助手内 collect,Wasm 侧无感。
@@ -822,7 +822,7 @@ func (c *Collector) writeBarrier(parent value.GCRef, child value.Value) {
 [08-testing-strategy](./08-testing-strategy.md)(GC 压力差分验收,本文 §6 转交) ·
 ../p3-wasm-tier.md(P3 单文件原稿 §6 跨层 safepoint / §10 不变式 5) ·
 [../p1-interpreter/05-interpreter-loop](../p1-interpreter/05-interpreter-loop.md)(§5 safepoint 布点原则 + opcode 末尾检查) ·
-[../p1-interpreter/06-memory-gc](../p1-interpreter/06-memory-gc.md)(§5.1 GC 根 R1..R9 / §7 safepoint 哲学 / §8.2 Alloc 内 collect / §9.4 写屏障空 / §12 跨层 safepoint 缺口——本文要解决的对象) ·
+[../p1-interpreter/06-memory-gc](../p1-interpreter/06-memory-gc.md)(§5.1 GC 根 R1..R9 / §7 safepoint 哲学 / §8.2 GC 主流程 / §9.4 写屏障空 / §12 跨层 safepoint 缺口——本文要解决的对象) ·
 [../p1-interpreter/12-testing-difftest](../p1-interpreter/12-testing-difftest.md)(GC 压力 fuzz 模式) ·
 [../roadmap.md](../roadmap.md)(§2 四项税异步抢占 / §3 safepoint 限定 / §5 原则 3 每阶段一块硬骨头) ·
 [../../../llmdoc/must/design-premises](../../../llmdoc/must/design-premises.md)(前提三:safepoint 限定在分配点与层边界)
