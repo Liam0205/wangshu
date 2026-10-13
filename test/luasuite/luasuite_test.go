@@ -89,7 +89,15 @@ var resumeAt = map[string][][2]int{
 	"closure.lua": {{178, 407}},
 }
 
-func TestOfficialSuite(t *testing.T) {
+func TestOfficialSuite(t *testing.T) { runOfficialSuite(t, false) }
+
+// TestOfficialSuiteHostTriggered runs the same files and ranges with SetHostTriggeredCollect on.
+// The switch used to collect inside an allocation's own accounting, before the new object was
+// rooted, and several files failed with it on; collections now run when a public call returns,
+// so the suite must pass the same either way.
+func TestOfficialSuiteHostTriggered(t *testing.T) { runOfficialSuite(t, true) }
+
+func runOfficialSuite(t *testing.T, hostTriggered bool) {
 	files, err := filepath.Glob("testdata/*.lua")
 	if err != nil || len(files) == 0 {
 		t.Fatalf("no testdata files: %v", err)
@@ -113,7 +121,7 @@ func TestOfficialSuite(t *testing.T) {
 				}
 				body = strings.Join(lines[:limit-1], "\n")
 			}
-			runWithTimeout(t, name, body)
+			runWithTimeoutOpts(t, name, body, hostTriggered)
 		})
 		for _, r := range resumeAt[name] {
 			label := fmt.Sprintf("%s:%d-%d", name, r[0], r[1])
@@ -127,43 +135,9 @@ func TestOfficialSuite(t *testing.T) {
 					t.Fatalf("%s: range must lie after the stopAt cut (%d) and inside the file (%d lines)", label, stopAt[name], len(lines))
 				}
 				body := strings.Repeat("\n", r[0]-1) + strings.Join(lines[r[0]-1:r[1]], "\n")
-				runWithTimeout(t, name, body)
+				runWithTimeoutOpts(t, name, body, hostTriggered)
 			})
 		}
-	}
-}
-
-func runWithTimeout(t *testing.T, name, src string) {
-	t.Helper()
-	runWithTimeoutOpts(t, name, src, false)
-}
-
-// TestOfficialSuiteHostTriggered runs the suite again with SetHostTriggeredCollect on. The
-// switch used to collect inside an allocation's own accounting, before the new object was
-// rooted, and gc / literals / nextvar / pm / strings / errors failed with it on; collections
-// now run when a public call returns, so the whole suite must pass the same either way.
-func TestOfficialSuiteHostTriggered(t *testing.T) {
-	files, err := filepath.Glob("testdata/*.lua")
-	if err != nil || len(files) == 0 {
-		t.Fatalf("no testdata files: %v", err)
-	}
-	for _, f := range files {
-		name := filepath.Base(f)
-		t.Run(name, func(t *testing.T) {
-			src, err := os.ReadFile(f)
-			if err != nil {
-				t.Fatal(err)
-			}
-			body := string(src)
-			if limit := stopAt[name]; limit > 0 {
-				lines := strings.Split(body, "\n")
-				if limit > len(lines) {
-					limit = len(lines)
-				}
-				body = strings.Join(lines[:limit-1], "\n")
-			}
-			runWithTimeoutOpts(t, name, body, true)
-		})
 	}
 }
 
