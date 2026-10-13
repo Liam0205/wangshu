@@ -6,9 +6,9 @@
 //     rounds up to the bucket's representative word count, so sizes within a
 //     bucket are uniform);
 //   - >64 words: enter the LARGE intrusive chain (word0=next, word1=block words,
-//     word2=prev), first-fit, only taken on an "exact hit" or when "the remainder
-//     >64 words can form an independent block" (to avoid out-of-bucket
-//     fragmentation waste).
+//     word2=prev), first-fit; a larger block is split, a remainder >64 words goes
+//     back as a LARGE block and a smaller one is rounded down into a small bucket
+//     (a tail below the smallest class is dropped).
 //
 // LARGE blocks coalesce (issue #296): free LARGE blocks are also indexed by
 // their start and end offsets, so a returned block merges with the free LARGE
