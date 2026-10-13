@@ -57,6 +57,7 @@ func (st *State) Register(name string, fn HostFn) {
 	id := st.core.RegisterHostFn(st.wrapHostFn(fn))
 	cl := st.core.MakeHostClosure(id)
 	st.core.SetGlobal(name, value.MakeGC(value.TagFunction, cl))
+	st.core.HostSafepoint()
 }
 
 // RegisterModule registers a group of Go functions as a single global table
@@ -75,4 +76,5 @@ func (st *State) RegisterModule(name string, fns map[string]HostFn) {
 		st.core.SetTableField(tbl, fname, value.MakeGC(value.TagFunction, cl))
 	}
 	st.core.SetGlobal(name, value.MakeGC(value.TagTable, tbl))
+	st.core.HostSafepoint()
 }
