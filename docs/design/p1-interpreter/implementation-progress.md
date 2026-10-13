@@ -655,6 +655,13 @@
   表替换、`sort` 带比较函数、`xpcall` 带宿主处理函数、`__index` 为宿主表等)在这些配置和压力模式下与 lua5.1 一致。
   宿主调用密集的循环(500 万次 `math.floor`)耗时不变。
 
+  **同一轮另修的 `SetHostTriggeredCollect` 误回收(用户决定在本分支修)**:这个默认关闭的开关原来让 `AllocCharge`
+  越过阈值就立刻收集，而多数分配助手先挂 sweep 链、再记账、之后才接根，新对象会在自己那次记账里被回收：开关打开后
+  连建两万张表，有 6 个句柄指向别的表;官方测试套 errors / literals / nextvar / pm / strings 五个文件失败(master 上
+  同样)。现在 `AllocCharge` 只记账，会分配的公开 API 在返回前调 `Collector.HostSafepoint`(此时产生的对象都已 pin 或
+  写进表里),开关打开时越过阈值才收集。`test/api/host_triggered_collect_test.go` 在 master 上失败、修复后通过;
+  `TestOfficialSuiteHostTriggered` 在开关打开时跑整套官方测试。
+
 ## 相关
 
 [00-overview](./00-overview.md) · [../engineering](../engineering.md) ·

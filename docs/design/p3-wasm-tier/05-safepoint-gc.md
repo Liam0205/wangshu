@@ -174,7 +174,7 @@ crescent ↔ gibbous 的 trampoline([04 §2 crescent→gibbous](./04-trampoline.
 
 - **crescent → gibbous 方向**:进入 gibbous 后,第一个分配点(§1.1)或 back edge(§1.3)就会处理 pending。trampoline 本身不分配,无需在此 GC。
 - **gibbous → crescent 方向**:经 `$h_call` 调度助手出去,被调 crescent 帧自己跑解释器主循环([05 §5.3](../p1-interpreter/05-interpreter-loop.md)),其分配点会处理 pending。
-- **gibbous → host 方向**:host fn 内部的分配只经 `AllocCharge` 记账、不收集;收集发生在 host fn 返回、结果写回栈槽之后 `callHost` 的检查点(`afterHostCall`,#297,[06 §7.1](../p1-interpreter/06-memory-gc.md)),与 P1 同。打开 `SetHostTriggeredCollect(true)` 时，分配越过阈值也会立刻收集(默认关闭)。
+- **gibbous → host 方向**:host fn 内部的分配只经 `AllocCharge` 记账、不收集;收集发生在 host fn 返回、结果写回栈槽之后 `callHost` 的检查点(`afterHostCall`,#297,[06 §7.1](../p1-interpreter/06-memory-gc.md)),与 P1 同。`SetHostTriggeredCollect(true)` 只让公开 API 在返回前多一个检查点，不影响这里(默认关闭)。
 
 所以**助手路径已覆盖**绝大多数回收时机,trampoline 主动 safepoint 是冗余的。
 
