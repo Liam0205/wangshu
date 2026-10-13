@@ -291,8 +291,8 @@ Explicit GC control:
 
 ```go
 st.Collect()           // force a full GC sweep
-st.MaybeCollectNow()   // collect only if the host-trigger threshold is met (non-forced)
-st.SetHostTriggeredCollect(true) // opt-in: an object allocation crossing the threshold collects immediately (requires all transient GCRefs to be pinned)
+st.MaybeCollectNow()   // collect only if the GC threshold is met (non-forced)
+st.SetHostTriggeredCollect(true) // opt-in: public API calls collect before returning once the threshold is crossed (off by default)
 ```
 
 For short-script high-frequency call scenarios, prefer `CallInto` to reuse the return-value slice and stay on the zero-alloc path:

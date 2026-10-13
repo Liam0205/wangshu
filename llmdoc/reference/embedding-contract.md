@@ -80,7 +80,7 @@
 
 - `State.Collect()`:强制一次 full sweep(对应 `collectgarbage("collect")`),免走脚本调用迂回。典型在 pool 归还点 / 批次完成点周期调用,保持 GCCountKB 有界。代价 ~微秒到毫秒级(取决 live 规模);backing 容量只在超过预计用量两倍时才缩(见上面 `ArenaCapKB`);
 - `State.MaybeCollectNow()`:按阈值条件触发(命中才 collect,否则 no-op),等价让 host 触发一次 safepoint 检查。比 Collect 廉价但不保证 sweep,强约束需 sweep 直接调 Collect;
-- `State.SetHostTriggeredCollect(on bool)`:**experimental opt-in,默认 off**。开启后任何经 `AllocCharge` 记账的对象分配(宿主 API 和 opcode 内部都算;线程栈扩容走 `Account`,不在此列)跨 GC 阈值都直接 sweep。⚠️ **安全约定**:调用方须保证所有 transient GCRef 都 reachable from GC root——current stdlib + string intern 的 mid-construction transient GCRef 未全经 pin/shadow stack 登记，各分配助手也是先挂 sweep 链、再记账，之后才接根(公开的表构造函数 `NewTable` / `NewArrayTable` 及其 typed 变体在记账之后才 `PinRef`),**未审计前生产开启有 UAF 风险**(已知 break:luasuite gc/literals/nextvar/pm/strings)。**推荐替代**:用 `Collect()` / `MaybeCollectNow()` 显式 cadence 控制(production-safe)。
+- `State.SetHostTriggeredCollect(on bool)`:opt-in,默认 off。开启后，会分配的公开 API(`NewTable` / `NewArrayTable` 及其 typed 变体、`Table.Set` / `Get` / `Preallocate`、`SetGlobal` / `GetGlobal` / `GlobalsSlot` / `SetBySlot`、`Register` / `RegisterModule`、`Call` / `CallInto` / `Program.Run` / `Program.Call`、`ResetGlobalsToBaseline`)在返回前检查分配量，越过阈值就收集(`Collector.HostSafepoint`)。此时它产生的对象都已 pin 或写进表里，收集不会回收正在构造的对象。分配本身(`AllocCharge`)从不收集：以前开关作用在 `AllocCharge` 上，各分配助手先挂 sweep 链、再记账、之后才接根，新对象可能在自己那次记账里被回收(公开的 `NewTable` 连建两万张表时有几个句柄指向同一张表,luasuite 的 gc / literals / nextvar / pm / strings / errors 失败),2026-10 改为在公开 API 返回前收集(#297 一轮)。另一种做法是用 `Collect()` / `MaybeCollectNow()` 在 pool 归还点 / 批次完成点显式控制节奏。
 
 ## 分层执行运行期管理:kill switch 与观测(admin API)
 

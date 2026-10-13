@@ -137,7 +137,7 @@ func (a *Arena) Alloc(otype value.OBJType, words uint32) value.GCRef {
 
 > 上面是设计阶段的示意。实际实现里 `Arena.AllocBytes` 只做 freelist / bump / grow,不收集(`internal/arena/arena.go`);
 > 对象头和 sweep 链由 `object.Alloc*` 与 `Collector.LinkSweep` 写入，分配量由 `Collector.AllocCharge` 记账，收集在
-> §7.1 的检查点按阈值发生(默认如此;打开实验性的 `SetHostTriggeredCollect(true)` 后,`AllocCharge` 越过阈值也会立刻收集)。
+> §7.1 的检查点按阈值发生。`AllocCharge` 从不收集：多数分配助手先挂 sweep 链、再记账，之后才接根，在记账处收集会回收正在构造的对象。
 
 `initHeader` 把新对象 color 置为**当前分配白**(allocator white,§4.3),并清 `gcnext`;`linkSweep` 把对象挂到 sweep 全链头部
 (`obj.gcnext = sweepHead; sweepHead = ref; obj.hasGCNext=1`)。新生对象天然是白色(未标记),若本轮 GC 已过 mark 阶段(STW 下不会发生,见 §7),需特别处理——STW 模型里 mark 与 mutator 不交错,无此问题。
@@ -467,8 +467,8 @@ host function 签名(见 [10-stdlib](./10-stdlib.md))拿到一个执行上下文
   `table.create` 新建的表)在「写回 Lua 栈之前」处于 Go 栈持有窗口,**必须 `Push`/`defer Pop`**。
 - 一旦中间对象**写回到 Lua 栈槽 / 已存活的表 / 全局**,它就经 R5/R1 等可达,可从 shadow stack `Pop`(此后栈/表当根)。
 - **多步分配**:host 连续分配 A 再分配 B(分配 B 时可能触发 GC),A 必须先 Push,否则分配 B 触发的 GC 会回收 A。
-  默认配置下分配只记账、不在分配处收集(§7.1),但打开 `SetHostTriggeredCollect(true)`、或两次分配之间回调了 Lua 函数 /
-  `collectgarbage` 时都会收集，所以仍按「可能触发」来写。
+  分配本身只记账、不在分配处收集(§7.1),但两次分配之间回调了 Lua 函数 / `collectgarbage`、调用了会收集的公开 API
+  时都会收集，所以仍按「可能触发」来写。
   规则简记:**「下一次可能触发 GC 的分配之前,所有已持有但未上 Lua 栈/表的 arena 引用都要在 shadow stack 上」**。
 
 > 这条约定是 stdlib 实现的**纪律**(类似写 C 扩展时管理 `lua_State` 栈的纪律)。差分测试不直接测它,
@@ -594,7 +594,7 @@ func (c *Collector) MaybeCollect() {
 
 注意触发条件是 **自上次收集以来记账的分配量 ≥ threshold**(分配量驱动 pacing,§8.3),不是「bump 触及 cap」——
 后者(触及 cap)是 grow 的条件(§3),分配时立刻 grow,不先收集。两个阈值分工:**threshold 控制 GC 频率,cap 控制物理扩容**。
-默认如此;打开 `SetHostTriggeredCollect(true)` 后，任何一次分配的 `AllocCharge`(包括 opcode 内部的分配)越过阈值都会立刻收集(实验性，默认关闭)。
+打开 `SetHostTriggeredCollect(true)` 后，会分配的公开 API 在返回前也调一次同样的阈值检查(`Collector.HostSafepoint`,此时它产生的对象都已 pin 或写进表里);默认关闭。
 
 ### 8.3 GC pacing / 触发阈值(分配量驱动)
 

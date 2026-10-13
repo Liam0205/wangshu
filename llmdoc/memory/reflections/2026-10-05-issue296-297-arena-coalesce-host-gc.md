@@ -56,3 +56,13 @@ bump 退回后重新从同一地址切出，地址断言碰巧成立，原本要
 `State.ArenaCapKB` 和 `State.Collect` 的 godoc 一直写着「Collect 不缩 backing」,而 `Compact` 早已在 Collect 末尾缩容，
 `TestCompact_ShrinkAfterTransientPeak` 测的就是这个;`GCCountKB` 的 godoc 写的是「等于 bump」,实际是 bump 减去空闲块。
 改容量策略时，先 `git grep` 所有描述容量行为的说明，一起改。
+
+## 6. 审查链一轮轮落在同一个说明上时，问题可能在代码
+
+本地审查在终审之后又跑了十多轮增量，每轮只剩 0–1 条，全部出在 `SetHostTriggeredCollect` 的安全说明上：先是
+「宿主侧」写窄了，再是「论证覆盖宿主 API」不成立，再是 `NewTable` 被当成安全例子，审查员写了复现程序才确认它在
+开关打开时会误回收新表。每一轮都是在文档里给一个不安全的设计找准确的措辞。问题到了用户那里才改成修代码：
+`AllocCharge` 不再收集，公开 API 返回前收集，安全说明随之变成一句话。
+
+判据：同一个概念的说明连续两轮被挑出新的遗漏，就去看代码本身是不是不安全;能改成「天然安全」时，改代码比把每条
+不安全路径写进文档更省，也不会再漏。
