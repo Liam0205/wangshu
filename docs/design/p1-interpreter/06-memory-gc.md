@@ -825,7 +825,7 @@ GC 主流程(§8.2)的两个终结相关步骤:
    仍可达的(未死)userdata 留在 `finalizeList` 等以后几轮。
 2. **`runFinalizers()`(sweep 后)**:**逆序**遍历 `toRunFinalizers`,对每个调 `__gc(ud)`:
    - 在**安全点**调用(此刻 GC 已完成 mark+sweep,处于一致状态);
-   - 调用期间**禁止再触发 GC**(置 `c.gcRunning=true` 或等价标志;实现里是 `Collector.collecting`,`Collect` 开头检查它直接返回，`MaybeCollect` 经 `Collect` 间接跳过,`AllocCharge` 的开关路径也检查它)——
+   - 调用期间**禁止再触发 GC**(置 `c.gcRunning=true` 或等价标志;实现里是 `Collector.collecting`,`Collect` 开头检查它直接返回，`MaybeCollect` 经 `Collect` 间接跳过,`SetHostTriggeredCollect` 打开时公开 API 返回前的 `HostSafepoint` 也检查它)——
      防终结器内分配触发嵌套 GC 破坏顺序(对齐 Lua `GCTM` 停步语义);
    - 终结器是 host function(`__gc` 通常宿主用 C/Go 写),经 host 调用约定执行(§6.3);
    - 终结器抛错:Lua 5.1 用 `luaD_pcall` 保护,望舒同样**保护调用**(终结器错误不应崩 VM;记日志,见 [09-errors-pcall](./09-errors-pcall.md))。
