@@ -47,6 +47,7 @@ func (v Value) AsTable() *Table {
 func (st *State) NewTable() Value {
 	ref := st.core.NewLibTable(0)
 	idx := st.core.PinRef(ref)
+	st.core.HostSafepoint()
 	return Value{kind: kTable, fnState: st, pinIdx: idx}
 }
 
@@ -73,6 +74,7 @@ func (st *State) NewArrayTable(vals []Value) Value {
 	}
 	ref := st.core.NewArrayTableFromVals(inner)
 	idx := st.core.PinRef(ref)
+	st.core.HostSafepoint()
 	return Value{kind: kTable, fnState: st, pinIdx: idx}
 }
 
@@ -104,6 +106,7 @@ func (st *State) NewFloatArrayTable(vals []float64) Value {
 	}
 	ref := st.core.NewArrayTableFromVals(inner)
 	idx := st.core.PinRef(ref)
+	st.core.HostSafepoint()
 	return Value{kind: kTable, fnState: st, pinIdx: idx}
 }
 
@@ -130,6 +133,7 @@ func (st *State) NewInt64ArrayTable(vals []int64) (Value, error) {
 	}
 	ref := st.core.NewArrayTableFromVals(inner)
 	idx := st.core.PinRef(ref)
+	st.core.HostSafepoint()
 	return Value{kind: kTable, fnState: st, pinIdx: idx}, nil
 }
 
@@ -149,6 +153,7 @@ func (st *State) NewBoolArrayTable(vals []bool) Value {
 	}
 	ref := st.core.NewArrayTableFromVals(inner)
 	idx := st.core.PinRef(ref)
+	st.core.HostSafepoint()
 	return Value{kind: kTable, fnState: st, pinIdx: idx}
 }
 
@@ -171,6 +176,7 @@ func (st *State) NewStringArrayTable(vals []string) Value {
 	}
 	ref := st.core.NewArrayTableFromVals(inner)
 	idx := st.core.PinRef(ref)
+	st.core.HostSafepoint()
 	return Value{kind: kTable, fnState: st, pinIdx: idx}
 }
 
@@ -198,6 +204,7 @@ func (t *Table) Preallocate(n uint32) error {
 		return fmt.Errorf("wangshu: Table.Preallocate: table has been released")
 	}
 	t.st.core.PreallocateArray(ref, n)
+	t.st.core.HostSafepoint()
 	return nil
 }
 
@@ -221,6 +228,7 @@ func (t *Table) Set(key, val Value) error {
 	if e := t.st.core.RawSet(ref, ik, iv); e != nil {
 		return fmt.Errorf("wangshu: Table.Set: %s", e.Msg)
 	}
+	t.st.core.HostSafepoint()
 	return nil
 }
 
@@ -244,7 +252,9 @@ func (t *Table) Get(key Value) Value {
 	}
 	ik := key.toInner(t.st)
 	iv, _ := t.st.core.RawGet(ref, ik)
-	return fromInnerWithPin(t.st, iv)
+	out := fromInnerWithPin(t.st, iv)
+	t.st.core.HostSafepoint()
+	return out
 }
 
 // GetIndex reads a 1-based integer key.

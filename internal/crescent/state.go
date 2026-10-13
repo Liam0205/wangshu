@@ -1030,18 +1030,18 @@ func (st *State) MaybeCollectNow() {
 	st.gc.MaybeCollect()
 }
 
-// SetHostTriggeredCollect toggles whether any allocation charged through
-// AllocCharge that crosses the threshold collects directly (issue #9 direction 1).
-// **Opt-in, off by default** — enabling requires the caller to guarantee all
-// transient GCRefs are pin/shadow-stack reachable. See the
-// gc.Collector.SetHostTriggeredCollect godoc for the detailed safety contract.
-// The current stdlib/intern paths have mid-construction transients, and the
-// allocation helpers link a new object on the sweep chain and charge it before it
-// is rooted (the public table constructors PinRef only afterwards), **so enabling
-// in production is not recommended before audit**; the recommended approach is
-// explicit cadence control via Collect() / MaybeCollectNow() (issue #9 direction 2).
+// SetHostTriggeredCollect toggles whether public API calls collect on their way
+// out once the allocation count has crossed the GC threshold (issue #9 direction
+// 1; see HostSafepoint). Off by default.
 func (st *State) SetHostTriggeredCollect(on bool) {
 	st.gc.SetHostTriggeredCollect(on)
+}
+
+// HostSafepoint is the check point the public wangshu API runs before returning,
+// once its results are pinned or stored (gc.Collector.HostSafepoint). It only
+// collects with SetHostTriggeredCollect on.
+func (st *State) HostSafepoint() {
+	st.gc.HostSafepoint()
 }
 
 // NewError constructs a LuaError with a message (for use by stdlib and other host functions).

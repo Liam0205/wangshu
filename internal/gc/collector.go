@@ -49,8 +49,8 @@ type Collector struct {
 	liveBytesAfterSweep uint64 // live bytes at the end of this round's sweep (accumulated by sweep)
 	stressMode          bool   // high-frequency stress mode: force Collect at every safepoint (12 §5)
 	stopped             bool   // collectgarbage("stop"): automatic GC paused (explicit Collect unaffected)
-	collecting          bool   // true during Collect (host-trigger AllocCharge re-entry guard, issue #9 direction 1)
-	hostTrigger         bool   // an AllocCharge crossing the threshold triggers collect (issue #9 direction 1, opt-in; stdlib/intern and the link-then-charge allocation helpers leave transient GCRefs unrooted, so default false to avoid breakage)
+	collecting          bool   // true during Collect (re-entry guard: a finalizer calling back into the public API reaches HostSafepoint)
+	hostTrigger         bool   // public API calls collect on the way out once the threshold is crossed (HostSafepoint; issue #9 direction 1, opt-in, default off)
 
 	// gcPending flag (P3 PW9): reflects "whether MaybeCollect will actually Collect",
 	// mirrored into a fixed word of the arena (linear memory) so gibbous FORLOOP
@@ -194,32 +194,14 @@ func (c *Collector) LinkSweep(ref arena.GCRef) {
 
 // AllocCharge notifies the collector of the byte count of one allocation (used for pacing).
 //
-// State's Alloc helper calls this after every arena.AllocBytes to accumulate.
-//
-// **issue #9 direction 1**: trigger collect directly when crossing the threshold. This
-// avoids the starvation of "accounting rises but sweep never fires" under
-// boundary-dominated workloads (host repeatedly NewTable + short scripts, VM opcode
-// safepoints not frequently crossed).
-//
-// **half-constructed object safety**: a mid-path collect is safe for a GCRef that is
-// ① already reachable from a GC root before the charge (MakeHostClosureKeeping pushes the
-// closure on the shadow stack first) or ② not on the sweep chain at all (e.g. newArr/newNode
-// inside rehash), since sweep only walks the chain. It is not safe for an object that is
-// already linked on the sweep chain but not yet reachable from a root, and most allocation
-// helpers (allocTable, allocLuaClosure, NewUserdata, MakeHostClosure, Intern, ...) link
-// first and charge second, so the object can be swept in its own charge; see the unsafe
-// list under SetHostTriggeredCollect. With the switch off (the default) no AllocCharge
-// collects, so none of these matter.
-//
-// **non-reentrancy guard**: any AllocCharge triggered inside collect (e.g. a finalizer calling
-// host code that in turn calls a host public API) is intercepted by the collecting guard,
-// avoiding recursive collect.
+// State's Alloc helper calls this after every arena.AllocBytes to accumulate. It never
+// collects: most allocation helpers link the new object on the sweep chain before charging
+// it and root it only afterwards, so a collection here could sweep the object being built.
+// Collections run at the safepoints (MaybeCollect) and, with the opt-in switch, at the end of
+// public API calls (HostSafepoint).
 func (c *Collector) AllocCharge(nbytes uint32) {
 	c.bytesAllocSince += uint64(nbytes)
 	c.updateGCPending()
-	if c.hostTrigger && !c.stopped && !c.collecting && c.bytesAllocSince >= c.threshold {
-		c.Collect()
-	}
 }
 
 // Account adds nbytes to the allocation count without ever collecting, for memory allocated
@@ -230,36 +212,28 @@ func (c *Collector) Account(nbytes uint32) {
 	c.updateGCPending()
 }
 
-// SetHostTriggeredCollect toggles whether an allocation charged through AllocCharge that
-// crosses the threshold triggers collect directly (issue #9 direction 1). Account never
-// collects, switch or not.
+// HostSafepoint is the check point at the end of a public API call (issue #9 direction 1):
+// with SetHostTriggeredCollect on, it collects when the allocation count has crossed the
+// threshold. This avoids the starvation of "accounting rises but sweep never fires" under
+// boundary-dominated workloads (the host repeatedly builds tables between short scripts, so
+// the VM's own safepoints are seldom reached).
 //
-// **opt-in contract**: once enabled, any AllocCharge call may Collect immediately when
-// bytesAllocSince crosses the threshold. The caller (host public API / stdlib, etc.) must
-// guarantee: **all transient GCRefs are reachable from a GC root** (in the pin table /
-// pushed on the shadow stack / reachable from another root). Being linked on the sweep chain
-// only makes an object a sweep candidate; it does not keep it alive. Otherwise a
-// mid-construction GCRef gets wrongly reclaimed = UAF.
-//
-// **safe under the switch**:
-//   - transient newArr/newNode inside rehash are not LinkSweep'd → sweep does not reclaim ✓
-//   - MakeHostClosureKeeping pushes the closure on the shadow stack before its charge ✓
-//
-// **unsafe** (default false, so none of this is reached):
-//   - every allocation that links the new object on the sweep chain before its own
-//     AllocCharge and roots it only afterwards: allocTable, allocLuaClosure,
-//     allocOpenUpvalue, NewUserdata, MakeHostClosure, and through them the public table
-//     constructors (NewTable, NewArrayTable and its typed variants: PinRef runs after the charge)
-//   - mid-intern (b []byte still on the Go stack, new strRef linked on the sweep chain but not
-//     yet in the table); reached from the public SetGlobal/GetGlobal as well
-//   - multi-step allocations inside an opcode (an object not yet stored in a register when the
-//     next AllocCharge runs)
-//   - metamethod callback holding a transient Lua-level Value
-//   - transient before public-facing fromInnerWithPin
-//
-// So SetHostTriggeredCollect(true) is only safe to enable when "the caller guarantees
-// full-path pinning". Recommended: the host embedding layer manually calls st.Collect() /
-// st.MaybeCollectNow() each cycle as a cadence control (issue #9 direction 2, provided by #60).
+// The caller runs it once everything the call produced is reachable from a root: returned
+// tables and functions are pinned, keys and values are stored in their table. Nothing is
+// held only in Go locals at that point, so the collection cannot sweep a half-built object.
+// Off by default; stopped and an ongoing collection (a finalizer calling back into the public
+// API) are respected.
+func (c *Collector) HostSafepoint() {
+	if c.hostTrigger && !c.stopped && !c.collecting && c.bytesAllocSince >= c.threshold {
+		c.Collect()
+	}
+}
+
+// SetHostTriggeredCollect toggles whether public API calls collect on their way out once the
+// allocation count has crossed the threshold (HostSafepoint; issue #9 direction 1). Off by
+// default; the VM's own safepoints collect either way. Recommended alternative when the host
+// wants a fixed cadence: call st.Collect() / st.MaybeCollectNow() at pool-return or batch
+// points (issue #9 direction 2).
 func (c *Collector) SetHostTriggeredCollect(on bool) { c.hostTrigger = on }
 
 // SetGCPendingRef installs the arena GCRef of the gcPending flag word (P3 PW9; in the
@@ -333,7 +307,7 @@ func (c *Collector) SetStressMode(on bool) { c.stressMode = on; c.updateGCPendin
 // Collect performs one STW full GC (06 §8.2 main flow).
 func (c *Collector) Collect() {
 	if c.collecting {
-		return // guard against recursion (host-trigger AllocCharge during finalizer/sweep alloc inside Collect)
+		return // guard against recursion (a finalizer reaching HostSafepoint or MaybeCollect inside Collect)
 	}
 	c.collecting = true
 	defer func() { c.collecting = false }()

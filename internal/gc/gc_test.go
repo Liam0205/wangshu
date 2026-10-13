@@ -181,40 +181,50 @@ func (c *Collector) internContains(b []byte) bool {
 
 // --- Group B (Collector internals): host-trigger state machine + stopped/stress compat ---
 
-// TestHostTriggeredCollect_DefaultOff verifies SetHostTriggeredCollect is off by default.
-// AllocCharge accumulating past threshold does not directly trigger a collect
-// (that is triggered explicitly by MaybeCollect).
+// TestHostTriggeredCollect_DefaultOff verifies SetHostTriggeredCollect is off by default:
+// AllocCharge only accumulates and HostSafepoint does not collect past the threshold
+// (collection is left to MaybeCollect at the VM safepoints).
 func TestHostTriggeredCollect_DefaultOff(t *testing.T) {
-	a, c := newTestVM(t)
+	_, c := newTestVM(t)
 	c.threshold = 64 // very low threshold for easy testing
-	startCap := a.Cap()
-	// Default off: no collect triggered
+	whiteBefore := c.currentWhite
 	c.AllocCharge(1000)
 	c.AllocCharge(1000)
 	c.AllocCharge(1000)
-	if a.Cap() != startCap {
-		t.Errorf("default-off AllocCharge unexpectedly changed cap: %d → %d", startCap, a.Cap())
+	c.HostSafepoint()
+	if c.currentWhite != whiteBefore {
+		t.Errorf("default-off HostSafepoint collected: white flipped %d → %d", whiteBefore, c.currentWhite)
 	}
 	if c.bytesAllocSince < 3000 {
 		t.Errorf("bytesAllocSince not accumulated: got %d", c.bytesAllocSince)
 	}
 }
 
-// TestHostTriggeredCollect_OnFiresCollect verifies that when on, AllocCharge crossing
-// the threshold really fires a Collect.
-func TestHostTriggeredCollect_OnFiresCollect(t *testing.T) {
-	a, c := newTestVM(t)
+// TestHostTriggeredCollect_OnFiresAtHostSafepoint verifies that when on, AllocCharge still
+// never collects (the object being built may be on the sweep chain without a root), and
+// HostSafepoint collects once the threshold was crossed.
+func TestHostTriggeredCollect_OnFiresAtHostSafepoint(t *testing.T) {
+	_, c := newTestVM(t)
 	c.SetHostTriggeredCollect(true)
 	c.threshold = 100
-	_ = a // no droppable objects on the arena; Collect mainly checks whether it is invoked
 	whiteBefore := c.currentWhite
-	c.AllocCharge(200) // 200 > threshold 100 → triggers Collect
-	whiteAfter := c.currentWhite
-	if whiteAfter == whiteBefore {
-		t.Errorf("host-trigger Collect did not flip currentWhite: before=%d after=%d", whiteBefore, whiteAfter)
+	c.AllocCharge(200) // over the threshold, but AllocCharge does not collect
+	if c.currentWhite != whiteBefore {
+		t.Fatalf("AllocCharge collected under hostTrigger: white flipped %d → %d", whiteBefore, c.currentWhite)
+	}
+	c.HostSafepoint()
+	if c.currentWhite == whiteBefore {
+		t.Errorf("HostSafepoint did not collect past the threshold: white %d", c.currentWhite)
 	}
 	if c.bytesAllocSince != 0 {
 		t.Errorf("after Collect, bytesAllocSince should be reset to 0, got %d", c.bytesAllocSince)
+	}
+	// Below the threshold it is a no-op.
+	whiteBefore = c.currentWhite
+	c.AllocCharge(10)
+	c.HostSafepoint()
+	if c.currentWhite != whiteBefore {
+		t.Errorf("HostSafepoint below the threshold collected")
 	}
 }
 
@@ -228,6 +238,7 @@ func TestHostTriggeredCollect_StoppedRespected(t *testing.T) {
 	c.threshold = 50
 	whiteBefore := c.currentWhite
 	c.AllocCharge(200)
+	c.HostSafepoint()
 	if c.currentWhite != whiteBefore {
 		t.Errorf("stopped state allowed host-trigger Collect: white flipped %d → %d", whiteBefore, c.currentWhite)
 	}
@@ -238,8 +249,8 @@ func TestHostTriggeredCollect_StoppedRespected(t *testing.T) {
 }
 
 // TestHostTriggeredCollect_StressModeCompat verifies hostTrigger + stressMode coexist
-// (stressMode makes MaybeCollect collect every time; hostTrigger makes AllocCharge
-// trigger on threshold crossing — the two work independently).
+// (stressMode makes MaybeCollect collect every time; hostTrigger makes HostSafepoint
+// collect on threshold crossing — the two work independently).
 func TestHostTriggeredCollect_StressModeCompat(t *testing.T) {
 	_, c := newTestVM(t)
 	c.SetHostTriggeredCollect(true)
@@ -250,38 +261,39 @@ func TestHostTriggeredCollect_StressModeCompat(t *testing.T) {
 	if c.currentWhite == whiteBefore {
 		t.Errorf("stressMode + hostTrigger MaybeCollect did not flip white")
 	}
-	// AllocCharge below threshold (threshold very high) should not trigger a collect
+	// Below the threshold (threshold very high) HostSafepoint should not collect
 	whiteBefore = c.currentWhite
 	c.AllocCharge(100)
+	c.HostSafepoint()
 	if c.currentWhite != whiteBefore {
-		t.Errorf("AllocCharge below threshold should not collect under hostTrigger: white flipped")
+		t.Errorf("HostSafepoint below threshold should not collect under hostTrigger: white flipped")
 	}
 }
 
-// TestHostTriggeredCollect_NoRecursionInFinalizer verifies that in the hostTrigger state,
-// an alloc (AllocCharge) inside a finalizer does not recursively trigger a Collect
-// (the collecting guard).
+// TestHostTriggeredCollect_NoRecursionInFinalizer verifies that a finalizer calling back
+// into the public API (which ends in HostSafepoint) does not start a nested Collect (the
+// collecting guard).
 func TestHostTriggeredCollect_NoRecursionInFinalizer(t *testing.T) {
-	a, c := newTestVM(t)
+	_, c := newTestVM(t)
 	c.SetHostTriggeredCollect(true)
 	c.threshold = 100
-	// Call Collect directly to verify the collecting guard: no AllocCharge inside
-	// Collect should re-enter
-	recursionDetected := false
+	nested := false
 	c.runFinalizer = func(_ arena.GCRef) {
-		// Charge a lot of alloc inside the finalizer, attempting to trigger a recursive Collect
 		c.AllocCharge(10000)
-		// If a recursive Collect happened, bytesAllocSince would be reset to 0 (Collect sets c.bytesAllocSince = 0)
-		// But here recursion should not actually happen — the collecting guard blocks it
+		c.HostSafepoint()
+		// A nested Collect would reset bytesAllocSince to 0.
 		if c.bytesAllocSince == 0 {
-			recursionDetected = true
+			nested = true
 		}
 	}
-	// Trigger one Collect (manually pushing a userdata with a finalizer is too complex; just Collect to verify the collecting flag)
+	// Register one userdata with a finalizer and drop it, so Collect runs the finalizer.
+	ud := object.AllocUserdata(c.a, 8)
+	c.LinkSweep(ud)
+	c.RegisterFinalizer(ud)
 	c.Collect()
-	_ = recursionDetected
-	_ = a
-	// Actual check: after Collect, collecting should be false (reset by defer)
+	if nested {
+		t.Error("HostSafepoint inside a finalizer started a nested Collect")
+	}
 	if c.collecting {
 		t.Error("collecting flag not reset after Collect returns")
 	}

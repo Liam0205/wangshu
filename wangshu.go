@@ -307,30 +307,22 @@ func (st *State) Collect() { st.core.Collect() }
 // sweep should call Collect directly.
 func (st *State) MaybeCollectNow() { st.core.MaybeCollectNow() }
 
-// SetHostTriggeredCollect toggles whether an object allocation crossing the GC
-// threshold collects directly (issue #9 direction 1, **experimental opt-in**).
+// SetHostTriggeredCollect toggles whether public API calls collect on their way
+// out once the allocation count has crossed the GC threshold (issue #9
+// direction 1). **Off by default.**
 //
-// **Off by default** — once enabled, any alloc (NewTable/SetIndex/rehash/
-// intern/stdlib alloc...) that crosses the GC threshold sweeps immediately.
-// **Safety contract**: the caller guarantees all transient GCRefs are reachable
-// from a GC root (pin table / shadow stack / another root); being linked on the
-// sweep chain does not keep an object alive.
+// The VM collects at its own safepoints (allocating opcodes, host-function
+// returns), but a host that builds tables and sets globals between short
+// scripts seldom reaches them, so its allocations pile up. With the switch on,
+// NewTable / NewArrayTable and its typed variants / Table.Set / Table.Get /
+// Table.Preallocate / SetGlobal / GetGlobal / GlobalsSlot / SetBySlot /
+// Register / RegisterModule / Call / CallInto / Program.Run / Program.Call /
+// ResetGlobalsToBaseline check the threshold just before returning, when what
+// they produced is already pinned or stored, so a collection there cannot sweep
+// an object still being built.
 //
-// **Not recommended for production before mid-construction pin safety is
-// audited**: the current stdlib (string.gsub etc.) + string intern's transient
-// GCRefs are not all explicitly registered via pin/shadow stack, and the
-// allocation helpers behind the public table constructors (NewTable,
-// NewArrayTable and its typed variants) root the new object only after charging
-// it, so enabling it introduces UAF risk. Known breaks: luasuite gc.lua / literals.lua /
-// nextvar.lua / pm.lua / strings.lua etc. (measured 2026-06-16).
-//
-// **Recommended alternative**: use Collect() / MaybeCollectNow() for explicit
-// cadence control (issue #9 direction 2, production-safe). The host embedding
-// layer just calls it periodically at pool-return / batch-completion points.
-// This method should only be considered for enabling "once the future
-// mid-construction pin audit is complete + the caller is sufficiently confident
-// about transient safety", as a convenience path with zero extra
-// cadence-control code.
+// The alternative is explicit cadence control: call Collect() / MaybeCollectNow()
+// at pool-return or batch-completion points (issue #9 direction 2).
 func (st *State) SetHostTriggeredCollect(on bool) { st.core.SetHostTriggeredCollect(on) }
 
 // SetStepBudget sets the execution work budget (<=0 disables): on overrun
@@ -397,7 +389,10 @@ func (st *State) MarkGlobalsBaseline() { st.core.MarkGlobalsBaseline() }
 // globals. Typical N ~ 100-200 (stdlib + host helpers), microseconds per Reset —
 // the cost is amortizable over the sync.Pool Borrow/Return boundary. Never call
 // it on the script hot path.
-func (st *State) ResetGlobalsToBaseline() { st.core.ResetGlobalsToBaseline() }
+func (st *State) ResetGlobalsToBaseline() {
+	st.core.ResetGlobalsToBaseline()
+	st.core.HostSafepoint()
+}
 
 // SetContext binds a context.Context to the State — at every preemption point
 // (back-edge / function frame entry / TFORLOOP etc.) the VM checks ctx.Err();
@@ -538,6 +533,7 @@ func (prog *Program) call(state *State, ar *Arena, args []Value) (results []Valu
 	for i, v := range inner {
 		out[i] = fromInnerWithPin(state, v)
 	}
+	state.core.HostSafepoint()
 	return out, nil
 }
 
@@ -554,6 +550,7 @@ func (prog *Program) call(state *State, ar *Arena, args []Value) (results []Valu
 // the arena column track instead.
 func (st *State) SetGlobal(name string, v Value) {
 	st.core.SetGlobal(name, v.toInner(st))
+	st.core.HostSafepoint()
 }
 
 // GetGlobal reads key name from the globals table (mirrors gopher-lua
@@ -573,7 +570,9 @@ func (st *State) SetGlobal(name string, v Value) {
 // instead ([[embedding-contract]] arena ABI section).
 func (st *State) GetGlobal(name string) Value {
 	v := st.core.GetGlobal(name)
-	return fromInnerWithPin(st, v)
+	out := fromInnerWithPin(st, v)
+	st.core.HostSafepoint()
+	return out
 }
 
 // GlobalsSlot is a pre-resolved globals-key handle (issue #13 part B).
@@ -619,6 +618,7 @@ type GlobalsSlot struct {
 func (st *State) GlobalsSlot(name string) GlobalsSlot {
 	ref := st.core.InternForEmbed([]byte(name))
 	pinIdx := st.core.PinRef(ref)
+	st.core.HostSafepoint()
 	return GlobalsSlot{st: st, pinIdx: pinIdx}
 }
 
@@ -639,6 +639,7 @@ func (st *State) SetBySlot(s GlobalsSlot, v Value) {
 		panic("wangshu: SetBySlot: slot has been released")
 	}
 	st.core.SetGlobalByRef(ref, v.toInner(st))
+	st.core.HostSafepoint()
 }
 
 // GetBySlot reads globals using a pre-resolved slot as key (dual of GetGlobal).
@@ -740,6 +741,7 @@ func (st *State) Call(fn Value, args ...Value) (results []Value, err error) {
 	for i, v := range inner {
 		out[i] = fromInnerWithPin(st, v)
 	}
+	st.core.HostSafepoint()
 	return out, nil
 }
 
@@ -789,6 +791,7 @@ func (st *State) CallInto(dst []Value, fn Value, args ...Value) (n int, err erro
 	for i := 0; i < n; i++ {
 		dst[i] = fromInnerWithPin(st, inner[i])
 	}
+	st.core.HostSafepoint()
 	return n, nil
 }
 

@@ -135,6 +135,40 @@ func TestOfficialSuite(t *testing.T) {
 
 func runWithTimeout(t *testing.T, name, src string) {
 	t.Helper()
+	runWithTimeoutOpts(t, name, src, false)
+}
+
+// TestOfficialSuiteHostTriggered runs the suite again with SetHostTriggeredCollect on. The
+// switch used to collect inside an allocation's own accounting, before the new object was
+// rooted, and gc / literals / nextvar / pm / strings / errors failed with it on; collections
+// now run when a public call returns, so the whole suite must pass the same either way.
+func TestOfficialSuiteHostTriggered(t *testing.T) {
+	files, err := filepath.Glob("testdata/*.lua")
+	if err != nil || len(files) == 0 {
+		t.Fatalf("no testdata files: %v", err)
+	}
+	for _, f := range files {
+		name := filepath.Base(f)
+		t.Run(name, func(t *testing.T) {
+			src, err := os.ReadFile(f)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body := string(src)
+			if limit := stopAt[name]; limit > 0 {
+				lines := strings.Split(body, "\n")
+				if limit > len(lines) {
+					limit = len(lines)
+				}
+				body = strings.Join(lines[:limit-1], "\n")
+			}
+			runWithTimeoutOpts(t, name, body, true)
+		})
+	}
+}
+
+func runWithTimeoutOpts(t *testing.T, name, src string, hostTriggered bool) {
+	t.Helper()
 	done := make(chan error, 1)
 	go func() {
 		prog, err := wangshu.Compile([]byte(src), "@"+name)
@@ -143,6 +177,7 @@ func runWithTimeout(t *testing.T, name, src string) {
 			return
 		}
 		st := wangshu.NewState(wangshu.Options{})
+		st.SetHostTriggeredCollect(hostTriggered)
 		_, err = prog.Run(st)
 		done <- err
 	}()
