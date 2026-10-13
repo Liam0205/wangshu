@@ -99,7 +99,8 @@ func TestMaybeCollectNow_Idempotent(t *testing.T) {
 }
 
 // TestSetHostTriggeredCollect_OptInOffByDefault verifies #9 direction 1 is off by default,
-// and once enabled AllocCharge crossing the threshold really triggers a collect.
+// and once enabled public API calls collect on their way out (HostSafepoint) once the
+// threshold is crossed.
 func TestSetHostTriggeredCollect_OptInOffByDefault(t *testing.T) {
 	// Default off: after repeated NewTable, GCCountKB keeps rising (host path accumulates,
 	// the VM safepoint does not trigger)
