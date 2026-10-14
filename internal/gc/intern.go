@@ -38,9 +38,11 @@ func HashString(b []byte) uint32 {
 // Intern returns the GCRef of a String object whose content equals b: reuse on
 // hit, otherwise allocate and insert into the table.
 //
-// Caller contract (06 §9.1): if the allocation triggers a GC, b must stay
-// reachable from a root (typically b comes from the Lua stack or a Go slice held
-// by the host stack; this function does not push a shadow stack itself).
+// Caller contract (06 §9.1): the allocation itself never collects, but it may grow the
+// arena, and a check point later in the same public call may collect, so b must not alias
+// memory the grow invalidates, and the returned GCRef has to reach a root before that check
+// point (typically b comes from the Lua stack or a Go slice held by the host stack; this
+// function does not push a shadow stack itself).
 func (c *Collector) Intern(b []byte) arena.GCRef {
 	h := HashString(b)
 	bucket := h & c.strMask
@@ -49,8 +51,8 @@ func (c *Collector) Intern(b []byte) arena.GCRef {
 			return ref
 		}
 	}
-	// Miss: allocate a new String and insert it. This allocation may trigger a
-	// GC — see the caller contract.
+	// Miss: allocate a new String and insert it. The allocation only grows the
+	// arena; see the caller contract.
 	ref := object.AllocString(c.a, b, h)
 	c.LinkSweep(ref) // link into the sweep chain
 	c.AllocCharge(object.StringObjectBytes(uint32(len(b))))
