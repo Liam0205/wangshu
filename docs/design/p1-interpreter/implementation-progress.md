@@ -632,6 +632,14 @@
   在每次收集后缩容、再扩栈时扩回，变慢)、#297(只靠宿主函数分配的脚本循环碰不到 safepoint,GC 从不触发)。两处在
   #294 之前的 `082a2cd` 上就能复现。
 
+## 2026-10-14：os.time 字段读取经过 __index（#299）
+
+`internal/stdlib/tablelib.go` 的数值字段读取和 `getBoolField` 改用 `IndexWithMeta`，
+传播处理函数错误，保留默认值、整数转换与时区算法。`test/language/ostime_index_test.go`
+增加 17 个子用例；PUC Lua 5.1.5 逐项核对，修复前 16 个失败、已有字段对照通过。
+机制见 [10 §9.1.1](./10-stdlib.md)，
+过程记录见 [#299 复盘](../../../llmdoc/memory/reflections/2026-10-14-issue299-os-time-index.md)。
+
 ## 相关
 
 [00-overview](./00-overview.md) · [../engineering](../engineering.md) ·
