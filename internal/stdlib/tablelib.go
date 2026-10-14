@@ -866,15 +866,17 @@ func zoneDSTOffsets(t time.Time) (std, dst int, ok bool) {
 	return base, base + 3600, true
 }
 
-// getBoolField reads a boolean field, reporting whether it was present at all --
-// PUC's getboolfield treats an absent field as false, but os.time needs to
-// distinguish "absent" from "explicitly false".
-func getBoolField(st *crescent.State, t arena.GCRef, key string) (bool, bool) {
-	v, _ := st.RawGet(t, intern(st, key))
-	if v == value.Nil {
-		return false, false
+// getBoolField follows lua_getfield, distinguishing an absent field from false.
+// PUC's getboolfield maps nil to -1 (let mktime determine DST).
+func getBoolField(st *crescent.State, t value.Value, key string) (bool, bool, *crescent.LuaError) {
+	v, e := st.IndexWithMeta(t, intern(st, key))
+	if e != nil {
+		return false, false, e
 	}
-	return value.Truthy(v), true
+	if v == value.Nil {
+		return false, false, nil
+	}
+	return value.Truthy(v), true, nil
 }
 
 func osFnTime(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
@@ -888,9 +890,13 @@ func osFnTime(st *crescent.State, args []value.Value) ([]value.Value, *crescent.
 	if value.Tag(args[0]) != value.TagTable {
 		return nil, crescent.NewArgError(1, "table expected, got "+st.TypeName(args[0]))
 	}
-	t := value.GCRefOf(args[0])
+	t := args[0]
 	getfield := func(key string, def int) (int, *crescent.LuaError) {
-		v, _ := st.RawGet(t, intern(st, key))
+		// PUC reads each field through lua_getfield, including optional fields.
+		v, e := st.IndexWithMeta(t, intern(st, key))
+		if e != nil {
+			return 0, e
+		}
 		if value.IsNumber(v) {
 			// os.time's getfield uses (int)lua_tointeger, same two-step narrowing.
 			return int(cCharCastInt32(value.AsNumber(v))), nil
@@ -937,7 +943,11 @@ func osFnTime(st *crescent.State, args []value.Value) ([]value.Value, *crescent.
 	// 1850 to 2199 (21528 cases), plus a 6600-case independent holdout. There is no
 	// exemption for this any more; an earlier revision had one and it was deleted when
 	// the difference went away.
-	if want, present := getBoolField(st, t, "isdst"); present {
+	want, present, e := getBoolField(st, t, "isdst")
+	if e != nil {
+		return nil, e
+	}
+	if present {
 		if stdOff, dstOff, ok := zoneDSTOffsets(tt); ok {
 			off := stdOff
 			if want {
