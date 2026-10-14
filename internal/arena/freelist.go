@@ -7,8 +7,8 @@
 //     bucket are uniform);
 //   - >64 words: enter the LARGE intrusive chain (word0=next, word1=block words,
 //     word2=prev), first-fit; a larger block is split, a remainder >64 words goes
-//     back as a LARGE block and a smaller one is rounded down into a small bucket
-//     (a tail below the smallest class is dropped).
+//     back as a LARGE block and a smaller one is rounded down to the largest small
+//     class that fits (the leftover words, at most 7, are dropped).
 //
 // LARGE blocks coalesce (issue #296): free LARGE blocks are also indexed by
 // their start and end offsets, so a returned block merges with the free LARGE
