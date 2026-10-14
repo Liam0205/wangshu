@@ -243,8 +243,10 @@ func (a *Arena) Compact(target uint64) {
 // content/chain pointers); the caller (the object constructor) must explicitly
 // initialize all fields.
 //
-// Insufficient capacity → triggers grow (GC is handled by the gc package's
-// MaybeCollect on the allocation-accounting path).
+// Insufficient capacity → grow. The arena never collects: allocation is charged through
+// gc.Collector.AllocCharge, and collection runs at the collector's check points
+// (Collector.MaybeCollect at the VM safepoints, Collector.HostSafepoint when the opt-in
+// switch is on and a public API call returns).
 // Exceeding maxCap (including uint32-wraparound-level requests) → panic
 // (fail-fast, no silent wrong result).
 func (a *Arena) AllocBytes(nbytes uint32) GCRef {
