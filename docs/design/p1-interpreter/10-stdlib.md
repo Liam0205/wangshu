@@ -1775,16 +1775,21 @@ os 库**纯 Go 实现**(roadmap §0 禁 cgo),用 Go `time`/`os` 包。跨平台�
 
 #### 9.1.1 `os.time` 的表协议:`isdst` 参与解释,不能忽略(#202,2026-07-28)
 
-`os.time(t)` 读 `year`/`month`/`day`(必需)+ `hour`/`min`/`sec`(可选,默认 12/0/0)之后,还要读
+`os.time(t)` 按 `sec`、`min`、`hour`、`day`、`month`、`year` 的顺序读取字段
+(`year`/`month`/`day` 必需，`hour`/`min`/`sec` 可选、默认 12/0/0)，之后还要读
 **`isdst`**——PUC 的 `os_time` 把它经 `getboolfield` 填进 `struct tm` 的 `tm_isdst` 再交给 `mktime`,用来确定
 一个 **DST 相关本地时间的解释**。原实现整个字段忽略,于是 `os.time{...,isdst=true}` 与不带这个字段的同一组
 字段返回**同一个瞬间**。
 
-两个实现要点:
+字段读取复用 `IndexWithMeta`，对应 PUC 的 `lua_getfield`（#299）：普通字段存在时不调用
+`__index`；缺失字段沿函数或表形式的 `__index` 查找。可选字段也必须先查找再采用默认值，
+不能因为有默认值就省略钩子调用。处理函数的错误直接传播；后续整数转换、默认值和时区算法保持不变。
 
-- **要区分「字段不存在」与「显式写了 false」**。PUC 的 `getboolfield` 把缺失字段当 false,但 `os.time` 需要
+实现要点:
+
+- **要区分「字段不存在」与「显式写了 false」**。PUC 的 `getboolfield` 把 nil 映射为 -1、false 映射为 0；`os.time` 需要
   知道调用方有没有表态:没表态时让时区自己决定,表态时才可能移位。落点
-  `internal/stdlib/tablelib.go::getBoolField` 返回 `(value, present)` 两个值。
+  `internal/stdlib/tablelib.go::getBoolField` 返回 `(value, present, error)`，查找过程的 Lua 错误向上传播。
 - **只在它与该日期在该时区的自然状态不一致时才有影响**。一致时 mktime 本来就给出同一个瞬间;不一致时按标准
   偏移与夏令时偏移之差移位(Go 的 `time.Date` 自己解析时区,所以要显式补这个差)。夏季日期加 `isdst=true` 在
   epoch 上比不带它早一小时。
