@@ -12,7 +12,7 @@
 | 目录 | package | 放什么 | 典型 build tag |
 |---|---|---|---|
 | `test/api/` | `api_test` | 宿主嵌入 API 面:State / Program 生命周期、arena 选项与 ABI、context 取消、io 句柄、沙箱与硬化、globals 槽、类型化数组表、预分配表 | 默认;`embedding_admin_default`(`!wangshu_p3`)/ `embedding_admin_p3`(p3+profile) |
-| `test/language/` | `language_test` | 语言与标准库语义:stdlib、table / table_puc51、meta、coroutine、global、register、getinfo、os.time isdst、baseline,以及 concurrency / longevity 压力测试 | 默认 |
+| `test/language/` | `language_test` | 语言与标准库语义:stdlib、table / table_puc51、meta、coroutine、global、register、getinfo、os.time isdst 与字段经 __index 读取、baseline,以及 concurrency / longevity 压力测试 | 默认 |
 | `test/tiering/` | `tiering_test` | 分层与晋升:tier 开关、promotion 计数、P2 bridge 端到端与阈值校准 | `wangshu_profile` 系列(p1 / p3 / p4 各有专属文件) |
 | `test/regression/` | `regression` | issue 回归:某个 crasher / 分歧被修好后用来固定行为的显式测试。命名 `issueNNN_*_test.go`;2026-09-09 从根目录并入的 5 个仍叫 `fuzz_NNN_test.go`,内容同类 | 按 issue 所在层各异 |
 | `test/fuzz/` | `fuzz_test` | 五个 `Fuzz*` harness + 与内嵌 oracle 比 C 调用深度的普通测试 `TestCDepth*`(`cdepth_*_test.go`)+ `raceEnabled` 常量 + `main_test.go`(`TestMain`)+ **`testdata/fuzz/` 语料** | 每个 harness 一族,见下 |
