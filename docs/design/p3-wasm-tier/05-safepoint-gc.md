@@ -255,7 +255,7 @@ end
 
 翻译后,循环体内的 `SETTABLE` 经 `$h_settable` 助手回 Go。**绝大多数迭代**:键已在表内(无 rehash),助手不分配,`gcPending` 不变。**偶发迭代**:写新键触发 rehash,助手分配、记账越过阈值后置 `gcPending`。设计阶段设想助手**可能选择不立即 collect**(为了不在每次 rehash 都 STW);实现里分配类助手末尾都调 `safepoint`,越过阈值就在助手内收集，见下面的澄清。
 
-> **澄清:Alloc 内 collect vs 推迟 collect 两种做法**(下面三条是设计阶段的讨论)。实现取的是：分配只记账，分配类 opcode / 助手结束时的 `safepoint` 按阈值同步 collect([06 §7.1](../p1-interpreter/06-memory-gc.md)),所以分配类助手返回时阈值已经检查过。`gcPending`(arena 里的标志字，镜像「`MaybeCollect` 会不会真的收集」)仍可能在 back edge 上为 1:只记账、不收集的路径(`Collector.Account`,线程值栈 / CallInfo 段扩容时用)越过阈值后，要等下一个检查点;back edge 的 `$h_safepoint` 正是这样的检查点，另外它还负责 loop fuel(步数预算)的扣减与检查，所以并不是从不跳。设计稿 06 §8.2 原先的基线是「Alloc 越阈值即同步 collect」(本文 §1.1.2 即按此);另一种设想是「置 pending,延到 safepoint 再 collect」。**两种做法 P3 都支持**:
+> **澄清:Alloc 内 collect vs 推迟 collect 两种做法**(下面三条是设计阶段的讨论)。实现取的是：分配只记账，分配类 opcode / 助手结束时的 `safepoint` 按阈值同步 collect([06 §7.1](../p1-interpreter/06-memory-gc.md)),所以分配类助手返回时阈值已经检查过。`gcPending`(arena 里的标志字，镜像「`MaybeCollect` 会不会真的收集」)仍可能在 back edge 上为 1:只记账、不收集的路径(`Collector.Account`,线程值栈 / CallInfo 段扩容时用)越过阈值后，要等下一个检查点;back edge 的 `$h_safepoint` 正是这样的检查点，另外它还负责 loop fuel(步数预算)的扣减与检查，所以并不是从不跳。设计稿 06 §8.2 原先的基线是「Alloc 越阈值即同步 collect」(本文 §1.1.2 原先按此画，现已改为实现的顺序);另一种设想是「置 pending,延到 safepoint 再 collect」。**两种做法 P3 都支持**:
 > - 若 P1/P3 取「Alloc 内立即 collect」:`gcPending` 在助手返回时已是 false,back edge 检查恒不跳——back edge safepoint 退化为纯保险(零开销,never taken)。
 > - 若 P1/P3 取「Alloc 置 pending、safepoint 才 collect」:助手返回时 `gcPending=true`,**back edge safepoint 正是兑现这次推迟 collect 的地方**。
 > **P3 的 back edge safepoint 对两种做法都正确**——它只是「若有 pending 就 collect」,不关心 pending 是谁置的、何时置的。这与 [05 §5.3](../p1-interpreter/05-interpreter-loop.md) 解释器的 `if vm.gcPending` 语义完全一致。
