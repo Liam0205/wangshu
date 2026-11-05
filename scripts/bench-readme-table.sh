@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
 # bench-readme-table.sh [--format-only <logdir>] [--outdir <logdir>] [--count N] [--benchtime T]
 #
-# One-shot reproduction of the README performance table: run the benchmarks
+# One-shot reproduction of the performance tables: run the benchmarks
 # under all three builds, collect the raw logs, and format them with
 # scripts/bench_readme_table.py into a Markdown table ready to paste into
-# the README.
+# docs/benchmarks.md (all three platforms) and, for linux/amd64, the
+# README.
 #
 # Each of the three builds runs once (P1 default build / P3 gibbous-wasm /
-# P4 gibbous-jit); the selected benchmarks match the README "reproduction
-# commands" section. Each build runs `-count` times and takes the median.
+# P4 gibbous-jit); the selected benchmarks match the "Reproducing" section
+# of docs/benchmarks.md. Each build runs `-count` times and takes the median.
 #
 # Shared-machine discipline (see llmdoc feedback_shared_machine_resource_limits):
 #   fixed `-cpu=1`, serial runs, one core at a time, never saturate the box.
@@ -49,7 +50,7 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-# DIRS/FLAGS stay in sync with the README reproduction-commands section.
+# DIRS/FLAGS stay in sync with the "Reproducing" section of docs/benchmarks.md.
 dirs="./baseline/ ./heavy/ ./realworld/ ./embedded/"
 
 # P1 (default build): crescent interpreter + gopher baseline (GopherKernel
@@ -117,8 +118,8 @@ if [ ! -f "$outdir/p1.log" ]; then
     exit 1
 fi
 
-# Header line: platform / CPU / toolchain / parameters (the README header
-# can copy this line verbatim).
+# Header line: platform / CPU / toolchain / parameters (the table header in
+# docs/benchmarks.md can copy this line verbatim).
 goos="$(go env GOOS)"; goarch="$(go env GOARCH)"
 gover="$(go version | awk '{print $3}')"
 cpu="$(grep -m1 'model name' /proc/cpuinfo 2>/dev/null | sed 's/.*: //')"

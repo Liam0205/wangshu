@@ -2,11 +2,12 @@
 # bench_readme_table.py <logdir>
 #
 # Parse the three raw benchmark logs bench-readme-table.sh drops into
-# <logdir> (p1.log / p3.log / p4.log) into the Markdown text of the README
-# performance table.
+# <logdir> (p1.log / p3.log / p4.log) into the Markdown text of one
+# platform's performance table (docs/benchmarks.md; the linux/amd64 one is
+# also shown in the README).
 #
 # Each benchmark takes the median (ns/op) over its -count runs; the ratio is
-# gopher / X (higher is better). Output follows the README's existing layout
+# gopher / X (higher is better). Output follows the tables' existing layout
 # conventions:
 #   - format "wall time (ratio x)"
 #   - **bold** = fastest wall time in the row (gopher column included)
@@ -120,7 +121,7 @@ def build_row(label, unit, g, cols):
 
     The gopher column shows wall time only, no ratio. Bold goes to the
     row's fastest wall time (gopher included); footnotes attach outside
-    the bold (matching the README's existing layout: `**...** [^x]`)."""
+    the bold (matching the tables' existing layout: `**...** [^x]`)."""
     walls = [g] + [c[0] for c in cols if c[0] is not None and c[1] is None]
     fastest = min(walls)
     out = []

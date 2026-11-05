@@ -253,7 +253,7 @@ v2 / v3 分别镜像 §5.1 的流程,每档独立判定。**v3 达标即 P5 全�
 
 见 [./01-launch-judgment.md](./01-launch-judgment.md) §6.1,P4 验收数据是 P5 立项的 baseline;本节说明 P5 验收数据出台之后如何与 P4 数据兼容对读:
 
-- **P5 数字不取代 P4 数字**——项目 README perf table 应该展示 P4 与 P5 并列(见 [../p4-method-jit/09-acceptance-checklist.md](../p4-method-jit/09-acceptance-checklist.md) §3.7 addendum「权威现值 vs 验收时点快照」同样的纪律);
+- **P5 数字不取代 P4 数字**——性能表([docs/benchmarks.md](../../benchmarks.md) 与 README 里的 linux/amd64 表)应该展示 P4 与 P5 并列(见 [../p4-method-jit/09-acceptance-checklist.md](../p4-method-jit/09-acceptance-checklist.md) §3.7 addendum「权威现值 vs 验收时点快照」同样的纪律);
 - **P4 已知损失(§6.2 issue #39/#40)在 P5 上是否复现**——如果 P5 v1 阶段运行时 issue #40 arm64 P4 回归还没解决,P5 arm64 数据与 P4 arm64 数据的对比读法需要显式声明基线;
 - **P3 主动保留(D2 决议)对 P5 的影响**——如果首个宿主选 P3 wasm build(iOS / seccomp 场景),P5 无法接管;P5 验收只在 P4 + P5 build 上进行,P3-only build 保留 P4 之前的状态。
 

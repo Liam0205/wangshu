@@ -3,8 +3,9 @@ name: bench-readme-table
 # Manual-trigger benchmark table run on hosted runners (2026-07-10).
 #
 # Runs scripts/bench-readme-table.sh (the exact same script that
-# produces the README performance table) on the selected platform(s)
-# and uploads the raw logs + formatted Markdown table as artifacts.
+# produces the performance tables in docs/benchmarks.md and the README)
+# on the selected platform(s) and uploads the raw logs + formatted
+# Markdown table as artifacts.
 #
 # HOSTED-RUNNER CAVEATS (read before using the numbers):
 #   - Hosted runners are shared VMs: co-tenant interference makes
