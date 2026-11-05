@@ -21,162 +21,6 @@ Naming: *Lua* means "moon" in Portuguese; *Wangshu* (望舒) is the Chinese myth
 - Platform: verified on Linux/amd64, Linux/arm64, macOS/arm64; other platforms remain reachable.
 - Industrial-grade: Wangshu was built to serve production business needs from day one, and already runs in production at the company I work for. From testing to CI to the various nightly fuzz jobs, everything is driven toward industrial-grade project requirements. Wangshu has never been, and can never be, a personal practice project. Our goal is for Wangshu to become the de facto standard for embedding Lua in Go projects.
 
-## Architecture
-
-Wangshu uses a layered VM architecture; execution tiers are named after lunar phases:
-
-```
-P1 interpreter ──► P2 tiering bridge ──► P3 Wasm compilation ──► P4 method JIT (RC) ──► P5 trace JIT (not yet)
-(crescent)         (bridge)              (gibbous)                (gibbous)              (fullmoon)
-```
-
-Architectural invariants:
-
-* NaN-boxed u64 value representation.
-* Self-managed arena as linear memory — all tiers share the same block.
-* P1 interpreter is always available — it is the deopt landing site and the semantic oracle for every compilation tier.
-* Byte-equal output across tiers is a CI gate.
-
-## Performance
-
-Numbers come from a standardized benchmark round on GitHub Actions hosted runners (the `bench-readme-table` workflow, `-benchtime=2s -count=3 -cpu=1`, median, 2026-07-10, [run 29098511106](https://github.com/Liam0205/wangshu/actions/runs/29098511106)) — all three platforms in one round on the same code. Format is "wall time (ratio over gopher-lua)"; larger is better; **bold** marks the fastest cell in a row, <ins>underline</ins> marks ratios ≥ 1.5×.
-
-> **How to read**: hosted runners are shared VMs — absolute wall times can swing 10-20% between rounds. **Read the ratios**; wall times are only an order-of-magnitude reference within one round. The denominator is gopher-lua measured on the SAME runner in the SAME round (numerator and denominator share the interference, so ratios stay self-consistent). Do not compare wall times across rounds or platforms. Every number traces back to the raw logs in the run artifact.
-
-### linux/amd64 (Intel Xeon Platinum 8573C)
-
-| Category | Script | gopher | P1 | P3 auto | P3 force | P4 auto | P4 force |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| Pure-VM micro [^cat-baseline] | Simple (branch/compare) | 826 ns | **<ins>149 ns (5.54×)</ins>** | <ins>4246 ns (2.00×)</ins> [^p3-kernel] | 9613 ns (0.88×) [^p3-kernel] | <ins>165 ns (5.02×)</ins> | <ins>165 ns (5.02×)</ins> |
-|  | Arith (Horner) | 994 ns | <ins>209 ns (4.75×)</ins> | <ins>6512 ns (2.35×)</ins> [^p3-kernel] | 11423 ns (1.34×) [^p3-kernel] | **<ins>207 ns (4.81×)</ins>** | **<ins>207 ns (4.81×)</ins>** |
-|  | Loop (summing loop) | 60.6 µs | **<ins>20.1 µs (3.01×)</ins>** | <ins>419 µs (7.25×)</ins> [^p3-kernel] | <ins>405 µs (7.49×)</ins> [^p3-kernel] | <ins>22.8 µs (2.66×)</ins> | <ins>22.8 µs (2.66×)</ins> |
-| Heavy kernels [^cat-heavy] | HeavyArith | 292 ms | <ins>84.3 ms (3.46×)</ins> | <ins>97.6 ms (2.99×)</ins> | <ins>97.2 ms (3.00×)</ins> | <ins>16.2 ms (18.0×)</ins> | **<ins>15.7 ms (18.5×)</ins>** |
-|  | HeavyRecursion | 9.34 ms | <ins>5.51 ms (1.69×)</ins> | <ins>5.93 ms (1.58×)</ins> | 6.44 ms (1.45×) | <ins>1.94 ms (4.80×)</ins> | **<ins>1.89 ms (4.93×)</ins>** [^selftail] |
-|  | HeavyFloatloop | 464 ms | <ins>166 ms (2.80×)</ins> | <ins>57.7 ms (8.03×)</ins> | <ins>60.0 ms (7.73×)</ins> | <ins>26.2 ms (17.7×)</ins> | **<ins>25.7 ms (18.0×)</ins>** |
-| realworld small [^cat-realworld] | fib | 10.2 ms | 11.8 ms (0.87×) | 12.8 ms (0.80×) [^p3-gate] | 27.7 ms (0.37×) | **<ins>1.09 ms (9.35×)</ins>** [^seg2seg] | <ins>1.12 ms (9.10×)</ins> [^seg2seg] |
-|  | binary-trees | 56.0 ms | 41.4 ms (1.35×) | 45.1 ms (1.24×) [^p3-gate] | 118 ms (0.48×) | **<ins>29.7 ms (1.89×)</ins>** | <ins>31.5 ms (1.78×)</ins> [^seg2seg] |
-|  | spectral-norm | 37.0 ms | <ins>21.1 ms (1.75×)</ins> | 25.3 ms (1.46×) [^p3-gate] | 53.4 ms (0.69×) | <ins>2.46 ms (15.0×)</ins> | **<ins>2.40 ms (15.4×)</ins>** [^seg2seg] |
-|  | fannkuch | 4.87 ms | 6.32 ms (0.77×) | 7.00 ms (0.70×) | 7.12 ms (0.68×) | <ins>0.65 ms (7.51×)</ins> | **<ins>0.62 ms (7.87×)</ins>** [^seg2seg] |
-|  | n-body | 68.4 ms | 53.7 ms (1.27×) | 56.0 ms (1.22×) [^p3-gate] | 108 ms (0.63×) | <ins>4.70 ms (14.5×)</ins> [^math-intrinsic] | **<ins>4.64 ms (14.7×)</ins>** [^math-intrinsic] |
-| Boundary mini · Call [^cat-mini] | PureVM | 844 ns | **<ins>151 ns (5.58×)</ins>** | — | — | — | — |
-|  | CallOnly | **104 ns** | 222 ns (0.47×) | 235 ns (0.44×) | 365 ns (0.28×) | 251 ns (0.41×) | 251 ns (0.41×) |
-|  | Boundary (+SetGlobal) | **220 ns** | 392 ns (0.56×) | 400 ns (0.55×) | 830 ns (0.27×) | 351 ns (0.63×) | 342 ns (0.64×) |
-| Boundary mini · CallInto [^cat-mini] | PureVM | 844 ns | **<ins>151 ns (5.58×)</ins>** | — | — | — | — |
-|  | CallOnly | 104 ns | **84.9 ns (1.22×)** | 85.6 ns (1.21×) | 196 ns (0.53×) | 114 ns (0.90×) | 115 ns (0.90×) |
-|  | Boundary (+SetGlobal) | 220 ns | 230 ns (0.96×) | 244 ns (0.90×) | 618 ns (0.36×) | **191 ns (1.15×)** | 198 ns (1.11×) |
-| Real workload · Call [^cat-embed] | Predicate (×1000) | 568 µs | 660 µs (0.86×) | 697 µs (0.82×) | 1241 µs (0.46×) | 571 µs (0.99×) | **554 µs (1.03×)** |
-|  | Transform (×1000) | **466 µs** | 493 µs (0.95×) | 532 µs (0.88×) | 801 µs (0.58×) | 488 µs (0.95×) | 475 µs (0.98×) |
-| Real workload · CallInto [^cat-embed] | Predicate (×1000) | 568 µs | 489 µs (1.16×) | 507 µs (1.12×) | 1043 µs (0.54×) | **382 µs (1.49×)** | 394 µs (1.44×) |
-|  | Transform (×1000) | 466 µs | 355 µs (1.31×) | 348 µs (1.34×) | 589 µs (0.79×) | <ins>310 µs (1.51×)</ins> | **<ins>306 µs (1.52×)</ins>** |
-
-### linux/arm64 (Azure Cobalt 100, Neoverse-N2 class)
-
-| Category | Script | gopher | P1 | P3 auto | P3 force | P4 auto | P4 force |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| Pure-VM micro [^cat-baseline] | Simple (branch/compare) | 987 ns | **<ins>196 ns (5.03×)</ins>** | <ins>6016 ns (1.66×)</ins> [^p3-kernel] | 10223 ns (0.97×) [^p3-kernel] | <ins>206 ns (4.80×)</ins> | <ins>206 ns (4.80×)</ins> |
-|  | Arith (Horner) | 1162 ns | **<ins>236 ns (4.92×)</ins>** | <ins>8277 ns (2.19×)</ins> [^p3-kernel] | 12312 ns (1.47×) [^p3-kernel] | <ins>252 ns (4.62×)</ins> | <ins>252 ns (4.62×)</ins> |
-|  | Loop (summing loop) | 73.4 µs | **<ins>23.1 µs (3.18×)</ins>** | <ins>594 µs (6.04×)</ins> [^p3-kernel] | <ins>594 µs (6.04×)</ins> [^p3-kernel] | <ins>29.0 µs (2.53×)</ins> | <ins>29.0 µs (2.53×)</ins> |
-| Heavy kernels [^cat-heavy] | HeavyArith | 300 ms | <ins>96.5 ms (3.11×)</ins> | <ins>119 ms (2.52×)</ins> | <ins>119 ms (2.53×)</ins> | <ins>23.1 ms (13.0×)</ins> | **<ins>22.0 ms (13.7×)</ins>** |
-|  | HeavyRecursion | 9.53 ms | 6.59 ms (1.45×) | 7.59 ms (1.26×) | 8.07 ms (1.18×) | **<ins>2.42 ms (3.93×)</ins>** | <ins>2.42 ms (3.93×)</ins> [^selftail] |
-|  | HeavyFloatloop | 524 ms | <ins>190 ms (2.76×)</ins> | <ins>84.9 ms (6.17×)</ins> | <ins>85.0 ms (6.17×)</ins> | **<ins>37.0 ms (14.2×)</ins>** | <ins>37.1 ms (14.1×)</ins> |
-| realworld small [^cat-realworld] | fib | 12.5 ms | 14.4 ms (0.87×) | 16.1 ms (0.78×) [^p3-gate] | 29.9 ms (0.42×) | <ins>1.46 ms (8.56×)</ins> [^seg2seg] | **<ins>1.46 ms (8.57×)</ins>** [^seg2seg] |
-|  | binary-trees | 63.9 ms | 52.0 ms (1.23×) | 54.9 ms (1.16×) [^p3-gate] | 120 ms (0.53×) | **<ins>37.1 ms (1.72×)</ins>** | <ins>37.1 ms (1.72×)</ins> [^seg2seg] |
-|  | spectral-norm | 45.5 ms | <ins>27.3 ms (1.67×)</ins> | 31.8 ms (1.43×) [^p3-gate] | 55.4 ms (0.82×) | <ins>5.62 ms (8.10×)</ins> | **<ins>5.62 ms (8.10×)</ins>** [^seg2seg] |
-|  | fannkuch | 5.76 ms | 7.21 ms (0.80×) | 7.46 ms (0.77×) | 7.46 ms (0.77×) | <ins>0.83 ms (6.90×)</ins> | **<ins>0.83 ms (6.92×)</ins>** [^seg2seg] |
-|  | n-body | 77.7 ms | 57.4 ms (1.35×) | 59.5 ms (1.30×) [^p3-gate] | 106 ms (0.73×) | <ins>8.86 ms (8.77×)</ins> [^math-intrinsic] | **<ins>8.86 ms (8.77×)</ins>** [^math-intrinsic] |
-| Boundary mini · Call [^cat-mini] | PureVM | 1000 ns | **<ins>198 ns (5.05×)</ins>** | — | — | — | — |
-|  | CallOnly | **132 ns** | 279 ns (0.48×) | 301 ns (0.44×) | 429 ns (0.31×) | 368 ns (0.36×) | 364 ns (0.36×) |
-|  | Boundary (+SetGlobal) | **279 ns** | 460 ns (0.61×) | 488 ns (0.57×) | 902 ns (0.31×) | 479 ns (0.58×) | 482 ns (0.58×) |
-| Boundary mini · CallInto [^cat-mini] | PureVM | 1000 ns | **<ins>198 ns (5.05×)</ins>** | — | — | — | — |
-|  | CallOnly | 132 ns | **132 ns (1.00×)** | 147 ns (0.90×) | 216 ns (0.61×) | 202 ns (0.65×) | 204 ns (0.65×) |
-|  | Boundary (+SetGlobal) | **279 ns** | 312 ns (0.89×) | 325 ns (0.86×) | 689 ns (0.41×) | 319 ns (0.87×) | 319 ns (0.87×) |
-| Real workload · Call [^cat-embed] | Predicate (×1000) | **665 µs** | 812 µs (0.82×) | 810 µs (0.82×) | 1388 µs (0.48×) | 746 µs (0.89×) | 751 µs (0.88×) |
-|  | Transform (×1000) | **546 µs** | 634 µs (0.86×) | 660 µs (0.83×) | 935 µs (0.58×) | 670 µs (0.81×) | 666 µs (0.82×) |
-| Real workload · CallInto [^cat-embed] | Predicate (×1000) | 665 µs | 645 µs (1.03×) | 632 µs (1.05×) | 1190 µs (0.56×) | **556 µs (1.20×)** | 563 µs (1.18×) |
-|  | Transform (×1000) | 546 µs | **471 µs (1.16×)** | 505 µs (1.08×) | 727 µs (0.75×) | 489 µs (1.12×) | 481 µs (1.13×) |
-
-### darwin/arm64 (Apple M-series, macos-latest)
-
-| Category | Script | gopher | P1 | P3 auto | P3 force | P4 auto | P4 force |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| Pure-VM micro [^cat-baseline] | Simple (branch/compare) | 792 ns | <ins>141 ns (5.63×)</ins> | <ins>5002 ns (1.62×)</ins> [^p3-kernel] | 8899 ns (0.91×) [^p3-kernel] | **<ins>134 ns (5.93×)</ins>** | **<ins>134 ns (5.93×)</ins>** |
-|  | Arith (Horner) | 909 ns | <ins>188 ns (4.82×)</ins> | <ins>6509 ns (2.31×)</ins> [^p3-kernel] | 11250 ns (1.34×) [^p3-kernel] | **<ins>169 ns (5.37×)</ins>** | **<ins>169 ns (5.37×)</ins>** |
-|  | Loop (summing loop) | 56.5 µs | **<ins>18.0 µs (3.14×)</ins>** | <ins>850 µs (3.24×)</ins> [^p3-kernel] | <ins>820 µs (3.36×)</ins> [^p3-kernel] | <ins>21.1 µs (2.68×)</ins> | <ins>21.1 µs (2.68×)</ins> |
-| Heavy kernels [^cat-heavy] | HeavyArith | 214 ms | <ins>95.5 ms (2.24×)</ins> | <ins>97.0 ms (2.21×)</ins> | <ins>97.4 ms (2.20×)</ins> | **<ins>34.2 ms (6.26×)</ins>** | <ins>35.2 ms (6.08×)</ins> |
-|  | HeavyRecursion | 10.9 ms | <ins>5.24 ms (2.08×)</ins> | <ins>6.38 ms (1.71×)</ins> | <ins>6.84 ms (1.59×)</ins> | <ins>1.76 ms (6.19×)</ins> | **<ins>1.75 ms (6.23×)</ins>** [^selftail] |
-|  | HeavyFloatloop | 423 ms | <ins>144 ms (2.95×)</ins> | <ins>118 ms (3.59×)</ins> | <ins>119 ms (3.56×)</ins> | **<ins>37.3 ms (11.3×)</ins>** | <ins>37.6 ms (11.3×)</ins> |
-| realworld small [^cat-realworld] | fib | 10.4 ms | 12.2 ms (0.85×) | 13.0 ms (0.80×) [^p3-gate] | 25.2 ms (0.41×) | **<ins>0.99 ms (10.5×)</ins>** [^seg2seg] | <ins>1.00 ms (10.4×)</ins> [^seg2seg] |
-|  | binary-trees | 59.8 ms | 47.0 ms (1.27×) | 41.6 ms (1.44×) [^p3-gate] | 94.1 ms (0.64×) | **<ins>26.0 ms (2.30×)</ins>** | <ins>26.0 ms (2.30×)</ins> [^seg2seg] |
-|  | spectral-norm | 36.1 ms | <ins>21.8 ms (1.65×)</ins> | <ins>22.6 ms (1.59×)</ins> [^p3-gate] | 45.6 ms (0.79×) | **<ins>4.51 ms (8.01×)</ins>** | <ins>4.63 ms (7.80×)</ins> [^seg2seg] |
-|  | fannkuch | 4.84 ms | 6.75 ms (0.72×) | 6.18 ms (0.78×) | 6.20 ms (0.78×) | **<ins>0.69 ms (6.99×)</ins>** | <ins>0.71 ms (6.82×)</ins> [^seg2seg] |
-|  | n-body | 65.5 ms | 45.3 ms (1.45×) | 44.3 ms (1.48×) [^p3-gate] | 79.4 ms (0.83×) | **<ins>6.88 ms (9.52×)</ins>** [^math-intrinsic] | <ins>6.91 ms (9.48×)</ins> [^math-intrinsic] |
-| Boundary mini · Call [^cat-mini] | PureVM | 908 ns | **<ins>145 ns (6.28×)</ins>** | — | — | — | — |
-|  | CallOnly | **97.3 ns** | 190 ns (0.51×) | 178 ns (0.55×) | 307 ns (0.32×) | 223 ns (0.44×) | 224 ns (0.43×) |
-|  | Boundary (+SetGlobal) | **212 ns** | 323 ns (0.66×) | 297 ns (0.72×) | 719 ns (0.30×) | 308 ns (0.69×) | 298 ns (0.71×) |
-| Boundary mini · CallInto [^cat-mini] | PureVM | 908 ns | **<ins>145 ns (6.28×)</ins>** | — | — | — | — |
-|  | CallOnly | 97.3 ns | **75.4 ns (1.29×)** | 79.6 ns (1.22×) | 170 ns (0.57×) | 112 ns (0.87×) | 113 ns (0.86×) |
-|  | Boundary (+SetGlobal) | 212 ns | 196 ns (1.08×) | 188 ns (1.13×) | 516 ns (0.41×) | **177 ns (1.20×)** | 178 ns (1.20×) |
-| Real workload · Call [^cat-embed] | Predicate (×1000) | 566 µs | 581 µs (0.97×) | 522 µs (1.08×) | 967 µs (0.59×) | **472 µs (1.20×)** | 480 µs (1.18×) |
-|  | Transform (×1000) | 423 µs | **406 µs (1.04×)** | 407 µs (1.04×) | 610 µs (0.69×) | 418 µs (1.01×) | 415 µs (1.02×) |
-| Real workload · CallInto [^cat-embed] | Predicate (×1000) | 566 µs | 442 µs (1.28×) | 432 µs (1.31×) | 856 µs (0.66×) | **<ins>348 µs (1.63×)</ins>** | <ins>350 µs (1.62×)</ins> |
-|  | Transform (×1000) | 423 µs | 330 µs (1.28×) | 301 µs (1.40×) | 498 µs (0.85×) | **293 µs (1.44×)** | 294 µs (1.44×) |
-
-[^cat-baseline]: `benchmarks/baseline`. Three self-contained scripts (Simple branch-compare, Arith six-order Horner polynomial, Loop sum 1..N), no Go↔Lua boundary crossing. Shows VM-core dispatch / arithmetic / loop cost under minimum workload.
-[^selftail]: P4 mono self-tail-call in-segment loop (issue #112 / PR #113, 2026-07-10, amd64 + arm64 shipped): when `return f(...)` calls the running closure itself, the segment moves the arguments and jumps back to its entry (bit-identical to re-entering under PUC tail-call frame-reuse semantics) instead of paying a per-level segment exit + Go re-entry. HeavyRecursion (collatz — every recursive call is a TAILCALL) was previously the only workload in the table where promotion LOST to the P1 interpreter (amd64 1.15× vs P1 1.58×; Cobalt arm64 0.98×, losing to gopher outright); this round it lands at amd64 **4.93×** / arm64 **3.93×** / macOS **6.23×** — a ~4× improvement on all three platforms, with fib / HeavyArith unchanged in the same round.
-[^cat-heavy]: `benchmarks/heavy`. Three flat numeric kernels (HeavyArith pure arithmetic, HeavyRecursion self-recursion, HeavyFloatloop nested float loop); intentionally excludes tables, strings, library CALL and other helper-bound structures. Shows the compilation tier's performance ceiling on shapes that actually let it work.
-[^cat-realworld]: `benchmarks/realworld`. Five benchmark-game scripts (fib / binary-trees / spectral-norm / fannkuch / n-body); a single-pass semantics run is differential-tested against the official lua5.1.5 (byte-equal). Shows conventional load under a mix of calls / allocations / floats / table ops.
-[^p3-gate]: P3 auto carries a helper-density profitability gate (issue #39, 2026-07-03): when a hot proto's op mix is dominated by helper round trips (the wasm→Go boundary cost eats the promotion win), promotion is declined and the proto stays on the interpreter. Rows with this marker declined promotion; the number IS interpreter execution (the delta vs the P1 column is sampling-hook overhead). The P3 force column is unaffected (force-all bypasses the gate to preserve differential coverage).
-[^p3-kernel]: The baseline P3 columns run a different workload from the other columns (issue #93): a top-level chunk is vararg and never promotes, so P3 must measure the body wrapped in an inner kernel called 50 times, while the other columns run the bare top-level ×1. The P3 ratios therefore use the SAME-shape gopher baseline (`_GopherKernel`, gopher running the identical kernel×50) as denominator, and the wall times are not directly comparable with the rest of the row (~50× the work). The table previously divided by the top-level ×1 gopher number, understating P3 by ~50× (the old 0.06×-0.25× cells were really 1.3×-3.2×). All platform tables are produced under the corrected basis.
-[^seg2seg]: P4 segment-to-segment CALL dispatch (issue #50, 2026-07-04, delivered on both amd64 and arm64): self-recursive / arith-callee shapes (the fib pattern) used to pay a cross-boundary round trip per call (mmap RET → Go dispatch → host.CallBaseline → mmap re-entry); the caller segment now `call`s directly into the callee segment, which builds/tears its frame in-segment and recurses natively without ever leaving mmap. fib / spectral-norm / fannkuch and other self-recursive or arith-callee loads flipped to double-digit ratios as a result; binary-trees' `check` (self-recursion + GETTABLE ArrayHit table reads) unlocked once ArrayHit sites became seg2seg-eligible, with bottomup's allocation as the remaining bottleneck. Both arches share the win; see the three tables above for current per-platform numbers.
-[^math-intrinsic]: P4 math.* intrinsic emission (issue #77 / PR #87, 2026-07-08, amd64 + arm64 shipped): when a CALL site's IC observes the callee is a known pure-numeric host closure (sqrt / floor / ceil / abs / max / min), the segment emits the hardware instruction directly (amd64 SQRTSD / ROUNDSD etc., arm64 FSQRT / FRINTM etc.) instead of an exit-reason round trip to the Go host closure. n-body's steady state is almost entirely `sqrt(dist2)` calls; it was previously stuck both ways — each sqrt paid a boundary round trip AND the CALL density gate misjudged the hot function as "too call-dense to promote". With #77 (intrinsic CALLs excluded from the density gate + inline sqrt emission) it flipped from ~P1-level to double-digit ratios on both arches, byte-equal with the interpreter (including NaN / Inf / ±0).
-[^cat-mini]: `benchmarks/embedded`, mini_bench_test.go. The minimal shape of the embed path: one SetGlobal + one Call + one result read per iter. Shows raw boundary-crossing cost, plus the delta between the allocating `Call` path and the zero-alloc `CallInto` path.
-[^cat-embed]: `benchmarks/embedded`, realworld_embedded_bench_test.go. A batch of 1000 items — per item set fields → Call predicate / feature-transform script → read scalar result, shaped after pineapple's `transform_by_lua`. Shows steady-state throughput of a real batch-processing embed.
-
-### What each column means
-
-- **`gopher`** — gopher-lua v1.1.2, the baseline. Every ratio in the table is `gopher / X`; larger is better.
-- **`P1`** — default `go build`, pure interpreter (crescent), no promotion, single column.
-- **`P3 auto` / `P3 force`** — two measurements of the gibbous-wasm compilation tier under `wangshu_p3 wangshu_profile` build (see the next section).
-- **`P4 auto` / `P4 force`** — two measurements of the gibbous-jit method JIT under `wangshu_p4 wangshu_profile` build.
-- **`Call` / `CallInto`** — two boundary call styles: `st.Call` allocates a fresh `[]Value` slice per call; `st.CallInto` reuses the caller's `dst`, zero-alloc. Split only in cross-boundary benchmarks.
-
-> `—` marks scenarios where the Call / CallInto split does not apply (PureVM has no boundary; the baseline short scripts on the compilation tier have no separate numbers because they never promote).
-
-### auto vs force applies only to P3/P4
-
-The compilation tiers (P3/P4) are not "install and it runs". They rely on a **heat-threshold automatic promotion** mechanism:
-
-1. Every function (Proto) starts on the P1 crescent interpreter.
-2. Each call bumps a counter; the `wangshu_profile` build tag turns this sampler on (without it, sampling is disabled and the compilation tier collapses back to P1).
-3. Once the counter crosses `HotEntryThreshold` (default 200), if the Proto passes the F1-F7 compilability checks, it is promoted to P3 or P4, and subsequent calls run on the compiled tier.
-4. Protos that cannot be promoted (coroutines / top-level vararg / `ReasonUnknownCall` / VARARG etc.) stay on P1 as a silent fallback.
-
-So each of P3/P4 has two columns:
-
-- **`auto`** — production mode. The State is long-lived; the first ~200 calls run on P1, then the promoted tier takes over. Over `b.N`, the warmup tail is usually within noise.
-- **`force`** — `SetForceAllPromote(true)` forces all promotable Protos up immediately, followed by one warmup run to measure steady state. **Not a production mode**; used only for differential testing and benchmark upper bounds.
-
-The two steady-state numbers should be close in theory; any large gap indicates the promotion policy or threshold needs tuning.
-
-### Reproduction commands
-
-The three tables above are produced by the `bench-readme-table` workflow — one round of the same script on all three platforms (linux/amd64, linux/arm64, darwin/arm64) on GitHub Actions, raw logs and tables landing in the run artifact:
-
-```bash
-gh workflow run bench-readme-table.yml -f os=all -f count=3   # standard three-platform round
-gh workflow run bench-readme-table.yml --ref <branch> -f os=amd64  # single platform on any branch
-```
-
-The same script runs on a local dev machine (for before/after A/B comparisons of an optimization — same-machine same-round relative comparison is steadier than hosted runners):
-
-```bash
-./scripts/bench-readme-table.sh              # full run + Markdown table on stdout
-./scripts/bench-readme-table.sh --count 5    # 5 repetitions per tier, median
-./scripts/bench-readme-table.sh --format-only <logdir>  # reformat existing logs without rerunning
-```
-
-The script auto-detects `goos/goarch`; the same command reproduces the matching table on any platform.
-
 ## Quick start
 
 ### Minimal example
@@ -310,31 +154,111 @@ For long-lived State scenarios (rule-engine hot reload / data-flow transformatio
 
 ## Language coverage
 
-Wangshu implements the Lua 5.1 core language (same surface as LuaJIT), covering 37 of the 38 bytecode opcodes defined by the Lua 5.1 reference manual (`VARARG` never enters the P3/P4 compilation tier and stays on the P1 path), plus the mandatory surface of the base / string / table / math / os / io / coroutine stdlib.
+Wangshu implements the Lua 5.1 core language, with the same syntax surface as LuaJIT:
 
-Correctness is verified at four layers:
+- **Language**: the full syntax of the Lua 5.1 reference manual; all 38 bytecode opcodes. `VARARG` runs only on the P1 interpreter, so functions that use it are not promoted to P3/P4.
+- **Standard library**: base, string, table, math, os and coroutine are all provided.
+- **io**: `io.write` / `io.read` / `io.lines` and the three standard streams `io.stdout` / `io.stdin` / `io.stderr`. The streams are real file-handle userdata supporting `:write` / `:read` / `:lines` / `:flush` / `:close`. The parts that need to open real files are not provided; see the table below.
+- **debug**: `debug.traceback` and `debug.getinfo`. `getinfo` fills only the fields it can answer truthfully (`currentline` / `source` / `short_src` / `what` / `func`); `nups` / `activelines` / `namewhat` are left out.
 
-1. **Official test suite byte-equal**: 13 files from Lua 5.1.5 (vararg / sort / pm as full files, others up to the exemption line) byte-equal.
-2. **Reference-manual probes**: 100 manual features + 12 corner cases + 29 error messages (with line-number assertions) + 70 seed cases, all byte-equal.
-3. **Differential random fuzz**: the nightly-diff-fuzz workflow runs 2M random scripts per night against the Lua 5.1.5 oracle (P1 + P3 + P4 in parallel).
-4. **Three-way diff**: crescent (P1) vs gibbous (P3/P4) under the P4 build runs a byte-equal check every CI, PRs #29/#31 green across the tri-platform matrix.
-
-**Exemption list** (`test/difftest/corners_test.go::exemptions`, 15 items, auditable via `go test -v -run TestExemptions_Documented`):
+### Not provided, or different from the official implementation
 
 | Category | Items | Reason |
 | --- | --- | --- |
-| Lua 5.2+ features | `rawlen`, `table.pack` / `table.move` | Not in the 5.1 manual |
-| Lua 5.3+ features | `math.tointeger` / `type` / `maxinteger` / `mininteger` | Integer type is a 5.3 feature |
-| Embed safety | `os.execute`, `io.popen` / `io.tmpfile`, `os.exit` real-exit, `loadfile` / `dofile` disabled by default | Embedded VMs do not let scripts run shells / access the filesystem beyond their scope |
-| Debug interface | `debug.sethook` / `getlocal` / `setlocal` / `getupvalue` / `setupvalue` / `getregistry` | Requires interpreter-internal hooks, cost/benefit is not worth it |
-| Module system | `require` / `module` / `package` | Embedders provide scripts via `Compile`; no filesystem-driven require |
-| Bytecode serialisation | `string.dump` | Custom ISA is not compatible with the official `.luc` |
-| Environment ops | `getfenv` / `setfenv` | Conflicts with P2 tiering-bridge F4 shape analysis |
-| C undefined behaviour | `tonumber` negative `strtoul` wraparound | The official implementation returns `1.844e19` via C `strtoul` overflow; we return `-255` — intuitive semantics preferred |
-| Catastrophic backtracking | pattern catastrophic backtracking `.*.+%A*x` | Backtracking budget is capped at `1<<20`; reports `pattern too complex` (embedded anti-hang) |
-| Incremental GC | `collectgarbage("step" / "setstepmul")` | STW GC has no incremental parameters, placeholder returns |
+| Lua 5.2+ features | `rawlen`, `table.pack` / `table.move` | Not part of Lua 5.1 |
+| Lua 5.3+ features | `math.tointeger` / `type` / `maxinteger` / `mininteger` | The integer type is a 5.3 feature |
+| Embedding safety | `os.execute`, `io.popen`, `os.exit` does not really exit, `loadfile` / `dofile` off by default | An embedded VM does not let scripts run a shell or read the filesystem beyond their scope; `loadfile` / `dofile` can be turned on with `Options.AllowFileLoad` |
+| Real file IO | `io.open` / `io.tmpfile` / `f:seek` | Needs filesystem access control and a `__gc` that closes files; not done yet |
+| debug interface | `debug.sethook` / `getlocal` / `setlocal` / `getupvalue` / `setupvalue` / `getregistry` | Needs interpreter-internal hooks |
+| Module system | `require` / `module` / `package` | The host supplies scripts through `Compile`; modules are not loaded from the filesystem |
+| Bytecode serialisation | `string.dump` | Wangshu's bytecode format is not compatible with the official `.luc` |
+| Environment ops | `getfenv` / `setfenv` | Conflicts with the shape analysis that tiered execution relies on |
+| Incremental GC | `collectgarbage("step")` / `collectgarbage("setstepmul")` | The GC is stop-the-world with no incremental parameters; the calls return placeholder values |
+| Hang protection | Catastrophic pattern backtracking (e.g. `.*.+%A*x`) | Past `1<<20` backtracking steps it reports `pattern too complex`; the official implementation keeps going |
+| C undefined behaviour | `string.char` given a number outside the int range (including NaN, ±inf) | The official result comes from C undefined behaviour and differs between x86-64 and arm64; Wangshu always uses the x86-64 result |
+| Time zones | A few `os.time{isdst=...}` inputs right at a DST transition | Every platform uses glibc's rule, so results agree across platforms; on macOS / BSD they can differ from a locally built official Lua |
 
-Everything else "exists but is not byte-compared" (`collectgarbage("count")` / `gcinfo` / `os.time` / `os.clock` / `os.date("%Y")` / `io.write` / `loadfile` error format) is asserted only for return-value shape by `TestApprox_ExistenceOnly`, not for numeric equality.
+The full list, with the reason for each entry, is `exemptions` in `test/difftest/corners_test.go`; `go test -v -run TestExemptions_Documented ./test/difftest/` prints it. Per-function details are in [10-stdlib](docs/design/p1-interpreter/10-stdlib.md) (Chinese).
+
+## Correctness
+
+The reference is the official Lua 5.1.5. Verification has six layers, each comparing against something different:
+
+| Layer | What is compared | Where it runs |
+| --- | --- | --- |
+| 1. Official test suite | Files from upstream `lua5.1-tests`, byte-equal output | Every CI run |
+| 2. Manual-driven cases | Feature, corner-case and error-message cases written section by section from the reference manual, byte-compared with the official `lua5.1` | Every CI run |
+| 3. Random-script diff | Generated random scripts; P1 / P3 / P4 each compared with the official `lua5.1` | nightly, 2 million scripts per round |
+| 4. Cross-tier diff | The same bytecode on the interpreter and on a compiled tier, byte-equal output | Every CI run |
+| 5. Embedded-oracle fuzz (P1) | Arbitrary go-fuzz-mutated source, compared in-process with the official 5.1.5 embedded through cgo | 60-second smoke on PRs, about half an hour per tier nightly |
+| 6. Embedded-oracle fuzz (P3 / P4) | Same, but promoted first, comparing the compiled tiers with the official implementation directly instead of through layer 4 | 60-second smoke on PRs, about half an hour per tier nightly |
+
+Notes:
+
+- **The official suite does not run in full.** The files are byte-identical to upstream, but there are fewer of them, most are cut off at the line before an unsupported feature (`setfenv`, the advanced `debug` interface, `string.dump` and so on), and only a few run from top to bottom. Where each file stops and why is in the `stopAt` table in `test/luasuite/luasuite_test.go`.
+- **There is no path that accepts a difference.** Object addresses (`table: 0x...`) are normalized before comparing, because the two heaps are laid out differently. A few kinds of input are skipped outright: those that hit an implementation limit (stack-overflow depth, syntax nesting depth and other constants each side picks for itself), those that touch C undefined behaviour, and those that crash the official implementation itself. Beyond that, any difference in output is a failure.
+- The embedded oracle is compiled only under the `wangshu_oracle_cgo` build tag; the default build still has no cgo.
+
+The rules for each layer, the skip list and the issues each layer has found are in [12-testing-difftest](docs/design/p1-interpreter/12-testing-difftest.md) (Chinese).
+
+## Performance
+
+Results on linux/amd64 (Intel Xeon Platinum 8573C). Each cell is "wall time (ratio over gopher-lua)"; larger is better. **Bold** is the fastest cell in a row; <ins>underline</ins> marks ratios ≥ 1.5×. The numbers come from one standardized benchmark round on GitHub Actions hosted runners (2026-07-10, [run 29098511106](https://github.com/Liam0205/wangshu/actions/runs/29098511106)); read the ratios, since wall times drift 10-20% between rounds.
+
+| Category | Script | gopher | P1 | P3 auto | P3 force | P4 auto | P4 force |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Pure-VM micro [^cat-baseline] | Simple (branch/compare) | 826 ns | **<ins>149 ns (5.54×)</ins>** | <ins>4246 ns (2.00×)</ins> [^p3-kernel] | 9613 ns (0.88×) [^p3-kernel] | <ins>165 ns (5.02×)</ins> | <ins>165 ns (5.02×)</ins> |
+|  | Arith (Horner) | 994 ns | <ins>209 ns (4.75×)</ins> | <ins>6512 ns (2.35×)</ins> [^p3-kernel] | 11423 ns (1.34×) [^p3-kernel] | **<ins>207 ns (4.81×)</ins>** | **<ins>207 ns (4.81×)</ins>** |
+|  | Loop (summing loop) | 60.6 µs | **<ins>20.1 µs (3.01×)</ins>** | <ins>419 µs (7.25×)</ins> [^p3-kernel] | <ins>405 µs (7.49×)</ins> [^p3-kernel] | <ins>22.8 µs (2.66×)</ins> | <ins>22.8 µs (2.66×)</ins> |
+| Heavy kernels [^cat-heavy] | HeavyArith | 292 ms | <ins>84.3 ms (3.46×)</ins> | <ins>97.6 ms (2.99×)</ins> | <ins>97.2 ms (3.00×)</ins> | <ins>16.2 ms (18.0×)</ins> | **<ins>15.7 ms (18.5×)</ins>** |
+|  | HeavyRecursion | 9.34 ms | <ins>5.51 ms (1.69×)</ins> | <ins>5.93 ms (1.58×)</ins> | 6.44 ms (1.45×) | <ins>1.94 ms (4.80×)</ins> | **<ins>1.89 ms (4.93×)</ins>** [^selftail] |
+|  | HeavyFloatloop | 464 ms | <ins>166 ms (2.80×)</ins> | <ins>57.7 ms (8.03×)</ins> | <ins>60.0 ms (7.73×)</ins> | <ins>26.2 ms (17.7×)</ins> | **<ins>25.7 ms (18.0×)</ins>** |
+| realworld small [^cat-realworld] | fib | 10.2 ms | 11.8 ms (0.87×) | 12.8 ms (0.80×) [^p3-gate] | 27.7 ms (0.37×) | **<ins>1.09 ms (9.35×)</ins>** [^seg2seg] | <ins>1.12 ms (9.10×)</ins> [^seg2seg] |
+|  | binary-trees | 56.0 ms | 41.4 ms (1.35×) | 45.1 ms (1.24×) [^p3-gate] | 118 ms (0.48×) | **<ins>29.7 ms (1.89×)</ins>** | <ins>31.5 ms (1.78×)</ins> [^seg2seg] |
+|  | spectral-norm | 37.0 ms | <ins>21.1 ms (1.75×)</ins> | 25.3 ms (1.46×) [^p3-gate] | 53.4 ms (0.69×) | <ins>2.46 ms (15.0×)</ins> | **<ins>2.40 ms (15.4×)</ins>** [^seg2seg] |
+|  | fannkuch | 4.87 ms | 6.32 ms (0.77×) | 7.00 ms (0.70×) | 7.12 ms (0.68×) | <ins>0.65 ms (7.51×)</ins> | **<ins>0.62 ms (7.87×)</ins>** [^seg2seg] |
+|  | n-body | 68.4 ms | 53.7 ms (1.27×) | 56.0 ms (1.22×) [^p3-gate] | 108 ms (0.63×) | <ins>4.70 ms (14.5×)</ins> [^math-intrinsic] | **<ins>4.64 ms (14.7×)</ins>** [^math-intrinsic] |
+| Boundary mini · Call [^cat-mini] | PureVM | 844 ns | **<ins>151 ns (5.58×)</ins>** | — | — | — | — |
+|  | CallOnly | **104 ns** | 222 ns (0.47×) | 235 ns (0.44×) | 365 ns (0.28×) | 251 ns (0.41×) | 251 ns (0.41×) |
+|  | Boundary (+SetGlobal) | **220 ns** | 392 ns (0.56×) | 400 ns (0.55×) | 830 ns (0.27×) | 351 ns (0.63×) | 342 ns (0.64×) |
+| Boundary mini · CallInto [^cat-mini] | PureVM | 844 ns | **<ins>151 ns (5.58×)</ins>** | — | — | — | — |
+|  | CallOnly | 104 ns | **84.9 ns (1.22×)** | 85.6 ns (1.21×) | 196 ns (0.53×) | 114 ns (0.90×) | 115 ns (0.90×) |
+|  | Boundary (+SetGlobal) | 220 ns | 230 ns (0.96×) | 244 ns (0.90×) | 618 ns (0.36×) | **191 ns (1.15×)** | 198 ns (1.11×) |
+| Real workload · Call [^cat-embed] | Predicate (×1000) | 568 µs | 660 µs (0.86×) | 697 µs (0.82×) | 1241 µs (0.46×) | 571 µs (0.99×) | **554 µs (1.03×)** |
+|  | Transform (×1000) | **466 µs** | 493 µs (0.95×) | 532 µs (0.88×) | 801 µs (0.58×) | 488 µs (0.95×) | 475 µs (0.98×) |
+| Real workload · CallInto [^cat-embed] | Predicate (×1000) | 568 µs | 489 µs (1.16×) | 507 µs (1.12×) | 1043 µs (0.54×) | **382 µs (1.49×)** | 394 µs (1.44×) |
+|  | Transform (×1000) | 466 µs | 355 µs (1.31×) | 348 µs (1.34×) | 589 µs (0.79×) | <ins>310 µs (1.51×)</ins> | **<ins>306 µs (1.52×)</ins>** |
+
+Columns: `gopher` is gopher-lua v1.1.2; `P1` is the default-build interpreter; `P3` / `P4` are the two compiled tiers, where `auto` is production auto-promotion and `force` is forced promotion for testing; `Call` / `CallInto` are the two embedding call styles, and `CallInto` does not allocate.
+
+Results for linux/arm64 and darwin/arm64, the full column and footnote explanations, and how to reproduce them are in [docs/benchmarks.en.md](docs/benchmarks.en.md).
+
+[^cat-baseline]: `benchmarks/baseline`. Three self-contained Lua scripts (Simple branch-compare, Arith six-order Horner polynomial, Loop sum 1..N), run once, never crossing the Go↔Lua boundary. Shows the VM core's dispatch, arithmetic and loop cost under minimal work.
+[^cat-heavy]: `benchmarks/heavy`. Three flat numeric kernels (HeavyArith pure arithmetic, HeavyRecursion self-recursion, HeavyFloatloop nested float loop) that deliberately avoid tables, strings and library calls. Shows the compiled tiers' ceiling on the code they handle best.
+[^cat-realworld]: `benchmarks/realworld`. Five benchmark-game scripts (fib / binary-trees / spectral-norm / fannkuch / n-body), each one's output byte-compared against the official lua5.1.5. Shows a typical mix of calls, allocation, floating point and table operations.
+[^cat-mini]: `benchmarks/embedded`, `mini_bench_test.go`. The smallest embedding round trip: one SetGlobal, one Call, one result read per iteration. Shows the cost of crossing the boundary itself, and the gap between the allocating `Call` and the zero-alloc `CallInto`.
+[^cat-embed]: `benchmarks/embedded`, `realworld_embedded_bench_test.go`. Batches of 1000 items: per item set fields, call a predicate or feature-transform script, read back a scalar. Shows steady-state throughput of a real batch-processing embed.
+[^p3-kernel]: These cells measure different work from the rest of the row. A top-level chunk is vararg and never promotes, so the P3 columns measure the script body wrapped in an inner function called 50 times, and divide by a gopher run of the same shape (`_GopherKernel`). The ratio is comparable; the wall time is about 50× the rest of the row and is not.
+[^p3-gate]: P3 auto has a profitability check: when too many of a hot function's operations have to call back into Go, the boundary cost would cancel the gain, so the function stays on the interpreter. Cells with this mark did not promote, and the number is interpreter time (the gap to the P1 column is the sampling overhead). P3 force bypasses the check and is unaffected.
+[^seg2seg]: P4 segment-to-segment calls: for self-recursion or calls into a pure-arithmetic function (the fib pattern), the caller's machine code jumps straight into the callee's, and the whole recursion never returns to Go. Implemented on amd64 and arm64.
+[^selftail]: P4 self-tail-call loop: when `return f(...)` calls the running function itself, the machine code moves the arguments and jumps back to the entry instead of exiting and re-entering from Go at every level. HeavyRecursion (collatz) recurses only through tail calls, so it gains the most.
+[^math-intrinsic]: P4 math intrinsics: when a call site sees a known pure-numeric host function (`sqrt` / `floor` / `ceil` / `abs` / `max` / `min`), it emits the hardware instruction directly (SQRTSD / ROUNDSD on amd64, FSQRT / FRINTM etc. on arm64) instead of calling back into Go. Results are byte-equal with the interpreter, including NaN, Inf and ±0. n-body's hot loop is almost all `sqrt`, so it gains the most.
+
+## Architecture
+
+Wangshu uses a layered VM architecture; execution tiers are named after lunar phases:
+
+```
+P1 interpreter ──► P2 tiering bridge ──► P3 Wasm compilation ──► P4 method JIT (RC) ──► P5 trace JIT (not yet)
+(crescent)         (bridge)              (gibbous)                (gibbous)              (fullmoon)
+```
+
+Architectural invariants:
+
+* NaN-boxed u64 value representation.
+* Self-managed arena as linear memory — all tiers share the same block.
+* P1 interpreter is always available — it is the deopt landing site and the semantic oracle for every compilation tier.
+* Byte-equal output across tiers is a CI gate.
 
 ## Doc navigation
 
@@ -348,8 +272,9 @@ By role:
   - P2 tiering bridge (7 docs): start from [docs/design/p2-bridge/00-overview.md](docs/design/p2-bridge/00-overview.md); progress at [implementation-progress](docs/design/p2-bridge/implementation-progress.md).
   - P3 gibbous-wasm (10 docs): start from [docs/design/p3-wasm-tier/00-overview.md](docs/design/p3-wasm-tier/00-overview.md); progress at [implementation-progress](docs/design/p3-wasm-tier/implementation-progress.md).
   - P4 gibbous-jit (11 docs + progress): start from [docs/design/p4-method-jit/00-overview.md](docs/design/p4-method-jit/00-overview.md); progress at [implementation-progress](docs/design/p4-method-jit/implementation-progress.md); PJ11 acceptance at [09-acceptance-checklist](docs/design/p4-method-jit/09-acceptance-checklist.md).
-  - P5 trace JIT (not implemented): [docs/design/p5-trace-jit.md](docs/design/p5-trace-jit.md) (outline design).
+  - P5 trace JIT (not started; design drafted): [docs/design/p5-trace-jit/](docs/design/p5-trace-jit/00-overview.md) (11 chapters; launch criteria in 01).
 - **Engineering conventions / commit discipline**: [docs/design/engineering.md](docs/design/engineering.md) (Git hooks / CI / Makefile / release discipline / lint toolchain).
+- **Full benchmark data**: [docs/benchmarks.en.md](docs/benchmarks.en.md) (tables for all three platforms, column notes, how to reproduce).
 - **AI collaboration conventions**: [llmdoc/](llmdoc/) records project-level guidance for LLM collaborators — start from [startup.md](llmdoc/startup.md); contains `must/` (non-negotiable), `guides/` (best practices), `memory/` (historical decisions and reflections; `reflections/` has milestone lessons).
 
 ## Contributing
