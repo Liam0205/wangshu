@@ -2,7 +2,7 @@
 
 望舒是纯 Go 实现的高性能可嵌入的 Lua 5.1 虚拟机。它不依赖 cgo，因此保持了交叉编译能力。
 
-关于命名：Lua 是葡萄牙语中「月亮」的意思；望舒是中国神话中为月亮驱车的神灵（「前望舒使先驱」——《楚辞·离骚》）。为月亮驱车，即驱动 Lua 引擎。是一信达雅的名字。
+关于命名：Lua 是葡萄牙语中「月亮」的意思；望舒是中国神话中为月亮驱车的神灵（「前望舒使先驱」——《楚辞·离骚》）。为月亮驱车，即驱动 Lua 引擎。是一个信达雅的名字。
 
 [![CI](https://github.com/Liam0205/wangshu/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/Liam0205/wangshu/actions/workflows/ci.yml)
 [![Nightly](https://github.com/Liam0205/wangshu/actions/workflows/nightly-diff-fuzz.yml/badge.svg?branch=master)](https://github.com/Liam0205/wangshu/actions/workflows/nightly-diff-fuzz.yml)
@@ -19,163 +19,7 @@
 - 正确性：在圈定的语言特性范围，与 Lua 5.1 官方实现的输出逐字节一致。
 - 高性能：将 Go 生态的 Lua 执行性能从 gopher-lua 提升至 LuaJ-luajc（Java）甚至 LuaJIT（C++）级别。
 - 跨平台：在 Linux/amd64, Linux/arm64, macOS/arm64 测试通过；保留其他平台扩张支持的能力。
-- 工业级：望舒从立项开始就是为了公司业务服务的，并且已经为在我所在公司线上运行。从测试、到 CI、再到各类 nightly-fuzz，都是朝着工业级的项目要求去的。望舒从来都不会，也不可能是一个个人的练习项目。我们希望望舒最终成为在 Go 语言项目中嵌入 Lua 的事实标准。
-
-## 架构
-
-望舒使用分层虚拟机架构；其执行层以月相命名：
-
-```
-P1 解释器 ──► P2 分层桥 ──► P3 Wasm 编译层 ──► P4 method JIT （RC 状态） ──► P5 trace JIT （尚未实现）
-(crescent)    (基建)        (gibbous)          (gibbous)                   (fullmoon)
-```
-
-架构核心承诺：
-
-* NaN-boxed u64 值表示
-* 自管理的 arana 线性内存——各层共用同一块内存
-* P1 解释器始终可用——所有编译层的 deopt 着陆点及语义 oracle
-* CI 保证层与层之间逐字节一致
-
-## 性能指标
-
-数字来自 GitHub Actions hosted runner 上的标准化基准轮（`bench-readme-table` workflow，`-benchtime=2s -count=3 -cpu=1`，取 median，2026-07-10，[run 29098511106](https://github.com/Liam0205/wangshu/actions/runs/29098511106)），三平台同一轮、同一份代码。格式为「wall time (倍率 over gopher-lua)」，倍率越大越好；**粗体**表示该行最快，<ins>下划线</ins>表示倍率 ≥ 1.5×。
-
-> **怎么读**：hosted runner 是共享虚拟机，绝对 wall time 轮间可漂 10-20%——**请以倍率为主**，wall time 只作同轮内的量级参考。倍率的分母是 gopher-lua 在**同一轮同一台 runner** 上的实测值（分子分母同受干扰，倍率自洽），跨轮、跨平台都不要直接比 wall time。任何数字都可回溯到 run artifact 里的原始日志。
-
-### linux/amd64（Intel Xeon Platinum 8573C）
-
-| 类别 | 脚本 | gopher | P1 | P3 auto | P3 force | P4 auto | P4 force |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| 纯 VM 微基准 [^cat-baseline] | Simple (分支/比较) | 826 ns | **<ins>149 ns (5.54×)</ins>** | <ins>4246 ns (2.00×)</ins> [^p3-kernel] | 9613 ns (0.88×) [^p3-kernel] | <ins>165 ns (5.02×)</ins> | <ins>165 ns (5.02×)</ins> |
-|  | Arith (Horner) | 994 ns | <ins>209 ns (4.75×)</ins> | <ins>6512 ns (2.35×)</ins> [^p3-kernel] | 11423 ns (1.34×) [^p3-kernel] | **<ins>207 ns (4.81×)</ins>** | **<ins>207 ns (4.81×)</ins>** |
-|  | Loop (求和循环) | 60.6 µs | **<ins>20.1 µs (3.01×)</ins>** | <ins>419 µs (7.25×)</ins> [^p3-kernel] | <ins>405 µs (7.49×)</ins> [^p3-kernel] | <ins>22.8 µs (2.66×)</ins> | <ins>22.8 µs (2.66×)</ins> |
-| heavy 内核 [^cat-heavy] | HeavyArith | 292 ms | <ins>84.3 ms (3.46×)</ins> | <ins>97.6 ms (2.99×)</ins> | <ins>97.2 ms (3.00×)</ins> | <ins>16.2 ms (18.0×)</ins> | **<ins>15.7 ms (18.5×)</ins>** |
-|  | HeavyRecursion | 9.34 ms | <ins>5.51 ms (1.69×)</ins> | <ins>5.93 ms (1.58×)</ins> | 6.44 ms (1.45×) | <ins>1.94 ms (4.80×)</ins> | **<ins>1.89 ms (4.93×)</ins>** [^selftail] |
-|  | HeavyFloatloop | 464 ms | <ins>166 ms (2.80×)</ins> | <ins>57.7 ms (8.03×)</ins> | <ins>60.0 ms (7.73×)</ins> | <ins>26.2 ms (17.7×)</ins> | **<ins>25.7 ms (18.0×)</ins>** |
-| realworld small [^cat-realworld] | fib | 10.2 ms | 11.8 ms (0.87×) | 12.8 ms (0.80×) [^p3-gate] | 27.7 ms (0.37×) | **<ins>1.09 ms (9.35×)</ins>** [^seg2seg] | <ins>1.12 ms (9.10×)</ins> [^seg2seg] |
-|  | binary-trees | 56.0 ms | 41.4 ms (1.35×) | 45.1 ms (1.24×) [^p3-gate] | 118 ms (0.48×) | **<ins>29.7 ms (1.89×)</ins>** | <ins>31.5 ms (1.78×)</ins> [^seg2seg] |
-|  | spectral-norm | 37.0 ms | <ins>21.1 ms (1.75×)</ins> | 25.3 ms (1.46×) [^p3-gate] | 53.4 ms (0.69×) | <ins>2.46 ms (15.0×)</ins> | **<ins>2.40 ms (15.4×)</ins>** [^seg2seg] |
-|  | fannkuch | 4.87 ms | 6.32 ms (0.77×) | 7.00 ms (0.70×) | 7.12 ms (0.68×) | <ins>0.65 ms (7.51×)</ins> | **<ins>0.62 ms (7.87×)</ins>** [^seg2seg] |
-|  | n-body | 68.4 ms | 53.7 ms (1.27×) | 56.0 ms (1.22×) [^p3-gate] | 108 ms (0.63×) | <ins>4.70 ms (14.5×)</ins> [^math-intrinsic] | **<ins>4.64 ms (14.7×)</ins>** [^math-intrinsic] |
-| 边界 mini · Call [^cat-mini] | PureVM | 844 ns | **<ins>151 ns (5.58×)</ins>** | — | — | — | — |
-|  | CallOnly | **104 ns** | 222 ns (0.47×) | 235 ns (0.44×) | 365 ns (0.28×) | 251 ns (0.41×) | 251 ns (0.41×) |
-|  | Boundary (+SetGlobal) | **220 ns** | 392 ns (0.56×) | 400 ns (0.55×) | 830 ns (0.27×) | 351 ns (0.63×) | 342 ns (0.64×) |
-| 边界 mini · CallInto [^cat-mini] | PureVM | 844 ns | **<ins>151 ns (5.58×)</ins>** | — | — | — | — |
-|  | CallOnly | 104 ns | **84.9 ns (1.22×)** | 85.6 ns (1.21×) | 196 ns (0.53×) | 114 ns (0.90×) | 115 ns (0.90×) |
-|  | Boundary (+SetGlobal) | 220 ns | 230 ns (0.96×) | 244 ns (0.90×) | 618 ns (0.36×) | **191 ns (1.15×)** | 198 ns (1.11×) |
-| 真实负载 · Call [^cat-embed] | Predicate (×1000) | 568 µs | 660 µs (0.86×) | 697 µs (0.82×) | 1241 µs (0.46×) | 571 µs (0.99×) | **554 µs (1.03×)** |
-|  | Transform (×1000) | **466 µs** | 493 µs (0.95×) | 532 µs (0.88×) | 801 µs (0.58×) | 488 µs (0.95×) | 475 µs (0.98×) |
-| 真实负载 · CallInto [^cat-embed] | Predicate (×1000) | 568 µs | 489 µs (1.16×) | 507 µs (1.12×) | 1043 µs (0.54×) | **382 µs (1.49×)** | 394 µs (1.44×) |
-|  | Transform (×1000) | 466 µs | 355 µs (1.31×) | 348 µs (1.34×) | 589 µs (0.79×) | <ins>310 µs (1.51×)</ins> | **<ins>306 µs (1.52×)</ins>** |
-
-### linux/arm64（Azure Cobalt 100，Neoverse-N2 类）
-
-| 类别 | 脚本 | gopher | P1 | P3 auto | P3 force | P4 auto | P4 force |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| 纯 VM 微基准 [^cat-baseline] | Simple (分支/比较) | 987 ns | **<ins>196 ns (5.03×)</ins>** | <ins>6016 ns (1.66×)</ins> [^p3-kernel] | 10223 ns (0.97×) [^p3-kernel] | <ins>206 ns (4.80×)</ins> | <ins>206 ns (4.80×)</ins> |
-|  | Arith (Horner) | 1162 ns | **<ins>236 ns (4.92×)</ins>** | <ins>8277 ns (2.19×)</ins> [^p3-kernel] | 12312 ns (1.47×) [^p3-kernel] | <ins>252 ns (4.62×)</ins> | <ins>252 ns (4.62×)</ins> |
-|  | Loop (求和循环) | 73.4 µs | **<ins>23.1 µs (3.18×)</ins>** | <ins>594 µs (6.04×)</ins> [^p3-kernel] | <ins>594 µs (6.04×)</ins> [^p3-kernel] | <ins>29.0 µs (2.53×)</ins> | <ins>29.0 µs (2.53×)</ins> |
-| heavy 内核 [^cat-heavy] | HeavyArith | 300 ms | <ins>96.5 ms (3.11×)</ins> | <ins>119 ms (2.52×)</ins> | <ins>119 ms (2.53×)</ins> | <ins>23.1 ms (13.0×)</ins> | **<ins>22.0 ms (13.7×)</ins>** |
-|  | HeavyRecursion | 9.53 ms | 6.59 ms (1.45×) | 7.59 ms (1.26×) | 8.07 ms (1.18×) | **<ins>2.42 ms (3.93×)</ins>** | <ins>2.42 ms (3.93×)</ins> [^selftail] |
-|  | HeavyFloatloop | 524 ms | <ins>190 ms (2.76×)</ins> | <ins>84.9 ms (6.17×)</ins> | <ins>85.0 ms (6.17×)</ins> | **<ins>37.0 ms (14.2×)</ins>** | <ins>37.1 ms (14.1×)</ins> |
-| realworld small [^cat-realworld] | fib | 12.5 ms | 14.4 ms (0.87×) | 16.1 ms (0.78×) [^p3-gate] | 29.9 ms (0.42×) | <ins>1.46 ms (8.56×)</ins> [^seg2seg] | **<ins>1.46 ms (8.57×)</ins>** [^seg2seg] |
-|  | binary-trees | 63.9 ms | 52.0 ms (1.23×) | 54.9 ms (1.16×) [^p3-gate] | 120 ms (0.53×) | **<ins>37.1 ms (1.72×)</ins>** | <ins>37.1 ms (1.72×)</ins> [^seg2seg] |
-|  | spectral-norm | 45.5 ms | <ins>27.3 ms (1.67×)</ins> | 31.8 ms (1.43×) [^p3-gate] | 55.4 ms (0.82×) | <ins>5.62 ms (8.10×)</ins> | **<ins>5.62 ms (8.10×)</ins>** [^seg2seg] |
-|  | fannkuch | 5.76 ms | 7.21 ms (0.80×) | 7.46 ms (0.77×) | 7.46 ms (0.77×) | <ins>0.83 ms (6.90×)</ins> | **<ins>0.83 ms (6.92×)</ins>** [^seg2seg] |
-|  | n-body | 77.7 ms | 57.4 ms (1.35×) | 59.5 ms (1.30×) [^p3-gate] | 106 ms (0.73×) | <ins>8.86 ms (8.77×)</ins> [^math-intrinsic] | **<ins>8.86 ms (8.77×)</ins>** [^math-intrinsic] |
-| 边界 mini · Call [^cat-mini] | PureVM | 1000 ns | **<ins>198 ns (5.05×)</ins>** | — | — | — | — |
-|  | CallOnly | **132 ns** | 279 ns (0.48×) | 301 ns (0.44×) | 429 ns (0.31×) | 368 ns (0.36×) | 364 ns (0.36×) |
-|  | Boundary (+SetGlobal) | **279 ns** | 460 ns (0.61×) | 488 ns (0.57×) | 902 ns (0.31×) | 479 ns (0.58×) | 482 ns (0.58×) |
-| 边界 mini · CallInto [^cat-mini] | PureVM | 1000 ns | **<ins>198 ns (5.05×)</ins>** | — | — | — | — |
-|  | CallOnly | 132 ns | **132 ns (1.00×)** | 147 ns (0.90×) | 216 ns (0.61×) | 202 ns (0.65×) | 204 ns (0.65×) |
-|  | Boundary (+SetGlobal) | **279 ns** | 312 ns (0.89×) | 325 ns (0.86×) | 689 ns (0.41×) | 319 ns (0.87×) | 319 ns (0.87×) |
-| 真实负载 · Call [^cat-embed] | Predicate (×1000) | **665 µs** | 812 µs (0.82×) | 810 µs (0.82×) | 1388 µs (0.48×) | 746 µs (0.89×) | 751 µs (0.88×) |
-|  | Transform (×1000) | **546 µs** | 634 µs (0.86×) | 660 µs (0.83×) | 935 µs (0.58×) | 670 µs (0.81×) | 666 µs (0.82×) |
-| 真实负载 · CallInto [^cat-embed] | Predicate (×1000) | 665 µs | 645 µs (1.03×) | 632 µs (1.05×) | 1190 µs (0.56×) | **556 µs (1.20×)** | 563 µs (1.18×) |
-|  | Transform (×1000) | 546 µs | **471 µs (1.16×)** | 505 µs (1.08×) | 727 µs (0.75×) | 489 µs (1.12×) | 481 µs (1.13×) |
-
-### darwin/arm64（Apple M 系，macos-latest）
-
-| 类别 | 脚本 | gopher | P1 | P3 auto | P3 force | P4 auto | P4 force |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| 纯 VM 微基准 [^cat-baseline] | Simple (分支/比较) | 792 ns | <ins>141 ns (5.63×)</ins> | <ins>5002 ns (1.62×)</ins> [^p3-kernel] | 8899 ns (0.91×) [^p3-kernel] | **<ins>134 ns (5.93×)</ins>** | **<ins>134 ns (5.93×)</ins>** |
-|  | Arith (Horner) | 909 ns | <ins>188 ns (4.82×)</ins> | <ins>6509 ns (2.31×)</ins> [^p3-kernel] | 11250 ns (1.34×) [^p3-kernel] | **<ins>169 ns (5.37×)</ins>** | **<ins>169 ns (5.37×)</ins>** |
-|  | Loop (求和循环) | 56.5 µs | **<ins>18.0 µs (3.14×)</ins>** | <ins>850 µs (3.24×)</ins> [^p3-kernel] | <ins>820 µs (3.36×)</ins> [^p3-kernel] | <ins>21.1 µs (2.68×)</ins> | <ins>21.1 µs (2.68×)</ins> |
-| heavy 内核 [^cat-heavy] | HeavyArith | 214 ms | <ins>95.5 ms (2.24×)</ins> | <ins>97.0 ms (2.21×)</ins> | <ins>97.4 ms (2.20×)</ins> | **<ins>34.2 ms (6.26×)</ins>** | <ins>35.2 ms (6.08×)</ins> |
-|  | HeavyRecursion | 10.9 ms | <ins>5.24 ms (2.08×)</ins> | <ins>6.38 ms (1.71×)</ins> | <ins>6.84 ms (1.59×)</ins> | <ins>1.76 ms (6.19×)</ins> | **<ins>1.75 ms (6.23×)</ins>** [^selftail] |
-|  | HeavyFloatloop | 423 ms | <ins>144 ms (2.95×)</ins> | <ins>118 ms (3.59×)</ins> | <ins>119 ms (3.56×)</ins> | **<ins>37.3 ms (11.3×)</ins>** | <ins>37.6 ms (11.3×)</ins> |
-| realworld small [^cat-realworld] | fib | 10.4 ms | 12.2 ms (0.85×) | 13.0 ms (0.80×) [^p3-gate] | 25.2 ms (0.41×) | **<ins>0.99 ms (10.5×)</ins>** [^seg2seg] | <ins>1.00 ms (10.4×)</ins> [^seg2seg] |
-|  | binary-trees | 59.8 ms | 47.0 ms (1.27×) | 41.6 ms (1.44×) [^p3-gate] | 94.1 ms (0.64×) | **<ins>26.0 ms (2.30×)</ins>** | <ins>26.0 ms (2.30×)</ins> [^seg2seg] |
-|  | spectral-norm | 36.1 ms | <ins>21.8 ms (1.65×)</ins> | <ins>22.6 ms (1.59×)</ins> [^p3-gate] | 45.6 ms (0.79×) | **<ins>4.51 ms (8.01×)</ins>** | <ins>4.63 ms (7.80×)</ins> [^seg2seg] |
-|  | fannkuch | 4.84 ms | 6.75 ms (0.72×) | 6.18 ms (0.78×) | 6.20 ms (0.78×) | **<ins>0.69 ms (6.99×)</ins>** | <ins>0.71 ms (6.82×)</ins> [^seg2seg] |
-|  | n-body | 65.5 ms | 45.3 ms (1.45×) | 44.3 ms (1.48×) [^p3-gate] | 79.4 ms (0.83×) | **<ins>6.88 ms (9.52×)</ins>** [^math-intrinsic] | <ins>6.91 ms (9.48×)</ins> [^math-intrinsic] |
-| 边界 mini · Call [^cat-mini] | PureVM | 908 ns | **<ins>145 ns (6.28×)</ins>** | — | — | — | — |
-|  | CallOnly | **97.3 ns** | 190 ns (0.51×) | 178 ns (0.55×) | 307 ns (0.32×) | 223 ns (0.44×) | 224 ns (0.43×) |
-|  | Boundary (+SetGlobal) | **212 ns** | 323 ns (0.66×) | 297 ns (0.72×) | 719 ns (0.30×) | 308 ns (0.69×) | 298 ns (0.71×) |
-| 边界 mini · CallInto [^cat-mini] | PureVM | 908 ns | **<ins>145 ns (6.28×)</ins>** | — | — | — | — |
-|  | CallOnly | 97.3 ns | **75.4 ns (1.29×)** | 79.6 ns (1.22×) | 170 ns (0.57×) | 112 ns (0.87×) | 113 ns (0.86×) |
-|  | Boundary (+SetGlobal) | 212 ns | 196 ns (1.08×) | 188 ns (1.13×) | 516 ns (0.41×) | **177 ns (1.20×)** | 178 ns (1.20×) |
-| 真实负载 · Call [^cat-embed] | Predicate (×1000) | 566 µs | 581 µs (0.97×) | 522 µs (1.08×) | 967 µs (0.59×) | **472 µs (1.20×)** | 480 µs (1.18×) |
-|  | Transform (×1000) | 423 µs | **406 µs (1.04×)** | 407 µs (1.04×) | 610 µs (0.69×) | 418 µs (1.01×) | 415 µs (1.02×) |
-| 真实负载 · CallInto [^cat-embed] | Predicate (×1000) | 566 µs | 442 µs (1.28×) | 432 µs (1.31×) | 856 µs (0.66×) | **<ins>348 µs (1.63×)</ins>** | <ins>350 µs (1.62×)</ins> |
-|  | Transform (×1000) | 423 µs | 330 µs (1.28×) | 301 µs (1.40×) | 498 µs (0.85×) | **293 µs (1.44×)** | 294 µs (1.44×) |
-
-[^cat-baseline]: `benchmarks/baseline`。三个独立的纯 Lua 脚本（Simple 分支比较、Arith 六阶 Horner 多项式、Loop 求和 1..N），单次执行无 Go↔Lua 跨界。反映 VM 内核在最小工作量下的 dispatch / 算术 / 循环开销。
-[^selftail]: P4 mono 自尾调用段内循环（issue #112 / PR #113，2026-07-10，amd64 + arm64 已交付）：`return f(...)` 且被调就是当前 closure 时，段内直接参数搬移 + 跳回入口（PUC 尾调用帧复用语义下与重进本段位级等价），不再每层付一次段退出 + Go 重入。HeavyRecursion（collatz，递归调用全是 TAILCALL）此前是全表唯一「升层比 P1 解释器还慢」的负载（amd64 1.15× vs P1 1.58×；Cobalt arm64 0.98× 直接输 gopher），本轮提升到 amd64 **4.93×** / arm64 **3.93×** / macOS **6.23×**，三平台 ~4× 改善，fib / HeavyArith 同轮逐字持平无回归。
-[^cat-heavy]: `benchmarks/heavy`。三个扁平数值内核（HeavyArith 纯算术、HeavyRecursion 自递归、HeavyFloatloop 嵌套浮点循环），故意剔除表 / 字符串 / library CALL 与其他 helper-bound 结构。反映编译档在能真正发挥的形状上的性能上限。
-[^cat-realworld]: `benchmarks/realworld`。benchmark-game 五脚本（fib / binary-trees / spectral-norm / fannkuch / n-body），语义单次通过与官方 lua5.1.5 做差分测试（逐字节比对）。反映调用 / 分配 / 浮点 / 表操作混合场景下的常规负载。
-[^p3-gate]: P3 auto 模式带 helper 密度收益门（issue #39，2026-07-03）：热 proto 的 op 组合里 helper 往返占比过高（wasm→Go 边界成本吞掉升层收益）时拒绝升层、留在解释器。带此标注的行升层被拒，数字即解释器执行（与 P1 列的差异是采样钩子开销）。P3 force 列不受影响（force-all 绕过收益门，保差分覆盖）。
-[^p3-kernel]: baseline P3 列的工作负载与其它列不同（issue #93）：顶层 chunk 是 vararg 永不升层，P3 必须测「包进内层 kernel 调 50 次」的形状；其它列跑裸顶层 ×1。因此 P3 列的倍率分母是**同形状**的 gopher 基准（`_GopherKernel`，gopher 跑一样的 kernel×50），wall time 与同行其它列不可直接比（工作量 ≈50 倍）。此前表格误拿顶层 ×1 的 gopher 当分母，把 P3 低估约 50 倍（旧表 0.06×-0.25× 实为 1.3×-3.2×）。各平台表均按修正后口径产出。
-[^seg2seg]: P4 段到段 CALL 直跳（issue #50，2026-07-04，amd64 + arm64 已交付）：自递归 / arith-callee（fib 形状）之前每次调用都要付一次跨界往返的开销（mmap RET → Go dispatch → host.CallBaseline → mmap 重入），现在 caller 段直接 `call` 进 callee 段、callee 段内组拆帧 + native 递归、全程不出 mmap。fib / spectral-norm / fannkuch 等自递归与 arith-callee 负载因此提升到两位数倍率；binary-trees 的 `check`（自递归 + GETTABLE ArrayHit 读表）随 ArrayHit 站点纳入段到段资格而解锁,剩余瓶颈是 bottomup 的分配。arm64 同批交付,双架构收益形状一致（当前各平台数字见上方三表）。
-[^math-intrinsic]: P4 math.* intrinsic emission（issue #77 / PR #87，2026-07-08，amd64 + arm64 已交付）：CALL 站点 IC 观察到被调是已知纯数值 host closure（sqrt / floor / ceil / abs / max / min）时，段内直接发射硬件指令（amd64 SQRTSD / ROUNDSD 等）而不再 exit-reason 往返到 Go host closure。n-body 的稳态几乎全是 `sqrt(dist2)` 调用，之前既因每次 sqrt 付一次跨界往返、又因 CALL 密度门把带 sqrt 的热函数误判成「调用太密、升层不划算」而拒绝升层，两头卡住（P4 ≈ P1，1.41×）；#77 一并修好后（intrinsic CALL 不计入密度门 + sqrt 内联发射），n-body 从 ~P1 水平提升到两位数倍率，双架构一致（arm64 走 FSQRT / FRINTM 等对应指令），结果与解释器逐字节一致（含 NaN / Inf / ±0）。当前各平台数字见上方三表。
-[^cat-mini]: `benchmarks/embedded`，mini_bench_test.go。嵌入路径的最小形式：每 iter 一次 SetGlobal + 一次 Call + 一次读结果。反映边界往返成本本身，以及 `Call` 分配路径与 `CallInto` 零分配路径的成本差。
-[^cat-embed]: `benchmarks/embedded`，realworld_embedded_bench_test.go。1000 item batch，逐 item set 字段 → Call 谓词 / 特征变换脚本 → 读标量结果，写法贴近 pineapple `transform_by_lua`。反映真实批处理嵌入下的稳态吞吐。
-
-### 列的含义
-
-- **`gopher`** — gopher-lua v1.1.2，基线。表格里的倍率都是 `gopher / X`，越大越好。
-- **`P1`** — `go build` 默认档，纯解释器（crescent），没有升层机制，一列就够。
-- **`P3 auto` / `P3 force`** — `wangshu_p3 wangshu_profile` build 下 gibbous-wasm 编译层的两种测法（详见下节）。
-- **`P4 auto` / `P4 force`** — `wangshu_p4 wangshu_profile` build 下 gibbous-jit method JIT 的两种测法。
-- **`Call` / `CallInto`** — 嵌入 API 两种边界调用方式：`st.Call` 每次分配 `[]Value` 返回切片；`st.CallInto` 复用调用方 `dst`，零分配。只在跨界 benchmark 拆两列。
-
-> `—` 表示该场景下不涉及 Call/CallInto 之分（PureVM 无跨界；升不到编译层的 baseline 短脚本没有独立数字）。
-
-### auto 与 force 只对 P3/P4 有意义
-
-P3/P4 编译档不是「装了就一定用」。它们是**基于热度阈值的自动升层机制**：
-
-1. 每个函数（Proto）默认在 P1 crescent 解释器上跑。
-2. 每次调用累计一次调用计数；`wangshu_profile` build tag 开启这个采样器（不带此 tag 采样禁用，编译档退化到 P1）。
-3. 计数越过 `HotEntryThreshold`（默认 200）后，如果该 Proto 通过 F1-F7 可编译性检查，就升到 P3 或 P4，后续调用走编译层。
-4. 升不动的 Proto（协程 / 顶层 vararg / 含 `ReasonUnknownCall` / VARARG 等）保持在 P1，无声降级。
-
-因此 P3/P4 每档在表格里各有两列：
-
-- **`auto`** — 生产模式。State 长期复用，前 ~200 次调用走 P1 解释器，越过阈值后升到编译层。`b.N` 上摊薄下来，warmup tail 通常在噪声之内。
-- **`force`** — `SetForceAllPromote(true)` 强制所有可升 Proto 直接升层，预热一轮后测稳态。**非生产模式**，只用于差分测试和 benchmark 上限。
-
-两者稳态数字理论上应当接近；出现明显差异说明升层策略或阈值需要调整。
-
-### 复现命令
-
-上面三张表由 `bench-readme-table` workflow 产出——在 GitHub Actions 上对三平台（linux/amd64、linux/arm64、darwin/arm64）各跑一轮同一份脚本，原始日志与表格保存在 run artifact 里：
-
-```bash
-gh workflow run bench-readme-table.yml -f os=all -f count=3   # 三平台标准轮
-gh workflow run bench-readme-table.yml --ref <branch> -f os=amd64  # 在任意分支上单平台跑
-```
-
-本地开发机跑同一个脚本（用于优化前后的 A/B 对照——同机同轮的相对比较比 hosted runner 更稳）：
-
-```bash
-./scripts/bench-readme-table.sh              # 全跑 + 直接输出 Markdown 表格
-./scripts/bench-readme-table.sh --count 5    # 每档跑 5 次取 median
-./scripts/bench-readme-table.sh --format-only <logdir>  # 只重排已有日志,不重跑
-```
-
-脚本会自动探测 `goos/goarch`，同一条命令在任何平台复现对应表。
+- 工业级：望舒从立项开始就是为了公司业务服务的，并且已经在我所在的公司线上运行。从测试、到 CI、再到各类 nightly-fuzz，都是朝着工业级的项目要求去的。望舒从来都不会，也不可能是一个个人的练习项目。我们希望望舒最终成为在 Go 语言项目中嵌入 Lua 的事实标准。
 
 ## 快速开始
 
@@ -309,36 +153,111 @@ for i := 0; i < 1000; i++ {
 
 ## 语言支持
 
-望舒实现的是 Lua 5.1 核心语言（与 LuaJIT 一致的语法层），覆盖 Lua 5.1 参考手册中定义的 38 个字节码 opcode 除 `VARARG` 外的全部（`VARARG` 在 P3/P4 编译层永不接入，走 P1 解释器路径），以及 stdlib 的 base / string / table / math / os / coroutine 全部必做面。**io 库提供 `io.write` / `io.read` / `io.lines` 与三个标准流**（#205，2026-07-29）：`io.stdout` / `io.stdin` / `io.stderr` 是**真 file-handle userdata**，`type()` 报 `userdata` 与官方一致，共享一张 metatable 提供 `:write` / `:close` / `:read` / `:lines` / `:flush`；仍缺的是需要真实文件的部分——`io.open` / `io.popen` / `io.tmpfile` / `f:seek`，所以 `io.lines(filename)` 抬错而不是静默返回一个空迭代器。`debug` 库提供 `traceback` 与 `getinfo`，其余（`sethook` / `getlocal` / `setlocal` / `getupvalue` / `setupvalue` / `getregistry`）仍不提供，它们需要解释器没有暴露的内省钩子；`getinfo` 只填能诚实回答的字段（`currentline` / `source` / `short_src` / `what` / `func`），`nups` / `activelines` / `namewhat` 宁缺不假造。缺口说明见 [10](docs/design/p1-interpreter/10-stdlib.md) §10.1.1。
+望舒实现 Lua 5.1 的核心语言，语法范围与 LuaJIT 一致：
 
-正确性验证分六层（每层的参照不同，注意第 5 层的参照是官方而第 4 层的参照是 P1 解释器）：
+- **语言**：Lua 5.1 参考手册的全部语法；38 个字节码 opcode 全部实现。其中 `VARARG` 只在 P1 解释器上执行，用到它的函数不会升到 P3/P4。
+- **标准库**：base、string、table、math、os、coroutine 全部提供。
+- **io**：提供 `io.write` / `io.read` / `io.lines` 和三个标准流 `io.stdout` / `io.stdin` / `io.stderr`。标准流是真正的文件句柄 userdata，支持 `:write` / `:read` / `:lines` / `:flush` / `:close`。需要打开真实文件的部分没有提供，见下表。
+- **debug**：提供 `debug.traceback` 和 `debug.getinfo`。`getinfo` 只返回能如实给出的字段（`currentline` / `source` / `short_src` / `what` / `func`），`nups` / `activelines` / `namewhat` 不返回。
 
-1. **官方测试套（按实际覆盖率读，不是「全套通过」）**：`test/luasuite/testdata/` 里的文件与上游 `lua5.1-tests` **逐字节相同**，跑到的部分**逐字节一致**——但**套件里的文件数少于上游，而且多数文件在某一行被截断，按行号算只跑了约一半，只有少数文件从头跑到尾**（`vararg` / `sort` / `pm` 是其中三个；最极端的 `events.lua` 只跑 3 行，因为它第 5 行就用 `setfenv`）。截断都是**刻意不实现的功能**（`setfenv`/`getfenv`、`debug` 高级面、io 对象模型、`string.dump`、`require`、真正的增量 GC），逐条登记在 `test/luasuite/luasuite_test.go` 的 `stopAt` 表与豁免清单里，不是隐藏的语义分歧。**先前这里写「官方测试套 byte-equal：13 个官方文件」是不够的**：它不带覆盖率，读起来像全套跑过了。还有一格更细：**「在套件里」不等于「在跑」**——有文件开头就是 `if T == nil then ... return end`（`T` 是官方发行里的 testC 调试库，望舒不提供），整文件零断言；所以按行号算的占比也不能当执行证据，要用执行侧的量（实际执行的断言次数）核。准确数字读 `stopAt` 表，截断点之后另行运行的行区间见同一文件的 `resumeAt` 表；口径与判据见 [12](docs/design/p1-interpreter/12-testing-difftest.md) §2.1a。（缺席的上游文件各有明确原因，不是没接：`code.lua`/`checktable.lua` 需要官方 `T` testC C 侧调试外挂；`verybig.lua` 需要 io 对象模型豁免里的四个函数；`api.lua` 同理。`db.lua` 是补齐 `lastlinedefined`/`activelines` 之后接进来的。）
-2. **手册逐节 probe**：100 项手册特性 + 12 项边角 + 29 条错误消息（含行号断言）+ 71 条种子用例逐字节一致。
-3. **差分随机 fuzz**：nightly-diff-fuzz workflow 每晚 2M 条随机脚本与 Lua 5.1.5 oracle 做差分测试（P1 + P3 + P4 三档并行）。读它的失败时先确认那几个 fuzz 步骤**真的执行过**——准备类步骤（装 oracle、取包）失败会让它们被 skip，那一轮报红而实际什么都没测，与「跑了并且发现分歧」在 Actions 页面上是同一个红叉（#236–#241，见下）。
-4. **三方差分**：crescent（P1）vs gibbous（P3/P4）在 P4 build 下每 CI 跑一次 byte-equal，PR #29/#31 tri-platform matrix 全绿。
-5. **cgo 内嵌 oracle 差分 fuzz**：`internal/oracle` 把官方 5.1.5 源码经 cgo 嵌进测试二进制（build tag `wangshu_oracle_cgo`，默认 build 保持零 cgo），`FuzzOracleDiff` 用 go-fuzz 变异的**任意不规则源码**（不限于 generator 的规整脚本）在进程内做差分比对：两侧跑同一段 prelude（输出捕获 + 确定性 stub + 排序迭代 + 白名单裁剪）后**比输出经地址归一后 byte-equal**，**没有任何接受差异的路径**（地址归一与实现常数类护栏跳过属于另外两类，见下）。PR 检查跑 60s 冒烟（oracle-smoke job），nightly p1 腿连续跑 45 分钟。上线首日（长时间 fuzz + 配套的 stdlib 全函数 × 退化参数系统性扫描）抓出 **32 处** P1 与官方的语义分歧并全部修复——覆盖 string 库 number 自动转串、`__tostring` 原样透传、协程错误消息 type 名、未知转义字面放行、长括号嵌套 deprecation、`upper`/`lower` 按字节、`string.format` verb 集/无符号转型/`%c` NUL 截断/scanformat 硬限、编译期常量折叠 ±0/NaN 规则与 RK 物化序、`tonumber` 的 C99 strtod 接受面（hex float / inf / nan）、表构造器源码序覆盖语义、真实共享 string 元表（`getmetatable("")` 可改且全部元方法全局生效）、`load` 只收 reader 函数、`os.time` 表协议等；上线后持续巡检又修 #170/#171（`string.format` NaN/Inf 渲染对齐 glibc，PR #172）/ #174/#175（`toNumberStr` 走 `crescent.ParseLuaNumber`，PR #176）/ #177（P4 shape-template FORLOOP deopt 补 preempt 与 body 副作用，PR #178）/ **#192/#193/#194/#196 那一轮**（2026-07-28，四个 issue 修出**六个根因**：C99 `nan(n-char-sequence)` 前缀、`tonumber(x, 10)` 整条路由错（一个原因造出六条分歧，五条没有 issue）、`%d`/`%i` 精度 0 配值 0 丢符号、`table.insert` 的 5.1 无边界检查语义 + `table.concat` 错误文本、`string.char` 的两步转换、`strtoul` 的无符号取反与溢出饱和（原先那条「已登记豁免」没有任何代码实现它）；另有 45 秒 fuzz 冒烟发现 table 库缺 `, got no value` 从句）/ **#197/#198/#199 那一轮**（2026-07-28：`error(msg, level)` 的位置前缀真的按 level 选帧——host 边界算**一个** level 而不是终点，且一个边界可能代表多个叠起来的 host 帧（`pcall(pcall,f)` 在 PUC 是两个 C 帧），所以每帧的 host 帧计数存进了 `callInfo` 的打包位；`%g` 补上 C 的默认精度 6（显式精度本来就对，`%e`/`%f` 的默认也本来就对，只有 `%g` 的默认不同）；gmatch 的前导 `^` 是普通字符不是锚（PUC 的 `gmatch_aux` 没有 anchor 处理）；`assert` 第二参数走 `luaL_optstring` 只收 string/number；`math.modf` 对无穷、`math.frexp` 在 DBL_MAX 附近、`math.rad` 溢出三处 Go math 包与 C 的差；`io.write` 返回布尔成功标志（issue 里写的「返回文件句柄」是错的，那是 5.2+）；`os.date` 从六个指令扩到完整指令循环 + `*t` 与 `!` 前缀）/ **#232/#233/#234 那一轮**（2026-08-05，定时巡检的第一次实际处理轮，三个 crasher 全部如实复现，而 **#232 与 #233 是同一个根因的两种可见度**——都是引用值地址：#232 是地址归一的锚点用 `\b` 而 word 字符包含数字，`io.write(0)print(print)` 产生的 `0function: 0x...` 整段逃过归一化；#233 是脚本**测量**地址的长度（`#tostring(t)` PUC 21 对望舒 17），长度在归一化之前就分歧、`NormalizeOutput` 物理上到不了，所以在 oracle 的 prelude 渲染处对齐——**归一化管值、渲染处管宽度**；#234 是引擎侧 gsub 替换串的 `%` 转义，`add_s` 的分支有三个出口加一个越界读，望舒只对了两个，「`%` 后非数字原样吐出」那一半是既有缺陷）/ **#244 那一轮**（2026-08-11，**崩的是 oracle 不是望舒**：`A(unpack({},0X80000000))` 让内嵌 oracle 收到 SIGSEGV（栈迹在 cgo 里）、真的 `lua5.1` 二进制同样 dumped core，而望舒对整段抬 `too many results to unpack`、行为正确且从不崩——PUC 的 `luaB_unpack` 把 `n = e - i + 1` 算在 int 上并用 `n <= 0` 检查,而**这个减法本身是有符号溢出 UB**——gcc -O2 把该检查当不可达整段删掉,`lua_checkstack` 随后收到负的 `size` 并照单接受(`lapi.c` 两个比较都为假),于是崩掉;同一份源码在 -O0 下干净抬错,**所以这个崩溃依赖优化等级**。(此前这里写「回绕成正的巨大值绕过检查」是错的:`i <= e` 时 int32 回绕恒 `<= 0`,那个检查本该拦住所有情形——错的机制不影响守卫条件,但会让读者以为与优化无关。)处置与其余 PUC UB range 一致：差分侧跳过，**会死的 oracle 不能当参照**。分诊纪律：差分 harness 报 crash 时先读栈迹属于哪一侧、并拿真的参照实现二进制跑一次。**守卫经四轮审计才定下来**:区间读 `i` 与 `e` 两个量(`i32 <= e32 且 (e32-i32+1) > INT_MAX`,`e` 默认 `#t`)、窄化走 `luaL_checkint` 自己那条链(`__ckint0`,而不是手搓一份)、`math.floor`/`tonumber` 在脚本运行前捕获成 local(读活全局时一个 `math.floor=function() return 0 end` 的输入就能把守卫算成 0、让 oracle 段错误 —— **守卫可以被它所守卫的输入绕开**)、非表首参不再被跳(`luaL_checktype` 先抬,两侧一致)。用例见 `internal/oracle/unpack_guard_test.go`(13 条必须 skip 含 5 条绕过尝试、12 条必须仍比较,两个方向都用变异确认),见 [12](docs/design/p1-interpreter/12-testing-difftest.md) §4.9f。
-6. **分层直接对内嵌 oracle 的差分 fuzz**（2026-08-29，`FuzzOracleDiffTiered`）：第 5 层那个 `FuzzOracleDiff` 测的是 **P1 对官方**。在这一层之前，**P3/P4 对官方的一致性全部是传递来的** —— `FuzzAutoPromote` / `FuzzP4ForceAllPromote` 断言的是「分层结果 == P1 结果」，「分层 == 官方」是经 「P1 == 官方」推出来的。传递性本身没错，但它**继承 P1 那次比较的每一个盲区**，而且对「P1 与官方一致、而两个 tier 各自也一致地错」这类情况没有直接观察能力；第 3 层那条按 tier 对真 `lua5.1` 跑的路走的是手写 generator（`vararg` / `goto` / `pcall` / `error` 的生成计数都是 0），覆盖的写法远窄于 go-fuzz 变异。这一层补的就是那条直接轴：任意变异源码在**强制升层**的 State 上跑，与内嵌 5.1.5 比对，**跳过集合与 P1 那一层完全相同**（不为 tier 开新的跳过——「tier 与官方分歧而 P1 不分歧」正是它存在的理由）。**升层是断言出来的而不是假设的**：`FuzzOracleDiff` 本来就能在 tier 的 build tag 下编译并通过（它构造普通 State、从不升层，tier 代码被链接进来但从未进入），所以一个忘记升层的分层 harness 与一个通过的测试在输出上完全一样、连一条 skip 都不留；配套守护测试断言升层计数增长并做过变异实测，CI 另加一条 required-target 存在性断言防 build tag 打错导致目标静默消失。**首轮结果**：两个 tier 都观察到升层，短时引导式 fuzz 未发现分歧 —— 这是第一个结果，不是一张清白证明。口径见 [12](docs/design/p1-interpreter/12-testing-difftest.md) §3.8a、[P3 08](docs/design/p3-wasm-tier/08-testing-strategy.md) §2.5a、[P4 08](docs/design/p4-method-jit/08-testing-strategy.md) §3.4a。
+### 不提供或与官方不同的部分
 
-**NaN 符号渲染差异在 oracle 侧消除，不在比较侧豁免**：`0/0` 转文本时 glibc 的 printf 按符号位打 `-nan`，wangshu 打 `nan`，差一个字节；IEEE 754 不赋 NaN 符号位数值语义，两种输出都合规。oracle 是仓库自己 vendor 并用 cgo 编译、只为做差分基准而存在的（且已经为确定性 stub 掉 `os.time`/`math.random`/`pairs` 顺序），所以在 `internal/oracle/lua515.c` 里覆盖 `lua_number2str`、并对 `lstrlib.c` 的 include 局部 shadow `sprintf`，把 NaN 渲染的符号去掉（保持字段宽度：`sprintf` 已经补过 padding，且 buffer 分不清前导空格是 padding 还是空格 flag 的符号，所以按 format spec 里的声明宽度重新补齐；符号去掉后 glibc 的 `+`/空格 flag 开始作用于 NaN，所以剥的是任何符号字符；Inf 保留符号，脚本自己写的 `"-nan"` 字面量不改）；vendored 源码保持与记录的 sha256 逐字节一致。同轮清掉产品侧两处 glibc 模仿（`internal/stdlib/stringlib.go`：`string.format` 原本对大写 verb 硬编码 `-NAN`，让 `%e` 与 `%E` 自相矛盾；小写 NaN 原本按「声明宽度减一」补齐以复现 glibc 保留但不显示的符号列，让 `%5f` 与 `%5E` 补齐方式不一致）——两处都只为让 oracle 一致而存在，而 arm64 的 glibc 与 x86 还不同，模仿本来就不可移植；现在 NaN 在所有 verb 下都不带符号、都按完整声明宽度补齐，wangshu 自身也一致了。**曾经的设计与它为何失败**（#173 引入、#184/#185 延伸，已全部删除）：旧设计把这个差异当作「不可比的类」，在 harness 侧识别并豁免（`__nan_spans` 区间 FIFO + 多行 readout header + `CompareOutput` 的 span-anchored 分类 + 一整层入口拦截）。这条路不可能收敛：那个符号字节一旦进入字符串就是普通数据，`#`、`==`、`string.sub`、`..`、算术能把它搬到任何地方——`string.len(0/0)` 是 4 对 3，`string.len(0/0)*100` 是 400 对 300，输出里连一个 nan 字节都不剩，没有任何可锚定的东西；任何下游识别规则都必须读一个两侧不相等的量，所以都做不到对称。新设计约少 550 行，且两个 crasher 与整个「泄漏成数字」的家族现在是普通的 equal 而不是 skip，覆盖面是增加的（那些输入以前会连同同一次运行里的真差异一起被丢掉）。**保留的两类豁免性质不同**：地址归一（`table: 0x...`）是两个引擎堆布局本来不同、没有「正确值」可对齐，只能在比较时归一；实现常数类护栏（`stack overflow`、`too many syntax levels`、200 local variables 等）是两侧独立选定的实现限制，改 oracle 的常数去凑 wangshu 会让它不再是独立基准，只能 skip。判据：差异如果来自「同一个抽象值的不同书写方式」，在渲染处消除；如果来自「两侧本来就是不同的东西」，在比较时归一或跳过。**后续验证**：nightly 在四个不同日期自动开出的 crasher #187 / #188 / #189 / #190（`string.format("%q",0%0)`、`string.format((0))<string.format((0%0))`、`string.format("%q",(0%0))`、`string.format("+% E",-(0%0))`）全部是这同一个根因的表现，被上面的渲染处消除一起解决，一行代码没改；双向验证确认它们在 redesign 之前的 base 上全部 FAIL、在现在的实现上全部以真正的逐字节 equal 通过而不是 skip。四条 reproducer 加 10 条延伸 seed 入 `testdata/fuzz/FuzzOracleDiff/`（共 73 个），理由是它们触到三个已有 seed 到不了的写法：`%q` 作用于 NaN（引用渲染结果而不做浮点格式化）、比较两个 `string.format` 的返回值（差异变成一个 boolean，输出里根本没有 NaN 文本）、多个符号 flag 同时出现。另扫了 236 + 140 种同族写法（`%q` × 宽度、比较运算符 × format 与 tostring 结果、flag 组合 × 浮点 verb；产生 NaN 的方式 × 消费其文本的方式）确认整个家族零差异。**「在渲染处消除」在 2026-08-05 第二次被用上（#233）**：`#tostring(t)` 量的是地址的**宽度**（PUC `%p` 12 位给 21、望舒 `0x%08x` 8 位给 17），长度在归一化之前就分歧——与 `string.len(0/0)` 4 对 3 完全一样的机制，所以 prelude 包一层 `tostring` 把 PUC 自己的地址渲染成望舒的 8 位，望舒侧的宽度成为一条约定，由 `fuzz_234_test.go::TestAddressLengthIsComparable` 固定下来。**所以那条判据要读细一格**：判去「比较时归一」的那一类里仍可能有一个子量必须在渲染侧对齐——地址的**值**只能归一，地址的**宽度**是渲染选择，会被 `#` 测量成普通数字。
-
-**豁免清单**（权威来源是 `test/difftest/corners_test.go::exemptions`，`go test -v -run TestExemptions_Documented` 可审计；下表按类别归并，行数与该清单的条目数不是一对一，所以这里不写条目总数——先前写的「共 15 项」与两边都对不上。另有 `string.char` 的 C UB 一项，执行体在差分 harness 侧 `internal/oracle/prelude.go` 的 sentinel 而不在这张表里）：
-
-| 类别 | 具体项 | 豁免原因 |
+| 类别 | 具体项 | 原因 |
 | --- | --- | --- |
-| Lua 5.2+ 特性 | `rawlen`、`table.pack` / `table.move` | 与 5.1 手册不符 |
-| Lua 5.3+ 特性 | `math.tointeger` / `type` / `maxinteger` / `mininteger` | 整数类型属 5.3 特性 |
-| 嵌入式安全 | `os.execute`、`io.popen` / `io.tmpfile`、`os.exit` 真退出、`loadfile` / `dofile` 默认禁用 | 嵌入式 VM 不让脚本跑 shell / 越权文件系统 |
-| 真实文件 IO | `io.open` / `f:seek`（三个标准流与 `io.read` / `io.lines` 已提供） | 需要文件系统访问控制 + `__gc` 关文件那一环，P1 不做 |
-| Debug 接口 | `debug.sethook` / `getlocal` / `setlocal` / `getupvalue` / `setupvalue` / `getregistry` | 需要解释器内部 hook，成本收益不划算 |
-| 模块系统 | `require` / `module` / `package` | 嵌入式宿主经 `Compile` 提供脚本，不从文件系统 require |
-| 字节码序列化 | `string.dump` | 自定义 ISA 不兼容官方 `.luc` |
-| 环境操作 | `getfenv` / `setfenv` | 与 P2 分层桥 F4 形状分析冲突 |
-| C 未定义行为 | `string.char` 的越界 double→int 转换 | `luaL_checkint` 是 `(int)luaL_checkinteger`：double 先变 `lua_Integer` 再窄化成 int，越界与 NaN 落进 C UB，两个官方 build 互不一致（x86-64 `cvttsd2si` → `INT64_MIN`，低 32 位 0，PUC 接受得 byte 0；arm64 `FCVTZS` 把 `+inf` 饱和到 `INT64_MAX`，低 32 位 -1，PUC 报错）。产品侧钉 x86-64 结果（与 `%u`/`%x`/`%o` 的 `cUnsignedCast` 同一手法），差分侧跳过这段区间；in-range 的值（含 `2^53`）照旧比对 |
-| 灾难性回溯 | pattern 灾难回溯 `.*.+%A*x` | 回溯预算 `1<<20` 步硬限，报 `pattern too complex`（嵌入式防挂起） |
-| 增量 GC | `collectgarbage("step"/"setstepmul")` | STW GC 无增量调参，占位返回 |
+| Lua 5.2+ 特性 | `rawlen`、`table.pack` / `table.move` | 不属于 Lua 5.1 |
+| Lua 5.3+ 特性 | `math.tointeger` / `type` / `maxinteger` / `mininteger` | 整数类型是 5.3 的特性 |
+| 嵌入安全 | `os.execute`、`io.popen`、`os.exit` 不真的退出进程、`loadfile` / `dofile` 默认关闭 | 嵌入式 VM 不让脚本执行 shell 或越权读文件系统；`loadfile` / `dofile` 可以用 `Options.AllowFileLoad` 打开 |
+| 真实文件 IO | `io.open` / `io.tmpfile` / `f:seek` | 需要文件系统访问控制和关闭文件的 `__gc`，目前不做 |
+| debug 接口 | `debug.sethook` / `getlocal` / `setlocal` / `getupvalue` / `setupvalue` / `getregistry` | 需要解释器内部的钩子 |
+| 模块系统 | `require` / `module` / `package` | 宿主通过 `Compile` 提供脚本，不从文件系统加载模块 |
+| 字节码序列化 | `string.dump` | 望舒的字节码格式与官方 `.luc` 不兼容 |
+| 环境操作 | `getfenv` / `setfenv` | 与分层执行的形状分析冲突 |
+| 增量 GC | `collectgarbage("step")` / `collectgarbage("setstepmul")` | GC 是 stop-the-world，没有增量参数，调用只返回占位值 |
+| 防挂起 | 模式匹配的灾难性回溯（如 `.*.+%A*x`） | 回溯超过 `1<<20` 步时报 `pattern too complex`，官方会一直算下去 |
+| C 未定义行为 | `string.char` 收到超出 int 范围的数（含 NaN、±inf） | 官方行为由 C 未定义行为决定，x86-64 与 arm64 结果不同；望舒固定采用 x86-64 的结果 |
+| 时区 | `os.time{isdst=...}` 贴着夏令时切换点的少数输入 | 所有平台都按 glibc 的规则解释，所以各平台结果一致；在 macOS / BSD 上可能与本机编译的官方 Lua 不同 |
 
-其余「存在但不逐字节比」的项（`collectgarbage("count")` / `gcinfo` / `os.time` / `os.clock` / `os.date("%Y")` / `io.write` / `loadfile` 返错格式）由 `TestApprox_ExistenceOnly` 只断言返回值格式不比数值——这一类不是「不可比」而是「值随运行环境变」（时间、内存、文件系统），所以 `os.date` 的**指令输出**并不在这一类里，它已经逐字节核对过（2026-07-28）。
+完整清单和每一条的理由在 `test/difftest/corners_test.go` 的 `exemptions`，可以用 `go test -v -run TestExemptions_Documented ./test/difftest/` 列出。各函数的细节见 [10-stdlib](docs/design/p1-interpreter/10-stdlib.md)。
+
+## 正确性验证
+
+参照物是官方 Lua 5.1.5。验证分六层，每一层比对的对象不同：
+
+| 层 | 比对什么 | 在哪里跑 |
+| --- | --- | --- |
+| 1. 官方测试套件 | 跑上游 `lua5.1-tests` 里的文件，输出逐字节一致 | 每次 CI |
+| 2. 手册逐项用例 | 按参考手册逐节写的特性、边角和错误消息用例，与官方 `lua5.1` 逐字节比对 | 每次 CI |
+| 3. 随机脚本差分 | 生成器产出的随机脚本，P1 / P3 / P4 三档分别与官方 `lua5.1` 比对 | nightly，每轮 200 万条 |
+| 4. 层间差分 | 同一份字节码在解释器与编译层上跑，输出逐字节一致 | 每次 CI |
+| 5. 内嵌 oracle fuzz（P1） | go-fuzz 变异出的任意源码，在同一进程里与经 cgo 嵌入的官方 5.1.5 比对 | PR 上跑 60 秒冒烟，nightly 每档跑约半小时 |
+| 6. 内嵌 oracle fuzz（P3 / P4） | 同上，但强制升层后再比，直接比编译层与官方，不靠第 4 层的传递 | PR 上跑 60 秒冒烟，nightly 每档跑约半小时 |
+
+几点说明：
+
+- **官方测试套件不是全部跑完。** 套件里的文件与上游逐字节相同，但文件数比上游少，多数文件在用到不支持的功能（`setfenv`、`debug` 高级接口、`string.dump` 等）的那一行之前截断，只有少数文件从头跑到尾。每个文件跑到哪一行、为什么截断，见 `test/luasuite/luasuite_test.go` 的 `stopAt` 表。
+- **比对没有「接受差异」的路径。** 对象地址（`table: 0x...`）在比较前归一化，因为两边的堆布局本来就不同。另有几类输入整个跳过不比：触发实现上限的（栈溢出深度、语法嵌套层数等两边各自定的常数）、碰到 C 未定义行为的、以及会让官方实现自己崩溃的。除此之外，输出有任何差异都算失败。
+- 内嵌的 oracle 只在 `wangshu_oracle_cgo` build tag 下编译，默认 build 仍然不依赖 cgo。
+
+每一层的口径、跳过规则和历次发现的问题，见 [12-testing-difftest](docs/design/p1-interpreter/12-testing-difftest.md)。
+
+## 性能
+
+linux/amd64（Intel Xeon Platinum 8573C）上的结果。每格是「wall time (相对 gopher-lua 的倍率)」，倍率越大越好；**粗体**是该行最快的一格，<ins>下划线</ins>表示倍率 ≥ 1.5×。数字来自 GitHub Actions hosted runner 上的一轮标准化基准（2026-07-10，[run 29098511106](https://github.com/Liam0205/wangshu/actions/runs/29098511106)），请以倍率为主，wall time 在不同轮之间会漂 10-20%。
+
+| 类别 | 脚本 | gopher | P1 | P3 auto | P3 force | P4 auto | P4 force |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 纯 VM 微基准 [^cat-baseline] | Simple (分支/比较) | 826 ns | **<ins>149 ns (5.54×)</ins>** | <ins>4246 ns (2.00×)</ins> [^p3-kernel] | 9613 ns (0.88×) [^p3-kernel] | <ins>165 ns (5.02×)</ins> | <ins>165 ns (5.02×)</ins> |
+|  | Arith (Horner) | 994 ns | <ins>209 ns (4.75×)</ins> | <ins>6512 ns (2.35×)</ins> [^p3-kernel] | 11423 ns (1.34×) [^p3-kernel] | **<ins>207 ns (4.81×)</ins>** | **<ins>207 ns (4.81×)</ins>** |
+|  | Loop (求和循环) | 60.6 µs | **<ins>20.1 µs (3.01×)</ins>** | <ins>419 µs (7.25×)</ins> [^p3-kernel] | <ins>405 µs (7.49×)</ins> [^p3-kernel] | <ins>22.8 µs (2.66×)</ins> | <ins>22.8 µs (2.66×)</ins> |
+| heavy 内核 [^cat-heavy] | HeavyArith | 292 ms | <ins>84.3 ms (3.46×)</ins> | <ins>97.6 ms (2.99×)</ins> | <ins>97.2 ms (3.00×)</ins> | <ins>16.2 ms (18.0×)</ins> | **<ins>15.7 ms (18.5×)</ins>** |
+|  | HeavyRecursion | 9.34 ms | <ins>5.51 ms (1.69×)</ins> | <ins>5.93 ms (1.58×)</ins> | 6.44 ms (1.45×) | <ins>1.94 ms (4.80×)</ins> | **<ins>1.89 ms (4.93×)</ins>** [^selftail] |
+|  | HeavyFloatloop | 464 ms | <ins>166 ms (2.80×)</ins> | <ins>57.7 ms (8.03×)</ins> | <ins>60.0 ms (7.73×)</ins> | <ins>26.2 ms (17.7×)</ins> | **<ins>25.7 ms (18.0×)</ins>** |
+| realworld small [^cat-realworld] | fib | 10.2 ms | 11.8 ms (0.87×) | 12.8 ms (0.80×) [^p3-gate] | 27.7 ms (0.37×) | **<ins>1.09 ms (9.35×)</ins>** [^seg2seg] | <ins>1.12 ms (9.10×)</ins> [^seg2seg] |
+|  | binary-trees | 56.0 ms | 41.4 ms (1.35×) | 45.1 ms (1.24×) [^p3-gate] | 118 ms (0.48×) | **<ins>29.7 ms (1.89×)</ins>** | <ins>31.5 ms (1.78×)</ins> [^seg2seg] |
+|  | spectral-norm | 37.0 ms | <ins>21.1 ms (1.75×)</ins> | 25.3 ms (1.46×) [^p3-gate] | 53.4 ms (0.69×) | <ins>2.46 ms (15.0×)</ins> | **<ins>2.40 ms (15.4×)</ins>** [^seg2seg] |
+|  | fannkuch | 4.87 ms | 6.32 ms (0.77×) | 7.00 ms (0.70×) | 7.12 ms (0.68×) | <ins>0.65 ms (7.51×)</ins> | **<ins>0.62 ms (7.87×)</ins>** [^seg2seg] |
+|  | n-body | 68.4 ms | 53.7 ms (1.27×) | 56.0 ms (1.22×) [^p3-gate] | 108 ms (0.63×) | <ins>4.70 ms (14.5×)</ins> [^math-intrinsic] | **<ins>4.64 ms (14.7×)</ins>** [^math-intrinsic] |
+| 边界 mini · Call [^cat-mini] | PureVM | 844 ns | **<ins>151 ns (5.58×)</ins>** | — | — | — | — |
+|  | CallOnly | **104 ns** | 222 ns (0.47×) | 235 ns (0.44×) | 365 ns (0.28×) | 251 ns (0.41×) | 251 ns (0.41×) |
+|  | Boundary (+SetGlobal) | **220 ns** | 392 ns (0.56×) | 400 ns (0.55×) | 830 ns (0.27×) | 351 ns (0.63×) | 342 ns (0.64×) |
+| 边界 mini · CallInto [^cat-mini] | PureVM | 844 ns | **<ins>151 ns (5.58×)</ins>** | — | — | — | — |
+|  | CallOnly | 104 ns | **84.9 ns (1.22×)** | 85.6 ns (1.21×) | 196 ns (0.53×) | 114 ns (0.90×) | 115 ns (0.90×) |
+|  | Boundary (+SetGlobal) | 220 ns | 230 ns (0.96×) | 244 ns (0.90×) | 618 ns (0.36×) | **191 ns (1.15×)** | 198 ns (1.11×) |
+| 真实负载 · Call [^cat-embed] | Predicate (×1000) | 568 µs | 660 µs (0.86×) | 697 µs (0.82×) | 1241 µs (0.46×) | 571 µs (0.99×) | **554 µs (1.03×)** |
+|  | Transform (×1000) | **466 µs** | 493 µs (0.95×) | 532 µs (0.88×) | 801 µs (0.58×) | 488 µs (0.95×) | 475 µs (0.98×) |
+| 真实负载 · CallInto [^cat-embed] | Predicate (×1000) | 568 µs | 489 µs (1.16×) | 507 µs (1.12×) | 1043 µs (0.54×) | **382 µs (1.49×)** | 394 µs (1.44×) |
+|  | Transform (×1000) | 466 µs | 355 µs (1.31×) | 348 µs (1.34×) | 589 µs (0.79×) | <ins>310 µs (1.51×)</ins> | **<ins>306 µs (1.52×)</ins>** |
+
+各列的含义：`gopher` 是 gopher-lua v1.1.2；`P1` 是默认 build 的解释器；`P3` / `P4` 是两个编译层，`auto` 是生产环境的自动升层，`force` 是测试用的强制升层；`Call` / `CallInto` 是两种嵌入调用方式，`CallInto` 不分配。
+
+linux/arm64、darwin/arm64 的结果，各列和脚注的详细说明，以及复现方法，见 [docs/benchmarks.md](docs/benchmarks.md)。
+
+[^cat-baseline]: `benchmarks/baseline`。三个独立的纯 Lua 脚本（Simple 分支比较、Arith 六阶 Horner 多项式、Loop 求和 1..N），单次执行，不跨 Go↔Lua 边界。反映 VM 内核在最小工作量下的分派、算术和循环开销。
+[^cat-heavy]: `benchmarks/heavy`。三个扁平的数值内核（HeavyArith 纯算术、HeavyRecursion 自递归、HeavyFloatloop 嵌套浮点循环），刻意不含表、字符串和库函数调用。反映编译层在它最擅长的写法上的上限。
+[^cat-realworld]: `benchmarks/realworld`。benchmark-game 的五个脚本（fib / binary-trees / spectral-norm / fannkuch / n-body），每个脚本的输出都和官方 lua5.1.5 逐字节比对过。反映调用、分配、浮点和表操作混合的常规负载。
+[^cat-mini]: `benchmarks/embedded` 的 `mini_bench_test.go`。嵌入调用的最小形式：每次迭代一次 SetGlobal、一次 Call、读一次结果。反映跨边界本身的成本，以及会分配的 `Call` 与零分配的 `CallInto` 之间的差距。
+[^cat-embed]: `benchmarks/embedded` 的 `realworld_embedded_bench_test.go`。1000 条数据一批，每条设置字段、调用谓词或特征变换脚本、读回一个标量。反映真实批处理嵌入场景下的稳态吞吐。
+[^p3-kernel]: 这几格的工作量和同行其他列不同。顶层 chunk 是 vararg，永远不会升层，所以 P3 列测的是「把脚本体包进一个内层函数、调用 50 次」；倍率的分母也换成同样写法的 gopher 基准（`_GopherKernel`），所以倍率可比，但 wall time 约是同行其他列的 50 倍，不能直接比。
+[^p3-gate]: P3 auto 有一道收益检查：热函数里需要回到 Go 的操作太多、跨边界的成本会吃掉升层收益时，就不升层，留在解释器里跑。带这个标记的格子没有升层，数字就是解释器的执行时间（和 P1 列的差别是采样开销）。P3 force 绕过这道检查，所以不受影响。
+[^seg2seg]: P4 的段到段直接调用：自递归、或调用纯算术函数（fib 这类写法）时，调用方的机器码直接跳进被调方的机器码，整个递归过程不回到 Go。amd64 与 arm64 都已实现。
+[^selftail]: P4 的自尾调用段内循环：`return f(...)` 调用的就是当前函数时，在机器码内搬移参数并跳回入口，不再每层退出一次再从 Go 重新进入。HeavyRecursion（collatz）的递归调用全是尾调用，所以受益最大。
+[^math-intrinsic]: P4 的 math 函数内联：调用点观察到被调的是已知的纯数值宿主函数（`sqrt` / `floor` / `ceil` / `abs` / `max` / `min`）时，直接生成对应的硬件指令（amd64 的 SQRTSD / ROUNDSD，arm64 的 FSQRT / FRINTM 等），不再跨边界回到 Go。结果与解释器逐字节一致，包括 NaN、Inf 和 ±0。n-body 的热循环几乎都是 `sqrt`，受益最大。
+
+## 架构
+
+望舒使用分层虚拟机架构；其执行层以月相命名：
+
+```
+P1 解释器 ──► P2 分层桥 ──► P3 Wasm 编译层 ──► P4 method JIT （RC 状态） ──► P5 trace JIT （尚未实现）
+(crescent)    (基建)        (gibbous)          (gibbous)                   (fullmoon)
+```
+
+架构核心承诺：
+
+* NaN-boxed u64 值表示
+* 自管理的 arena 线性内存——各层共用同一块内存
+* P1 解释器始终可用——所有编译层的 deopt 着陆点及语义 oracle
+* CI 保证层与层之间逐字节一致
 
 ## 文档导航
 
@@ -355,6 +274,7 @@ for i := 0; i < 1000; i++ {
   - P5 trace JIT（未立项，图纸已就位）：[docs/design/p5-trace-jit/](docs/design/p5-trace-jit/00-overview.md)（11 章施工图纸，启动判定见 01）
 - **工程规范 / 提交纪律**：[docs/design/engineering.md](docs/design/engineering.md)（Git hooks / CI / Makefile / 发布纪律 / lint 工具链）。
 - **AI 协作规范**：[llmdoc/](llmdoc/) 目录记录项目层面对 LLM 协作者的引导——[startup.md](llmdoc/startup.md) 起，含 must（不可违背）/ guides（协作最佳实践）/ memory（历史决议与反思，`reflections/` 有各里程碑教训）。
+- **性能完整数据**：[docs/benchmarks.md](docs/benchmarks.md)（三平台的表、各列说明、复现方法）。
 - **修复记录 / 行为变更**：各阶段 `implementation-progress.md`（上面「深入某一层」里的进度对账）按日期记每轮修了什么、改了哪些行为；每轮的根因和教训在 [llmdoc/memory/reflections/](llmdoc/memory/reflections/)。
 
 ## 欢迎贡献
