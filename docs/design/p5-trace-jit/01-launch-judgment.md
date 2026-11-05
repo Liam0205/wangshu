@@ -269,7 +269,7 @@ trace JIT 是永久性的负债——LuaJIT 社区的维护困境是前车之鉴
 
 ### 6.1 P4 验收是 P5 立项的基线
 
-P4 验收数据是 P5 立项判定的**输入 baseline**——具体来自 [../p4-method-jit/09-acceptance-checklist.md](../p4-method-jit/09-acceptance-checklist.md) §3 + 项目 `README.md` perf table。以下数据在 P5 立项判定时**必须**引用:
+P4 验收数据是 P5 立项判定的**输入 baseline**——具体来自 [../p4-method-jit/09-acceptance-checklist.md](../p4-method-jit/09-acceptance-checklist.md) §3 + 三平台性能表 [docs/benchmarks.md](../../benchmarks.md)(README 只放 linux/amd64 一张)。以下数据在 P5 立项判定时**必须**引用:
 
 - **V14 luajc 档三平台数据**:amd64 14.08x / linux-arm64 25.28x / darwin-arm64 13.34x over gopher-lua(见 [../p4-method-jit/09-acceptance-checklist.md](../p4-method-jit/09-acceptance-checklist.md) §3 V14),作为 §3.2 A 阈值的参照基线;
 - **V15b heavy 三平台数据**:amd64 5.53x / linux-arm64 5.45x / darwin-arm64 4.00x geomean over gopher-lua(同上 §3 V15b),作为「P4 已经实现列内核核心 loop / heavy 形式」的证据;

@@ -666,7 +666,8 @@ func DiffN(src string, runners ...Runner) DiffResult { /* N 方比对,§3.3 矩�
 
 豁免是「合法的不比对」,但豁免**滥用会掏空差分强度**(什么都豁免就什么都测不出)。纪律:
 
-- **豁免清单集中在一处文件** `test/difftest/exemptions.go`,每条豁免**必须注明**:① 豁免什么(正则/用例标记)② 根因(为什么本质不可比,指向本文 §4.x)③ 范围(全局脱敏 / 仅某用例)。
+- **豁免清单集中在一处**:`test/difftest/corners_test.go` 的 `exemptions`(`go test -v -run TestExemptions_Documented ./test/difftest/` 逐条列出),每条豁免**必须注明**:① 豁免什么(正则/用例标记)② 根因(为什么本质不可比,指向本文 §4.x)③ 范围(全局脱敏 / 仅某用例)。差分 harness 侧的跳过(C 未定义行为的区间、实现常数类护栏)不在这张表里,执行体在 `internal/oracle/prelude.go`。
+- **「只断言存在」是第三种处理,不是豁免**:返回值随运行环境变化的函数(`collectgarbage("count")` / `gcinfo` / `os.time` / `os.clock` / `os.date("%Y")` 的位数 / `io.write` 能调用 / `loadfile` 失败时的返回形式)由同一文件的 `TestApprox_ExistenceOnly` 只断言返回值的类型和形式,不比数值。它们不是「不可比」,而是值本身随时间、内存和文件系统变化。`os.date` 的**指令输出**不在这一类,它逐字节比对(§4.6)。
 - **豁免分两类**:**结构性豁免**(地址、random、GC 数值、locale、libc 文本——本质不可比,§4.3-§4.6)是永久的;**gopher 偏差豁免**(§4.7)是「gopher-lua 偏离官方,望舒对齐官方」,**记录但以官方为准**,理论上可随 gopher 修复而移除。
 - **新增豁免需 review**:CI 里豁免清单的改动**高亮**(像 golden 改动一样在 PR diff 显眼),防「为让 fuzz 过而偷偷加豁免掩盖真 bug」。
 - **严格口径项绝不豁免**:`pairs` 严格用例、`%.14g`、措辞(非豁免项)、寄存器分配同构——这些是差分强度的核心,任何「想豁免它们」的提案都要回到本文重新论证。

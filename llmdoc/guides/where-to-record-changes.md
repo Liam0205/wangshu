@@ -13,6 +13,9 @@
    - `llmdoc/memory/reflections/`（过程教训），可复用的判据再提升进 `llmdoc/guides/`。
 3. **同一件事只在一处写全**，其他地方放链接。README 的「文档导航」已经指向各阶段的 `implementation-progress.md`
    和反思目录，不需要在 README 里再复述一遍。
+4. **README 各节只写本节的事**：「语言支持」只写支持什么、不支持什么（豁免表）；验证方法写在「正确性验证」，
+   每层一行，细节链到 `12-testing-difftest`；性能只放 linux/amd64 一张表，三平台完整数据、各列说明和复现方法在
+   `docs/benchmarks.md`。一段写到要分几层括号、或要解释「以前写错了什么」，就说明它该进设计文档。
 
 ## 为什么
 

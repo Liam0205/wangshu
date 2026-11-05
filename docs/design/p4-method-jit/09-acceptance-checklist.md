@@ -234,7 +234,7 @@ issue #37 (arm64 exit-reason port) + issue #40 已开单跟进。**§3.V15b 归�
 
 - **对 PJ11 状态的影响**: PJ11 已交付状态不撤 (交付时点数字全绿); arm64 回归归 followup (issue #37 / #40), 修复方向是把扩面 op 集 port 到 arm64 exit-reason 协议。
 
-**(c) 权威现值**: 项目根 `README.md` perf table (commit f736c92, 2026-07-02) 是当前的三平台性能权威快照; 本文 §3 各 V 归档表是**验收时点的**证据快照, 两者并存不冲突 — §3 表证明「PJ11 宣告时点数字达标」, README perf table 反映「当前跟进后的现值」。若两处数字出现矛盾, 以 README perf table 为准 + 本 addendum 澄清成因。
+**(c) 权威现值**: 三平台性能表 (原在项目根 `README.md`, commit f736c92, 2026-07-02; 2026-11 起完整三平台数据移到 [docs/benchmarks.md](../../benchmarks.md), README 只保留 linux/amd64 一张) 是当前的三平台性能权威快照; 本文 §3 各 V 归档表是**验收时点的**证据快照, 两者并存不冲突 — §3 表证明「PJ11 宣告时点数字达标」, 性能表反映「当前跟进后的现值」。若两处数字出现矛盾, 以 [docs/benchmarks.md](../../benchmarks.md) 为准 + 本 addendum 澄清成因。
 
 ---
 
