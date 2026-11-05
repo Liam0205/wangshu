@@ -1194,7 +1194,7 @@ timeout 只覆盖被点名的那一条。
 `llmdoc/guides/unreproducible-crasher-triage.md`「给一条报错的命令加超时」与「job 超时与 step
 超时」两节;反思 [[2026-08-19-nightly-step-timeouts-and-budget]]。
 
-- **golden / 豁免清单改动高亮**(§4.8):golden 文件、`exemptions.go` 的 diff 在 PR review 里显眼,防「改 golden / 加豁免来掩盖真 bug」。
+- **golden / 豁免清单改动高亮**(§4.8):golden 文件、豁免清单(`test/difftest/corners_test.go` 的 `exemptions`)的 diff 在 PR review 里显眼,防「改 golden / 加豁免来掩盖真 bug」。
 
 > **为什么差分 fuzz 必须是强制检查**(而非「跑跑看」):roadmap §5 原则 2 把它定为「主防线」,[architecture](../architecture.md) §4 把它定为「必过」。若差分只是 advisory(可失败可合并),则「投机错误静默错果」会随 PR 渗入主干而无人察觉(它不崩溃、不报错,只是结果悄悄错)。把它设为**阻塞合并的强制检查**,是把「逐字节一致」从口号变成机制。这也是 P1 验收(roadmap §4「与 gopher-lua 差分 fuzz 输出逐字节一致」)的 CI 兑现。
 
