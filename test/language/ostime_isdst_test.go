@@ -94,8 +94,21 @@ func TestOSTimeIsDST_DefaultHourFallback(t *testing.T) {
 		// No neighbour found anywhere: the default hour applies.
 		{"UTC", "1705320000", "1705316400", "no neighbour -> default hour"},
 		// A neighbour exists at the same offset (DST abolished by keeping the summer
-		// offset), so the delta is zero and isdst does nothing.
-		{"Africa/Windhoek", "1705312800", "1705312800", "equal-offset neighbour -> delta 0"},
+		// offset), so the delta is zero and isdst does nothing: Jordan's last change, on
+		// 2022-10-28, went from EEST (+03, DST) to permanent +03.
+		//
+		// This case used to be Africa/Windhoek, and that zone's answer turned out to
+		// depend on how the host's tzdata is packaged. Namibia's 1994-2017 winter time is
+		// "negative DST" in the main tz data (winter WAT +01 is the DST state) and
+		// ordinary DST in the rearguard form (summer CAT +02 is). Ubuntu 24.04 ships the
+		// rearguard form, where the nearest opposite-state neighbour has the base offset
+		// and glibc returns 1705312800 for isdst=true; Ubuntu 26.04 ships the main form,
+		// where that neighbour is +01 and glibc returns 1705316400. wangshu follows the
+		// host tzdata exactly as glibc does (0 of 14976 mismatches against C mktime on
+		// each), so the product was right on both and only this expectation was not.
+		// Europe/Dublin, Africa/Casablanca and Africa/El_Aaiun differ the same way; do
+		// not pin epoch seconds for them.
+		{"Asia/Amman", "1705309200", "1705309200", "equal-offset neighbour -> delta 0"},
 	} {
 		loc, err := time.LoadLocation(tc.zone)
 		if err != nil {
