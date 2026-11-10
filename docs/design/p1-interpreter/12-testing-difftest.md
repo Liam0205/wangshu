@@ -932,7 +932,7 @@ Lua 5.1 的 `a % b` 是 `a - floor(a/b)*b`（`luaconf.h` 的 `luai_nummod`）。
 
 **经过**：2026-11-08 起 nightly 每一轮都报几十到九十多条 `DIVERGENCE`，三个 tier 报的是同一批种子，分层 go-fuzz
 也报了一条（#309 到 #322）。这些种子在本地全部通过。原因是 nightly 用的 runner 镜像换成 ubuntu-26.04 之后，在它
-上面编出来的参照实现是融合的。证据：11-08 两轮的 344 条和 11-09 两轮的 187 个种子，对着用 `-march=x86-64-v3`
+上面编出来的参照实现是融合的（镜像的 gcc 默认 `-march=x86-64-v3`，见本节末尾）。证据：11-08 两轮的 344 条和 11-09 两轮的 187 个种子，对着用 `-march=x86-64-v3`
 编的参照实现全部分歧，对着同样参数再加 `-ffp-contract=off` 编的参照实现全部通过；所有分歧都只在 `%` 的结果上。
 望舒的代码没有变，这一轮也没有改它。
 
@@ -960,9 +960,13 @@ Lua 5.1 的 `a % b` 是 `a - floor(a/b)*b`（`luaconf.h` 的 `luai_nummod`）。
 `luaV_execute`、`Arith`、`codearith`（都是 `%`）和 `luaB_collectgarbage`（`collectgarbage("count")` 的
 `b + x/1024`，除以 1024 是精确的，融合与否结果相同）。所以这个参数只改变 `%`。
 
-**还没弄清楚的一点**：ubuntu-26.04 的 runner 镜像为什么默认编出融合的代码。nightly 的编译命令是普通的
-`gcc -O2`；本地的 ubuntu:26.04 容器（gcc 15.2，默认 `-march=x86-64`）编不出 FMA 指令。`build-lua-oracle.sh` 会把
-编译器版本、默认 `-march`、默认目标有没有 FMA 打进日志。
+**镜像为什么默认融合**（PR #324 的 CI 日志里查到的）：GitHub 的 ubuntu-26.04 runner 镜像用的是 Ubuntu 的
+`amd64v3` 包（`apt-get update` 取的是 `amd64v3 Packages` 索引），这一套包按 x86-64-v3 编译。镜像里的 gcc 版本号与
+普通 amd64 的相同（`15.2.0-16ubuntu1`），但默认 `-march` 是 `x86-64-v3`，这个目标带 FMA，所以一条普通的 `gcc -O2`
+就会融合。apt 装的 `lua5.1` 也是融合的：PR CI 的 `difftest (p1 / ubuntu-latest)` 里，刚装好的包在
+`check-oracle.sh` 上得到 `-2944 -2944 -2944`，随后改用源码构建。普通的 ubuntu:26.04（本机、Docker 官方镜像）是
+`amd64`，默认 `-march=x86-64`，不融合，所以本地一直复现不出来。`build-lua-oracle.sh` 每次都把编译器版本、默认
+`-march`、默认目标有没有 FMA 打进日志。
 
 **判据**：差分的参照实现由「版本 + 编译方式」共同决定，锁版本（§2.6）不够。分歧数从 0 跳到几十条、三个 tier
 同一批种子一起报、集中在一个算子上，先查参照实现是不是变了（runner 镜像、编译器、编译参数），再查望舒。

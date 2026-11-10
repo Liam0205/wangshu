@@ -700,7 +700,11 @@ runner 镜像换成 ubuntu-26.04 后，在它上面编出来的官方 Lua 把 `a
 glibc 的结果也跟着变。望舒在两种 tzdata 上都与 glibc `mktime` 一致（各 14976 例，差异为 0），只是测试把其中一种的
 结果写成了固定期望值。用例换成 `Asia/Amman`，产品代码没有改。细节见 [10 §9.1](./10-stdlib.md) 末尾的 2026-11-10 补记。
 
-只在 x86-64 上固定的原因、`-ffp-contract=off` 对参照实现其他代码的影响、还没弄清楚的一点（镜像为什么默认融合），
+真实 runner 上的结果（PR #324 的 CI，ubuntu-26.04）：`build-lua-oracle.sh` 的日志显示镜像里 gcc 的默认 `-march` 是
+`x86-64-v3`（镜像用的是 Ubuntu 的 `amd64v3` 包），这就是它默认融合的原因；apt 装的 `lua5.1` 在 `check-oracle.sh` 上得到
+`-2944 -2944 -2944` 被拒绝，改用源码构建后通过；arm64 的 runner 上只打印结果（`-2944 -2944 -2944`），不判定。
+
+只在 x86-64 上固定的原因、`-ffp-contract=off` 对参照实现其他代码的影响、镜像为什么默认融合，
 见 [12 §4.9g](./12-testing-difftest.md)。arm64 上望舒自己的 `%` 是融合的，与 amd64 结果不同，记在
 [#323](https://github.com/Liam0205/wangshu/issues/323)。过程记录见
 [#309 复盘](../../../llmdoc/memory/reflections/2026-11-10-issue309-oracle-fp-contraction.md)。

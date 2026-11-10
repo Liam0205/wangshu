@@ -42,12 +42,15 @@ glibc `mktime` 对 `isdst=true` 的结果跟着变。望舒读宿主的 tzdata�
 环境一换就失败，而产品没有变。判断方法也一样：先在 master 上重跑，确认失败与当前改动无关；再在新旧两种环境下各取
 一次第三方的结果（这里是 C 的 `mktime`），看产品是不是在两边都跟对了。
 
-## 还没弄清楚的
+## 镜像为什么默认融合
 
-ubuntu-26.04 的 runner 镜像为什么默认编出融合的代码。nightly 的编译命令是普通的 `gcc -O2`，本地的
-ubuntu:26.04 容器（gcc 15.2，默认 `-march=x86-64`）编不出 FMA 指令。`scripts/build-lua-oracle.sh` 现在会把
-编译器版本、默认 `-march`、默认目标有没有 FMA 打进日志，下一次看 nightly 的安装步骤日志就能知道。
-修法不依赖这个答案：参数是显式给的，安装步骤还会验算。
+修复写完时这一点还不知道，是 PR 的 CI 跑起来之后从 `build-lua-oracle.sh` 打的日志里看到的：GitHub 的 ubuntu-26.04
+runner 镜像用的是 Ubuntu 的 `amd64v3` 包，镜像里的 gcc 默认 `-march=x86-64-v3`，这个目标带 FMA。版本号和普通 amd64 的
+gcc 一样，所以只看版本号看不出区别。apt 装的 `lua5.1` 也是融合的，在 `check-oracle.sh` 上被拒绝。本机和 Docker 官方的
+ubuntu:26.04 都是普通 `amd64`，所以本地复现不出来。
+
+之前我在本地容器里装了同版本的 gcc、编不出 FMA 指令，就停在「原因不明」上。当时少做了一步：比对两边 `apt-get update`
+取的包索引。让脚本把决定结果的那几个量（默认 `-march`、有没有 FMA）打进日志，比事后去猜省事，这次就是靠它。
 
 ## 留下的事
 
