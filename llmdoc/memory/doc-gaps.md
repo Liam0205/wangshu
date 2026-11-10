@@ -9,10 +9,6 @@
   （后一条是从编译产物推出来的，没有在 arm64 机器上跑过）。见
   [#323](https://github.com/Liam0205/wangshu/issues/323)。改它会让 v0.3.0 的 30 天计时重新开始。
 
-- **【未查清】ubuntu-26.04 的 runner 镜像为什么默认编出融合的浮点代码** — #309 的修法不依赖答案（编译参数显式给出，
-  安装步骤验算）。`scripts/build-lua-oracle.sh` 会把编译器默认 `-march` 和默认目标有没有 FMA 打进 nightly 安装步骤的
-  日志，看一次日志就能补上。见 `docs/design/p1-interpreter/12-testing-difftest.md` §4.9g。
-
 - **【已完成 2026-10-05,#296 / #297】#290-#292 本地审查发现的两处存量差异** — 对账见
   `docs/design/p1-interpreter/implementation-progress.md` 的 #296 / #297 条目:LARGE 空闲块合并、顶部块退回 bump、
   `Compact` 按 GC 水位留余量;宿主函数返回后检查一次 GC。
