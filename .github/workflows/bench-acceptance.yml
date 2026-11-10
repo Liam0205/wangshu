@@ -55,6 +55,15 @@ jobs:
         with:
           path: lua-5.1.5
           key: lua-5.1.5-build-${{ runner.os }}-${{ runner.arch }}
+      - if: startsWith(matrix.os, 'macos') && steps.cache-lua51-bench.outputs.cache-hit != 'true'
+        # Upstream tarball from the Actions cache when it is there (saved by the nightly job on master),
+        # so a build-directory miss does not depend on www.lua.org being reachable. See ci.yml.
+        timeout-minutes: 5
+        continue-on-error: true
+        uses: actions/cache/restore@v6
+        with:
+          path: lua-5.1.5.tar.gz
+          key: lua-5.1.5-tarball-2640fc56a795f29d28ef15e13c34a47e223960b0240e8cb0a82d9b0738695333
       - if: startsWith(matrix.os, 'ubuntu')
         run: sudo apt-get update && sudo apt-get install -y lua5.1
       - if: startsWith(matrix.os, 'macos') && steps.cache-lua51-bench.outputs.cache-hit != 'true'
