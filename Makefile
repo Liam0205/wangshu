@@ -35,10 +35,11 @@ fmt:                                                ## Format (writes back)
 lint:                                               ## Repo-wide static checks
 	golangci-lint run ./...
 
-test-scripts:                                       ## Self-tests for tooling scripts (go-fuzz.sh end-to-end #180; nightly triage #255; lua tarball fetch #236-#241; cover.sh tag propagation)
+test-scripts:                                       ## Self-tests for tooling scripts (go-fuzz.sh end-to-end #180; nightly triage #255; lua tarball fetch #236-#241; oracle '%' check #309; cover.sh tag propagation)
 	bash scripts/test-go-fuzz.sh
 	bash scripts/test-nightly-fuzz-classify.sh
 	bash scripts/test-fetch-lua-tarball.sh
+	bash scripts/test-check-oracle.sh
 	bash scripts/test-cover.sh
 
 # --- build ------------------------------------------------------------------
@@ -99,6 +100,12 @@ fuzz-p4:                                            ## One smoke round of every 
 
 fuzz-oracle:                                        ## In-process differential fuzz against the cgo-embedded official 5.1.5 (needs a local gcc; not part of all; shim unit tests + FuzzOracleDiff smoke)
 	CGO_ENABLED=1 go test -tags wangshu_oracle_cgo ./internal/oracle/ -count=1
+	@# '%' pin (#309): a default amd64 build never fuses a - q*b, so the run above cannot tell whether
+	@# lua515.c's luai_nummod override works. Run its test again with FMA allowed (x86-64 with FMA only).
+	if [ "$$(uname -m)" = x86_64 ] && grep -qw fma /proc/cpuinfo 2>/dev/null; then \
+		CGO_ENABLED=1 CGO_CFLAGS="-O2 -mfma" go test -tags wangshu_oracle_cgo ./internal/oracle/ \
+			-run '^TestExec_ModProductIsRounded$$' -count=1 || exit 1; \
+	fi
 	@# Required-target assertion (PR review): the smoke must fail loudly
 	@# if FuzzOracleDiff stops compiling into test/fuzz under the
 	@# oracle tags, instead of go-fuzz.sh skipping it while other
