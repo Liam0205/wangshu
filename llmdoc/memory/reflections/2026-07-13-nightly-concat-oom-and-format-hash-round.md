@@ -2,7 +2,7 @@
 name: 2026-07-13-nightly-concat-oom-and-format-hash-round
 description: >
   2026-07-13 每日 nightly-diff-fuzz 巡检轮(分支 fix/nightly-concat-oom,PR #131,
-  尚未合入,CI 全绿 + bot APPROVE 无阻塞问题)。处理两件事:① nightly p3/p4 两条腿
+  尚未合入,CI 全绿 + bot APPROVE 无阻塞问题)。处理两件事:① nightly p3/p4 两个 job
   crasher #127/#130 的诊断与结构性修复;② PR #131 自己带的 oracle-smoke CI(30s
   FuzzOracleDiff)立刻测出并顺手修掉的 `%#X` 零值前缀分歧。第一部分把两份 crasher
   corpus 的死亡特征与 issue #123 同族(几千万 execs 后无声 hung / 精确重放干净)判定
@@ -30,12 +30,12 @@ metadata:
 # nightly p3/p4 crasher 处置 + oracle format '#' 分歧收敛(2026-07-13,PR #131)
 
 > 范围:分支 `fix/nightly-concat-oom`,PR #131(未合入,CI 全绿 + bot APPROVE 无
-> 阻塞问题)。处理 issue #127(p3 腿)+ #130(p4 腿)两个每日 nightly crasher,
+> 阻塞问题)。处理 issue #127(p3 job)+ #130(p4 job)两个每日 nightly crasher,
 > 顺手修掉 PR #131 自己的 oracle-smoke CI 立刻测出的 `%#X` 零值前缀分歧。
 
 ## 任务
 
-- 处理 nightly-diff-fuzz 2026-07-13 巡检报的两条腿 crasher #127(p3)+ #130(p4);
+- 处理 nightly-diff-fuzz 2026-07-13 巡检报的两个 job 的 crasher #127(p3)+ #130(p4);
 - PR #131 自己的 oracle-smoke CI(30s FuzzOracleDiff 冒烟)测出 `print(string.format
   ("%#X",0))` 的 P1 vs PUC 分歧(P1 输出 `0X0`,PUC 输出 `0`),同一站点第三次被
   打穿,顺手把这个 site 结构性修一次。
@@ -45,8 +45,8 @@ metadata:
 ### 第一部分 nightly crasher
 
 - 期望:两份 corpus 落盘,精确重放应能立即复现 VM 侧根因。
-- 实际:两份 corpus 本地精确重放全部干净(#130 的 p4 腿 45s 正常跑完,#127 的
-  p3 腿 8s),worker 死亡特征是「几千万 execs 后 hung or terminated unexpectedly、
+- 实际:两份 corpus 本地精确重放全部干净(#130 的 p4 job 45s 正常跑完,#127 的
+  p3 job 8s),worker 死亡特征是「几千万 execs 后 hung or terminated unexpectedly、
   无 panic 输出」——与 issue #123 完全同类的进程级资源耗尽签名,符合
   [[unreproducible-crasher-triage]] 的分界判据。深查 corpus 内容后发现两者都是
   二次方 concat 风暴(`out = out .. f(i)` 热循环),实测 #130 corpus 在未封顶的
@@ -90,7 +90,7 @@ metadata:
   FuzzOracleDiff 上周(PR #128)一开始就带的这条防护看齐;
 - 差分豁免从只识 budget 扩为资源限制类:新 helper `isResourceLimitErr` 匹配
   "instruction budget exceeded" 或 "internal VM panic: arena:",因为各 tier
-  分配点不同,临界 input 可能只在一条腿触到上限;
+  分配点不同,临界 input 可能只在一个 tier 触到上限;
 - 两份 corpus 入库 `testdata/fuzz/FuzzAutoPromote/`,封顶后轻量(同 shape ~1s
   内以 arena 上限错误终止);
 - 验证:三 build variant 全量测试绿、lint 0 issues、FuzzCompileRun 60s 419 万
@@ -163,7 +163,7 @@ harness 上带的资源上限、超时、错误豁免等防护是一份「隐性
 差分测试豁免规则以前只匹配 "instruction budget exceeded",本轮改为通用
 `isResourceLimitErr`(匹配 "instruction budget exceeded" 或 "internal VM panic:
 arena:")。原因是 tier 间分配点不同:临界 input 在 P1 可能先触到 step budget、在
-P3 wasm 段内可能先触到 arena 上限,两条腿产生的错误字符串不一样但都是资源尽头;
+P3 wasm 段内可能先触到 arena 上限,两个 tier 产生的错误字符串不一样但都是资源尽头;
 豁免只认 budget 字符串就会把资源竞速误判成 tier 分歧。
 
 **Why**:差分测试的核心不变式是「同 input 两 tier 应产生同结果」,资源限制是
@@ -219,11 +219,11 @@ budget / arena cap / stack overflow / 输出上限等),用统一 helper 判定;�
   `testdata/fuzz/FuzzOracleDiff/8605c41c6420e3ba`);
 - PR #131 CI 全部检查绿,bot APPROVE 无阻塞问题,应用户要求停在合入前等 review。
 
-## 后记(同日追加,PR #132):build tag 加法性打爆 nightly p1 腿预算
+## 后记(同日追加,PR #132):build tag 加法性打爆 nightly p1 job 预算
 
 巡检收尾统计连续干净轮数时发现 2026-07-12 傍晚两轮 nightly run 的 conclusion 是
-`cancelled`(p3/p4 腿 success、p1 腿 cancelled),不是 failure 所以没触发
-`if: failure()` 的 triage、没有 issue,属于静默损失。查 p1 腿分步耗时:
+`cancelled`(p3/p4 job success、p1 job cancelled),不是 failure 所以没触发
+`if: failure()` 的 triage、没有 issue,属于静默损失。查 p1 job 分步耗时:
 rolling-seed 38 分钟 + GC-stress 1 分钟 + native go-fuzz 步骤 **3 小时**(本该
 只跑默认 build 的 4 个目标 × 45m——这一步没问题)+ oracle-diff 步骤从 00:31 跑
 到 02:45 被 350m job timeout 掐断。根因:oracle-diff 步骤调 `go-fuzz.sh` 只传了
@@ -231,7 +231,7 @@ rolling-seed 38 分钟 + GC-stress 1 分钟 + native go-fuzz 步骤 **3 小时**
 fuzz 目标照样可编,脚本的「自动发现全部 `func Fuzz*`」把 5 个目标全部按 45m 重
 跑一遍(4 个是纯重复预算),叠加起来必然冲破 350m。修法(PR #132):给
 `go-fuzz.sh` 加可选第三参数 `target_regex` 精确过滤目标名,显式过滤却零匹配时
-exit 1(笔误/目标改名不该静默变空扫);nightly oracle-diff 腿与 PR 必过检查
+exit 1(笔误/目标改名不该静默变空扫);nightly oracle-diff 步骤与 PR 必过检查
 oracle-smoke 的 fuzz 步骤都传 `FuzzOracleDiff`。
 
 这是教训 2「同族 harness 防护不对称」的一个变体:「自动发现」型脚本的便利默认
@@ -253,7 +253,7 @@ cancelled 与 failure 同样要点开看原因,不能只把 failure 当信号。
 [[2026-07-12-i123-deadline-to-package-timeout-round]](本轮教训 1 的对偶前序:
 那轮是测试裁判机制的不收敛路径 → 换 harness 包级 timeout,本轮是语义适配层的
 不收敛路径 → 换手写直接实现,同族决策模式的第 2 实例)· issue #127 · issue
-#130 · PR #131 · PR #132(后记:build tag 加法性打爆 nightly p1 腿预算,
+#130 · PR #131 · PR #132(后记:build tag 加法性打爆 nightly p1 job 预算,
 `go-fuzz.sh` 加 target_regex 过滤)· PR #128(上周新增 FuzzOracleDiff 时带
 MaxArenaBytes 上限,同族老 harness 未同步)· commit c574f24 · commit 643c6cb ·
 `testdata/fuzz/FuzzAutoPromote/`(两份 concat 风暴 corpus 入库) ·

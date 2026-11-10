@@ -83,7 +83,7 @@ metadata:
 断言在 arm64 上**静默**失败,`NativeCalleeSegAddr` / `CalleeNeverExitsSegment` /
 `CalleeSeg2SegRetCount` 三处共用该断言的调用点全部 ok==false,arm64 上 seg2seg
 整体静默失效(结果仍正确,只是命中数归零)。本地 amd64 全绿,直到 CI 的
-ubuntu-24.04-arm p4 leg 上 5 个 seg2seg 测试报 hits=0 才暴露。修法是 arm64 补齐
+ubuntu-24.04-arm p4 job 上 5 个 seg2seg 测试报 hits=0 才暴露。修法是 arm64 补齐
 逐字一致的镜像方法(commit 5f76472)。
 
 **Why**:显式实现的接口(struct 声明 implements)缺方法是编译错;靠运行时类型
@@ -179,7 +179,7 @@ issue #158 · issue #159 · PR #160 · PR #154(GOMEMLIMIT 硬化前序)· commit
 
 ## 附记(合入前第三轮修复:Go 侧越界转换同样按架构分岔)
 
-llmdoc 进 PR 后,oracle-smoke 的 arm64 leg 又抓到一例:
+llmdoc 进 PR 后,oracle-smoke 的 arm64 job 又抓到一例:
 `print(string.format("%X", 0%0))`(NaN)。根因是教训 3 的第一版
 cUnsignedCast 自身还不够——`uint64(int64(f))` 这类混合表达式对越界输入
 走 Go 自己的架构相关转换(amd64 CVTTSD2SI indefinite,arm64 FCVTZS 饱

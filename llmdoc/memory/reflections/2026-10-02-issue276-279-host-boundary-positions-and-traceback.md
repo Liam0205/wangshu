@@ -107,7 +107,7 @@ metadata:
     一轮就该顺手对一遍 llmdoc,而不是等审查指出。
 20. **PR CI 在 arm64 上挂了两次**。本地只有 x86_64,所有 P4 用例都只在 amd64 上跑过。arm64 的 P4 翻译器只有原生路径
     (`register_arm64.go` 没有 head-op replay),原生路径不接受的函数留在解释器里;而两个测试要求被测函数升层:
-    `TestHostBoundaryErrorsInCompiledCallers` 的升层检查(arm64 / macOS 的 P4 腿)和
+    `TestHostBoundaryErrorsInCompiledCallers` 的升层检查(arm64 / macOS 的 P4 job)和
     `TestCDepthOfAPromotedFunctionCalledFromGo`(arm64 的 oracle-smoke)。输出都与 lua5.1 一致，改为按 build tag
     在 P4 且非 amd64 时跳过升层要求。第一次只修了报错的那个测试，第二个测试同样的写法要等下一轮 CI 才暴露。
 
