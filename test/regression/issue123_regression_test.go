@@ -6,7 +6,7 @@
 // Why not testdata/fuzz/: the fuzz coordinator's -parallel=4
 // baseline-coverage sweep replays every seed corpus in parallel at
 // startup. Adding these two shapes as seeds destabilizes fuzz-smoke
-// (three CI legs died within 30s on the first push after adding
+// (three CI jobs died within 30s on the first push after adding
 // them, each landing an exit-status-2 worker death — signature of
 // process-level resource exhaustion from concurrent replays of this
 // specific workload). Running the same inputs directly under the
@@ -48,7 +48,7 @@ var issue123Corpora = []struct {
 // Hang detection is DELEGATED to go test's package-level -timeout
 // (default 10m), on purpose. This test used to wrap each run in its
 // own wall-clock deadline, and the constant lost twice: 5s flunked
-// the ubuntu-latest P1 leg, 30s flunked p4/macos-latest right after
+// the ubuntu-latest P1 job, 30s flunked p4/macos-latest right after
 // PR #128 merged (-race runs this shape in ~21s on a fast machine;
 // shared runners have no slowness upper bound). "Genuinely hung" vs
 // "legitimately slow" cannot be told apart by any finite in-test

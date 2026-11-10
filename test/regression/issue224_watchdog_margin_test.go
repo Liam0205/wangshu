@@ -167,7 +167,7 @@ func TestConcatStormKeepsWatchdogMargin(t *testing.T) {
 // This is the wall-clock half of the test. A raised budget or a loosened charge is caught by the
 // iteration count above in every build; what only a clock can catch is an operation that got slower
 // while billing the same. The quantity being protected is go-fuzz's 10s per-input watchdog on the
-// nightly fuzz runner. Both P4-leg harnesses share fuzzbudget.Steps; FuzzAutoPromote runs each input
+// nightly fuzz runner. Both P4-job harnesses share fuzzbudget.Steps; FuzzAutoPromote runs each input
 // four times (two rounds, one Run on each of two States) and FuzzP4ForceAllPromote twice, so the
 // four-Run harness binds: 10s / 4 = 2.5s is the most one Run may cost. Three builds, three answers:
 //

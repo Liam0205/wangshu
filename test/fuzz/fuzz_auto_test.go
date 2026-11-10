@@ -105,7 +105,7 @@ func FuzzAutoPromote(f *testing.F) {
 				// Resource-limit class (step budget OR arena cap) is
 				// exempted: tiers charge steps and allocate at
 				// different points, so boundary inputs can trip a
-				// limit on one leg only.
+				// limit in one run only.
 				budgetTiming := isResourceLimitErr(errP1) || isResourceLimitErr(errA)
 				if budgetTiming {
 					t.Skipf("budget/timing divergence (not a byte-equal violation): P1=%v auto=%v", errP1, errA)
@@ -135,9 +135,9 @@ func FuzzAutoPromote(f *testing.F) {
 
 // isResourceLimitErr reports whether err is a harness resource limit
 // (step budget or the fuzz arena cap) rather than a semantic result.
-// Divergence checks skip when either leg trips one: tiers charge
+// Divergence checks skip when either run trips one: tiers charge
 // steps and allocate at different points, so boundary inputs can
-// legally trip a limit on one leg only.
+// legally trip a limit in one run only.
 func isResourceLimitErr(err error) bool {
 	if err == nil {
 		return false

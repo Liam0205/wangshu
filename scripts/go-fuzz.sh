@@ -6,7 +6,7 @@
 # target_regex (optional, default all): only run targets whose function name
 # matches this ERE. Build tags are additive -- e.g. under the
 # wangshu_oracle_cgo build every default-build target also compiles, and an
-# unfiltered sweep re-runs the whole set (the nightly p1 leg once blew past
+# unfiltered sweep re-runs the whole set (the nightly p1 job once blew past
 # the 350m job timeout at 5x45m and got silently cancelled). Typical usage:
 #   ./scripts/go-fuzz.sh 30s                          # default build (crescent interpreter)
 #   ./scripts/go-fuzz.sh 30s "wangshu_p3 wangshu_profile"  # gibbous build (force-all promoted paths)

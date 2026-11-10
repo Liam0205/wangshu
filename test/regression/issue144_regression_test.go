@@ -1,7 +1,7 @@
 //go:build (wangshu_p3 || wangshu_p4) && wangshu_profile
 
 // issue144_regression_test.go — serial regression test for issue #144:
-// a nightly fuzz worker died on the P3 leg with corpus c3665b55c170a11d
+// a nightly fuzz worker died on the P3 job with corpus c3665b55c170a11d
 // (a 777M-iteration for-loop with quadratic-concat-shaped body, but the
 // body's `out3` typo means the concat never grows and the step budget
 // catches it immediately). The corpus replays 100% clean on current
