@@ -37,13 +37,13 @@ on:
         description: 'go-fuzz time per target (6 untagged targets; FuzzOracleDiff is separate)'
         # Scheduled runs do not read this default: they use the per-tier matrix.fuzztime (32m / 28m /
         # 26m since 2026-08-29, see the matrix). It only applies to a manual dispatch, where it
-        # overrides all three tiers -- and at 35m the budget check rejects the p3 and p4 legs (one pass
+        # overrides all three tiers -- and at 35m the budget check rejects the p3 and p4 jobs (one pass
         # plus one fuzztime of slack is 210 / 245 min against caps of 206 / 218), so pass a smaller
         # value there; the check's error message names one.
         #
         # 35m is the last shared value, set on 2026-08-19 (down from 45m). go-fuzz.sh runs EVERY
         # source-visible target for the full fuzztime, so this value is multiplied by the target
-        # count: 45m measured 270 min on the p4 leg, leaving the 350m job with ~38 min of margin, and
+        # count: 45m measured 270 min on the p4 job, leaving the 350m job with ~38 min of margin, and
         # three runs were killed by the job timeout in a week (2026-08-12 p4, 08-15 p4, 08-18 p1).
         #
         # This is a real reduction in exploration -- about 22% less fuzzing per run -- chosen over
@@ -148,7 +148,7 @@ jobs:
         #
         # The #236-#241 round bounded the curl inside fetch-lua-tarball.sh and left apt-get, make and
         # check-oracle.sh unbounded in the same step -- scoped to the symptom instead of to the step. On
-        # 2026-08-18 the p1 leg sat 5h50m in this step and was killed by the JOB timeout, losing almost
+        # 2026-08-18 the p1 job sat 5h50m in this step and was killed by the JOB timeout, losing almost
         # the whole run: rolling-seed and auto-mode were skipped and both go-fuzz steps never started.
         # A step-level timeout turns that into a 12-minute failure, and it keeps holding when a command
         # is added later, which a per-command wrapper would not.
@@ -222,7 +222,7 @@ jobs:
             go test $TAGS_ARG ./test/difftest/ -run 'TestGCStress' -timeout 60m 2>&1 | tee gcstress.log
 
       # AUTO-mode rolling-seed diff (p3/p4 only; no-op match on p1).
-      # Production runs auto, not force-all: this leg drives the
+      # Production runs auto, not force-all: this step drives the
       # natural-heat promotion decision chain (threshold crossing
       # mid-run, runtime compilability recheck, profitability gate,
       # short-proto floor + exemption) via lowered thresholds and
@@ -235,19 +235,19 @@ jobs:
         timeout-minutes: 170
         run: |
           set -o pipefail
-          # Hour epoch, same formula as the main leg. This step starts
+          # Hour epoch, same formula as the main step. This step starts
           # later in the same job, so the recompute may land in the next
-          # hour bucket — harmless: each leg's replay only needs its own
-          # SEED_BASE, and the auto leg exploring a different segment
-          # from the main leg costs nothing.
+          # hour bucket — harmless: each step's replay only needs its own
+          # SEED_BASE, and the auto step exploring a different segment
+          # from the main step costs nothing.
           SEED_BASE=$(( $(date -u +%s) / 3600 * 10000000 ))
           ROUNDS="${{ github.event.inputs.rounds || '2000000' }}"
-          # Auto leg runs each seed 3x (baseline + 2 auto runs): third
-          # of the rounds keeps wall-clock comparable to the main leg.
+          # The auto step runs each seed 3x (baseline + 2 auto runs): third
+          # of the rounds keeps wall-clock comparable to the main step.
           AUTO_ROUNDS=$(( ROUNDS / 3 ))
           # No eval here (issue #81): eval re-parses the command line and
           # strips the -tags quoting, splitting "wangshu_p3 wangshu_profile"
-          # into a tag + a bogus package argument. The main legs need eval
+          # into a tag + a bogus package argument. The main steps need eval
           # for their possibly-empty TAGS_ARG; this step is gated on
           # matrix.tags != '' so a plain invocation is correct.
           WANGSHU_FUZZ_SEED_BASE=$SEED_BASE WANGSHU_FUZZ_N=$AUTO_ROUNDS \
@@ -307,7 +307,7 @@ jobs:
           #
           # FAIL threshold = one pass plus ONE fuzztime of slack. The slack was sized for a golang/go#75804
           # retry (9 in ~450 sampled jobs); go-fuzz.sh no longer retries (#180), but the thresholds are kept
-          # unchanged so the budget is not re-tuned in the same change. At 35m the p4 leg needs 245m against
+          # unchanged so the budget is not re-tuned in the same change. At 35m the p4 job needs 245m against
           # a 218 bound, and the truncation would look like a healthy run that found nothing.
           #
           # WORST = base plus two fuzztimes of slack. At the matrix values every tier's cap covers its
@@ -337,7 +337,7 @@ jobs:
         if: always() && steps.budgetcheck.outcome == 'success'
         # This step is the job's real cost centre: go-fuzz.sh discovers targets by SOURCE SCAN and runs
         # each for the full fuzztime, so 45m per target becomes ~270 min observed here, not 45 -- the
-        # script's own header already recorded this shape once ("the nightly p1 leg once blew past the
+        # script's own header already recorded this shape once ("the nightly p1 job once blew past the
         # 350m job timeout at 5x45m").
         #
         # The bound is sized to stop a HANG, not to make the step caps sum under the job cap. Those are
@@ -345,12 +345,12 @@ jobs:
         # cannot silently consume it. Sizing every step to sum under 350 would force cuts far deeper than
         # the observed cost justifies.
         #
-        # The bound = the tier's leg (target-runs x fuzztime) + TWO fuzztimes + a little slack. Target
+        # The bound = the tier's pass (target-runs x fuzztime) + TWO fuzztimes + a little slack. Target
         # counts differ per tier (measured: p1 4, p3 5, p4 6 target-runs), which is why both fuzztime and
         # this cap are matrix values.
         #
         # The two-fuzztime term was sized for golang/go#75804 retries, which were per TARGET: two targets
-        # in a leg could each retry. Under the old shared 35m that gave p4 210 + 35 + 35 = 280 -- which an
+        # in one job could each retry. Under the old shared 35m that gave p4 210 + 35 + 35 = 280 -- which an
         # earlier cap of 280 consumed exactly, leaving zero room on a HEALTHY run. go-fuzz.sh no longer
         # retries (#180); the term is kept as slack so the budget is not re-tuned in the same change. An
         # audit found a real 315-min run under the old 45m value.
@@ -364,25 +364,25 @@ jobs:
         # an early proposal of 320 would have tripped at ~360 -- after the 350 job cap, making it
         # unreachable and leaving a hang here to produce the same "cancelled, triage skipped, silent loss"
         # outcome this whole change exists to prevent. At the current matrix values the windows are
-        # p1 192..205, p3 196..219, p4 208..220 (worst leg .. 350 - 40 - rest of the chain), and
+        # p1 192..205, p3 196..219, p4 208..220 (worst case .. 350 - 40 - rest of the chain), and
         # 202 / 206 / 218 sit inside them.
         timeout-minutes: ${{ matrix.native_fuzz_cap }}
         run: |
           set -o pipefail
           ./scripts/go-fuzz.sh "${{ github.event.inputs.gofuzztime || matrix.fuzztime }}" "${{ matrix.tags }}" 2>&1 | tee gofuzz.log
 
-      # cgo oracle differential go-fuzz (p1 leg only): the embedded
+      # cgo oracle differential go-fuzz (p1 job only): the embedded
       # official 5.1.5 diffs against the interpreter tier -- P1 is the
       # semantic anchor; p3/p4 close the loop against P1 via the
       # existing three-way difftests above. Unlike the rolling-seed
-      # leg (well-formed generator scripts), go-fuzz mutates arbitrary
+      # step (well-formed generator scripts), go-fuzz mutates arbitrary
       # source bytes, covering irregular/adversarial shapes. Crashes
       # land in gofuzz-triage via the same "Failing input written to"
       # marker, so the log is appended to gofuzz.log's triage scope.
       # The FuzzOracleDiff filter is required: build tags are additive,
       # so the cgo build also compiles every default-build target and
       # an unfiltered sweep re-runs all of them (5 x 45m blew past the
-      # 350m job timeout and the p1 leg got cancelled silently).
+      # 350m job timeout and the p1 job got cancelled silently).
       - name: oracle-diff go-fuzz long run (p1 vs embedded 5.1.5)
         # Gated on the budget check too: this step runs the same go-fuzz.sh sweep, so an over-budget
         # dispatch would be truncated here in exactly the same way.
@@ -499,7 +499,7 @@ jobs:
             CRASH_REPO_PATH="${CRASH_PKG#./}/$CRASH_PATH"
             case "$CRASH_TARGET" in
               # oracle-diff crashers replay under the cgo oracle build,
-              # regardless of the matrix leg that caught them.
+              # regardless of the matrix job that caught them.
               FuzzOracleDiff) REPLAY_TAGS='wangshu_oracle_cgo' ;;
               FuzzOracleDiffTiered) REPLAY_TAGS="wangshu_oracle_cgo ${{ matrix.tags }}" ;;
               *) case "${{ matrix.variant }}" in
@@ -580,7 +580,7 @@ jobs:
           fi
           # Dedupe by title: comment on an existing open issue instead of filing a new one
           # Search is eventually consistent, so three near-simultaneous jobs can each see "none" and
-          # each file. Retry the lookup briefly before deciding to create: the p3/p4 legs run an
+          # each file. Retry the lookup briefly before deciding to create: the p3/p4 jobs run an
           # identical step set after an install failure and reach this point within seconds of each
           # other, so a single unlucky read would still produce duplicates. This narrows the window
           # rather than closing it -- closing it needs a job-level concurrency group, which would

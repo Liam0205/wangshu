@@ -293,7 +293,7 @@ func TestP3LoopBudget_CtxThenBudgetNoStaleBilling(t *testing.T) {
 }
 
 // TestP3LoopBudget_DisarmRestoresFastPath: dropping the budget after
-// budgeted runs must restore the unlimited refill (the disarm leg of
+// budgeted runs must restore the unlimited refill (the disarm path of
 // the enterGibbous transition), so an unbudgeted hot loop does not pay
 // a Safepoint crossing every 64 back-edges forever after.
 func TestP3LoopBudget_DisarmRestoresFastPath(t *testing.T) {

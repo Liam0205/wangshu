@@ -250,7 +250,7 @@ jobs:
   # 5.1.5 differential oracle is the repo's only cgo surface (the
   # default build stays zero-cgo). PR gate checks: package builds,
   # shim unit tests pass, FuzzOracleDiff runs a clean short round.
-  # The long run lives in the nightly-diff-fuzz p1 leg. Two platforms
+  # The long run lives in the nightly-diff-fuzz p1 job. Two platforms
   # (linux/amd64 + linux/arm64): nightly runs ubuntu-latest only, so
   # arm64 here surfaces C-side endianness/ABI surprises early.
   oracle-smoke:

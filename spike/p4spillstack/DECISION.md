@@ -24,7 +24,7 @@ self-managed 64 KiB stack in the trampoline.
 SP switch — whose highest risk is the Go stack walker faulting on a
 manually-moved SP (see `trampoline_arm64.s` header) — is NOT covered
 here. It rides the CI arm64 matrix on the PR and a separate arm64-machine
-spike (relay/handoff of the arm64 leg).
+spike (relay/handoff of the arm64 part).
 
 ## Measurements (Intel Xeon Platinum, linux/amd64, go1.26.2, -cpu=1)
 
@@ -78,7 +78,7 @@ GOGC=1.
 
 **arm64 is not decided here.** The arm64 trampoline's framesize/LR-slot
 protocol makes a manual SP move higher-risk (stack walker unwind); that
-leg is verified on the CI arm64 matrix (correctness) and a separate arm64
+part is verified on the CI arm64 matrix (correctness) and a separate arm64
 machine (the relay spike + perf), per the user's relay plan.
 
 ## What this spike does NOT cover

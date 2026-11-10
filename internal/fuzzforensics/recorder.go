@@ -46,7 +46,7 @@ import (
 
 // forensicsDir is where per-PID worker logs land. scripts/go-fuzz.sh
 // overrides it per target via WANGSHU_FUZZ_FORENSICS_DIR so a later
-// script invocation in the same job (the p1 leg runs native fuzz THEN
+// script invocation in the same job (the p1 job runs native fuzz THEN
 // oracle fuzz) cannot delete an earlier target's post-mortem files
 // before the artifact upload (review finding 3).
 var forensicsDir = "fuzz-forensics"
