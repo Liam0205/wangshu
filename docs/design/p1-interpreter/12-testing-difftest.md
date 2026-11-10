@@ -757,7 +757,7 @@ concat。所以**预算要由「计费相同时最贵的写法」定,而不是�
 变异实测确认。(2026-09-26 补:「能同时抓住 `1<<19` 与 `1<<20`」只在不带 `-race` 的构建下成立,而 PR CI 只跑
 `-race` 构建,那里量到的是 race detector 与机器负载。现在改为断言**预算停下时的循环次数**:这个数与机器
 无关,在所有构建里都断言,变异实测确认 `1<<17`、`1<<19`、`1<<20` 在默认与 `-race` 构建下都会失败,计费
-比率减半也会失败。耗时上限只用来发现「计费没变但操作变慢了」,在 nightly p4 腿上按 800 毫秒检查,
+比率减半也会失败。耗时上限只用来发现「计费没变但操作变慢了」,在 nightly p4 job 上按 800 毫秒检查,
 见 [engineering](../engineering.md) §3.2。)判据:写完一个「防住某个数值」的测试立刻把被防的值改回去跑一次,不变红就是没有防住任何
 东西。
 
@@ -1224,7 +1224,7 @@ P1 建立的三套机制(conformance / 差分 fuzz / 基准)如何复用到 P2-P
 
 ### 8.1 读 nightly 的失败:红色不一定意味着「测过了」(#236-#241,2026-08-09)
 
-nightly 的三个 tier 腿各自是「装 oracle → 跑差分 fuzz → triage → 开 issue」的串行步骤链,而**准备类步骤失败会让产生结论的步骤被 skip**。2026-08-07 的两轮就是这样:oracle 源码构建里那个裸 `curl` 遇上上游可达性抖动(exit 28 是 curl 的 `CURLE_OPERATION_TIMEDOUT`,不是磁盘写满;取包的修法见 [engineering](../engineering.md) §4.1),于是三个差分 fuzz 步骤全部 `skipped`,那一轮**报 failure 而实际什么都没测**,那一晚的探索预算是零。
+nightly 的三个 tier 的 job 各自是「装 oracle → 跑差分 fuzz → triage → 开 issue」的串行步骤链,而**准备类步骤失败会让产生结论的步骤被 skip**。2026-08-07 的两轮就是这样:oracle 源码构建里那个裸 `curl` 遇上上游可达性抖动(exit 28 是 curl 的 `CURLE_OPERATION_TIMEDOUT`,不是磁盘写满;取包的修法见 [engineering](../engineering.md) §4.1),于是三个差分 fuzz 步骤全部 `skipped`,那一轮**报 failure 而实际什么都没测**,那一晚的探索预算是零。
 
 这对本文的验收口径有一条直接后果:**§8 的「差分 fuzz 必过」是关于「跑了并且零未豁免差异」的,而一个红色的 nightly 既可能是「跑了并且发现分歧」,也可能是「一步都没跑」**,两者在 Actions 页面上是同一个红叉。读 nightly 失败时的第一步因此不是去找分歧,而是**确认那三个 fuzz 步骤真的执行过**——与 §3.1 那条「差分比较的对象是 harness 捕获到的东西」是同一族的机制:绿灯不携带「测了什么」的信息,红灯也不携带。
 
@@ -1237,7 +1237,7 @@ triage 侧配套的两条规则(机制载体在 [engineering](../engineering.md)
 2026-08-12/08-15/08-18 一周内 nightly job 被 job 超时(350 分钟)掐掉三次(p4/p4/p1),其中两次真丢了
 覆盖。**#236-#241 那轮给取包脚本的 curl 加了限时,但装 oracle 那一步里 `apt-get`/`make`/
 `check-oracle.sh` 三条命令仍然无界**——只框住了当时报错的那一条命令,不是那一整步。08-18 那轮 p1
-腿就在这一步卡了 5h50m,rolling-seed 与 auto-mode 被 skip、两个 go-fuzz 步骤根本没启动。普查后发现
+job 就在这一步卡了 5h50m,rolling-seed 与 auto-mode 被 skip、两个 go-fuzz 步骤根本没启动。普查后发现
 无界的步骤是**三个不是一个**(装 oracle、upload logs、triage),三步现在都带 step 级
 `timeout-minutes`(12/15/10)——选 step 级机制的理由是它对**以后新加的命令同样生效**,命令级
 timeout 只覆盖被点名的那一条。
@@ -1251,7 +1251,7 @@ timeout 只覆盖被点名的那一条。
 降到约 210 分钟、job 约 250 分钟,余量从约 38 分钟升到约 98 分钟,是真实的约 22% 探索量削减。
 
 **两条自我纠正记在这里**:① 曾建议把 job `timeout-minutes` 抬到 420,不可能——GitHub 托管 runner
-单 job 硬上限 360 分钟;② 曾按「所有 step 上限之和必须低于 job 上限」的框架算出某 leg 最坏 548 分钟、
+单 job 硬上限 360 分钟;② 曾按「所有 step 上限之和必须低于 job 上限」的框架算出某个 job 最坏 548 分钟、
 判「只能大幅压缩」——这个框架本身是错的,job 超时才是总预算,step 上限只是防一条命令悄悄吃掉这个
 预算,不需要求和。判据见
 `llmdoc/guides/unreproducible-crasher-triage.md`「给一条报错的命令加超时」与「job 超时与 step

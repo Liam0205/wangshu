@@ -417,7 +417,7 @@ SIGKILL」(回答有没有栈迹可找),本步分「这个数字属于谁的表�
 bug」不匹配,更像 fuzz worker 进程级资源耗尽(内存 / mmap 数 / OS OOM killer)。此时**转处置模式**,
 不继续无限挖根因。
 
-**#123 轮实例**:七角度全干净,同 headSha `d6e05bd` 的 p1 腿 45 分钟 / 9100 万 execs 也没崩,特征
+**#123 轮实例**:七角度全干净,同 headSha `d6e05bd` 的 p1 job 45 分钟 / 9100 万 execs 也没崩,特征
 指向 fuzz worker 进程级资源耗尽,处置转向 corpus 入库 + 诊断硬化。
 
 ## 处置模式(判定为不可复现后)
@@ -438,7 +438,7 @@ harness 所在包的 `testdata/`,见 [[test-layout]]),但要先
 判断 workload 本身的资源密度。fuzz coordinator 启动时在 `-parallel=N` 下**并行重放全部 seed
 corpus** 作为 baseline coverage sweep;若 corpus 触发的 workload 本身很重(深递归 / 长循环 / 高
 分配),并行重放瞬间放大资源压力,恰恰命中「不可复现 crasher」判定为进程级资源耗尽时怀疑的根因。
-#123 轮的实测:corpus 入 `testdata/fuzz/` 后 fuzz-smoke 三条腿(mac / p3 / p4 ubuntu)在 30s 内
+#123 轮的实测:corpus 入 `testdata/fuzz/` 后 fuzz-smoke 三个 job(mac / p3 / p4 ubuntu)在 30s 内
 连挂——不是 corpus 有语义 bug,是 fuzz coordinator 的并发放大导致 worker 死。
 
 判据:input 单独跑消耗几百 ms 以上 CPU、或触发深递归 / 大分配的,**改走 Go 回归测试**——写一个
@@ -767,7 +767,7 @@ step budget 的单位是**计费额度**,看门狗量的是 **wall-clock**,而�
 > 2.5 秒上限,代码没改),关掉 `-race` 下的断言之后,CI 路径上已经没有东西抓 `1<<19`。现在每个带循环的
 > 写法把计数器写进 `ITER`,**在所有构建里断言预算触发时的圈数不超过记录值 +25%**(这个数只由预算和计费
 > 决定,三种构建下相同,`1<<17` / `1<<19` / `1<<20` 与计费减半都失败);耗时只防「计费没变、操作变慢」:
-> 本地 250 毫秒,nightly p4 腿 `WANGSHU_ON_FUZZ_RUNNER=1` 下 800 毫秒,`-race` 只记日志。有意调
+> 本地 250 毫秒,nightly p4 job `WANGSHU_ON_FUZZ_RUNNER=1` 下 800 毫秒,`-race` 只记日志。有意调
 > `fuzzbudget.Steps` 或计费比率时要重新记录 17 个圈数。**判据**:资源预算的回归测试先断言预算直接决定的
 > 确定性量,墙钟只留给它看不见的那一类;记录「已用变异实测确认」时写明是在哪个构建里测的。机制细节见
 > `docs/design/engineering.md` §3.2,反思 [[2026-09-26-watchdog-margin-trip-count]]。
@@ -868,7 +868,7 @@ divergence 类事件上是对的(它天然属于某个 tier)。同一个标题�
 **实例(同轮)**:在没有意识到上一条判据之前,曾经把 nightly job 的 `timeout-minutes` 抬到 420 分钟
 连续推荐了四轮,而 GitHub 托管 runner 单 job 硬上限是 **360 分钟**——设 420 也会在 360 被杀,推荐
 了四轮却从没查过这个平台限制。修正之后又犯了另一个错:据「所有 step 上限之和必须低于 job 上限」这个
-框架,算出某个 leg 最坏情况 548 分钟、据此得出「只能大幅压缩」的结论。
+框架,算出某个 job 最坏情况 548 分钟、据此得出「只能大幅压缩」的结论。
 
 **为什么容易错**:「总量不能超支」听起来是显然成立的约束,而它确实对**总量**成立——但 step 级
 timeout 存在的理由完全不是控总量,是防止**单条命令**卡死悄悄吃掉 job 的全部预算。job timeout 才是

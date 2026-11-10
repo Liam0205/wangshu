@@ -4,7 +4,7 @@ description: >
   PR #268（`fddb940..4e8bf27`）：`TestConcatStormKeepsWatchdogMargin` 原来只靠耗时防 go-fuzz 的 10 秒
   看门狗，而 PR CI 只在 `-race` 下跑它；2026-09-26 macos-latest 上 gsub 写法 2.538 秒超过 2.5 秒上限，
   代码没改。改成两半：每个带循环的写法把计数器写进 `ITER`，在所有构建里断言「预算停下时的圈数不超过记录值
-  +25%」；耗时只防「计费没变、操作变慢」，本地 250 毫秒、nightly p4 腿（`WANGSHU_ON_FUZZ_RUNNER=1`）
+  +25%」；耗时只防「计费没变、操作变慢」，本地 250 毫秒、nightly p4 job（`WANGSHU_ON_FUZZ_RUNNER=1`）
   800 毫秒、`-race` 只记日志。triage 只在日志里有 `=== RUN` 时才按 bug 开 issue。
   教训：**资源预算的回归要断言预算直接决定的那个确定性量，墙钟只留给它看不见的那一类。**
 metadata:
@@ -21,7 +21,7 @@ metadata:
 
 1. **`-race` 下的耗时量的不是预算**（`fddb940`）。`-race` 让这些写法慢约 10 倍，耗时主要反映 race
    detector 和 runner 负载。macos-latest 上 2.538 秒对 2.5 秒上限失败，代码没有改动。先把 `-race` 下改成
-   只记日志，另在 nightly p4 腿加一个不带 `-race` 的步骤，用 2.5 秒（10 秒 / `FuzzAutoPromote` 的 4 次 Run）。
+   只记日志，另在 nightly p4 job 加一个不带 `-race` 的步骤，用 2.5 秒（10 秒 / `FuzzAutoPromote` 的 4 次 Run）。
 2. **2.5 秒本身没有余量**（`61daaa8`）。PR 审查实测把预算放大到 `1<<19` 时它照样通过，而且此时 PR CI
    已经完全不断言时间。于是换成圈数：每个写法的循环把计数器写进全局 `ITER`，预算触发后读它。这个数只由
    预算和计费决定，默认、`wangshu_profile`、`-race` 三种构建下完全一样，预算翻倍它也翻倍（gsub：`1<<16`

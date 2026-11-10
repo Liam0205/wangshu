@@ -52,7 +52,7 @@ macos-latest) 上失败:`TestI123_NightlyCorporaMirrorFuzzHarness/i123_326b508e`
 
 ## 常量演进史(证明这个类别的失败对常量修改免疫)
 
-- 初版:每次 run 的 wall-clock 上限 5s——在 ubuntu-latest P1 leg 失败;
+- 初版:每次 run 的 wall-clock 上限 5s——在 ubuntu-latest P1 job 失败;
 - commit 6b48f39「widen #123 regression deadline to 30s for shared runners」:
   5s → 30s;
 - 本轮之前:30s 在 p4/macos-latest 上失败;

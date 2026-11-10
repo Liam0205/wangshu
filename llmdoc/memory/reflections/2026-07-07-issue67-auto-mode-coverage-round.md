@@ -12,7 +12,7 @@ metadata:
 
 ## 任务
 
-生产环境跑 auto promotion(脚本自然越过入口/循环回跳(back edge)阈值才升层),但仓库里每一套 P3/P4 测试(difftest、conformance、`FuzzP4ForceAllPromote`、nightly legs)都用 `SetForceAllPromote(true)` 强制升层驱动。这意味着:
+生产环境跑 auto promotion(脚本自然越过入口/循环回跳(back edge)阈值才升层),但仓库里每一套 P3/P4 测试(difftest、conformance、`FuzzP4ForceAllPromote`、nightly 的各个 job)都用 `SetForceAllPromote(true)` 强制升层驱动。这意味着:
 
 - **auto-only 决策链完全没有测试网**——阈值中途越线时机、`recheckCompilabilityRuntime` 在自然路径上的行为、`PromotionGater`(auto-only 可选接口)、短 proto 地板 + `FloorExempter`(同为 auto-only)。issue #67 本身就是一个 auto-only bug,只在这条链上才会触发。
 - **未强制的测试也不构成 auto 覆盖**——它们的脚本从没长到能在生产阈值(entry 200 / back edge 1000)下自然越线,auto 在这些测试里退化成纯解释器,和真正测「auto 决策链」是两回事。
@@ -25,7 +25,7 @@ metadata:
 1. `test/difftest/auto_test.go` —— `TestAuto_Tiered`(14-kernel 语料,同一 State 上重复 Run,逐 run byte-equal 对比基线与 oracle,`PromotionCount>0` 兜底断言)、`TestAuto_SeedCorpus`、`TestAuto_RandomScripts`(生成器驱动,`WANGSHU_FUZZ_*` 可扩展,DIVERGENCE 标记供 nightly triage)、`TestAuto_GCStressTiered`。
 2. `test/conformance/conformance_auto_test.go` —— 全量 conformance 语料在调低阈值下重跑 + 两个恒可升层的算术锚点 + `PromotionCount>0` 兜底断言。
 3. `fuzz_auto_test.go` —— `FuzzAutoPromote`:P1 基线 vs auto-tiered 差分,每个输入在同一 State 上跑两次(中途翻转 + tier 混合稳态)。
-4. `nightly-diff-fuzz.yml` 新增 auto-mode 滚动种子 leg(仅 p3/p4,轮数 1/3)。
+4. `nightly-diff-fuzz.yml` 新增 auto-mode 滚动种子步骤(仅 p3/p4,轮数 1/3)。
 5. `race_on`/`race_off` 的 `raceEnabled` 守卫从 `wangshu_p4`-only 扩到 `(wangshu_p3 || wangshu_p4)`。
 
 设计文档记录在 `docs/design/p2-bridge/01-profiling.md` §5.3.1(合并提交中已同步,非本轮 llmdoc 待办)。

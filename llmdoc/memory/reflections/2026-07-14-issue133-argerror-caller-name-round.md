@@ -29,7 +29,7 @@ metadata:
 
 ## 任务
 
-nightly-diff-fuzz 报 p1 腿 crasher,种子是
+nightly-diff-fuzz 报 p1 job crasher,种子是
 `co=coroutine.create(coroutine.resume)print(coroutine.resume(co))`。本地重放确认
 是当前 master 上的真实分歧(不是已修复代码上的旧问题),牵出两个独立根因,一次
 修复 + 语料入库 + 回归测试。

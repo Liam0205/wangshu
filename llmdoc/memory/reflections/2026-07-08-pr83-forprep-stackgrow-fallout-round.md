@@ -33,7 +33,7 @@ issue #67 auto-mode 覆盖轮(PR #75,详见 [[2026-07-07-issue67-auto-mode-cover
 
 ### 3. #81 — nightly workflow eval 引号剥离(纯 CI 配置 bug,PR #75 自己引入)
 
-nightly auto-mode leg 用 `eval` 包一条内联加引号的 `-tags` 命令;`eval` 会重新解析命令行,剥掉引号——`"wangshu_p3 wangshu_profile"` 被拆成 `-tags` 值 `wangshu_p3` + 一个多余的位置参数 `wangshu_profile`,`go test` 报 `package wangshu_profile is not in std`。修复:去掉 `eval`(该 step 已由 `matrix.tags != ''` 条件控制,直接内联环境变量赋值即可,与 PR-gate `ci.yml` 调用带 tag `go test` 的写法字节一致)。p1 逃过一劫是因为它的空 tags 从未触达这个 step 的 matrix 守卫。
+nightly 的 auto-mode 步骤用 `eval` 包一条内联加引号的 `-tags` 命令;`eval` 会重新解析命令行,剥掉引号——`"wangshu_p3 wangshu_profile"` 被拆成 `-tags` 值 `wangshu_p3` + 一个多余的位置参数 `wangshu_profile`,`go test` 报 `package wangshu_profile is not in std`。修复:去掉 `eval`(该 step 已由 `matrix.tags != ''` 条件控制,直接内联环境变量赋值即可,与 PR-gate `ci.yml` 调用带 tag `go test` 的写法字节一致)。p1 逃过一劫是因为它的空 tags 从未触达这个 step 的 matrix 守卫。
 
 ## 核心教训
 

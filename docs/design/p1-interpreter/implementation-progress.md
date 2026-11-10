@@ -323,7 +323,7 @@
   不等于降低覆盖,但要用注入缺陷加白盒计数器证明 / 常量要与它的消费方共享 build tag)。
 
 - **两个真缺陷、互不相关(2026-08-04,#228 / #229 一轮,`a11334b`)**:两个 nightly crasher 分别来自
-  p1 腿的 `FuzzOracleDiff`(#228)与 p4 腿的 `FuzzP4ForceAllPromote`(#229),run 都在 `efa9aa6` 上,
+  p1 job 的 `FuzzOracleDiff`(#228)与 p4 job 的 `FuzzP4ForceAllPromote`(#229),run 都在 `efa9aa6` 上,
   但版本核对这一轮不是关键——**两个都在当前 master 上如实复现、都是真缺陷,而且互不相关**(seed hash
   不同、子系统不同,「会不会被同一个改动一起解决」这一格给出的是否)。
 
@@ -426,19 +426,19 @@
 
   | 项 | 落点 | 结论与要点 |
   |---|---|---|
-  | **问题一:作用域错**(头条 A) | 装 oracle 步骤 | #236–#241 那轮给取包脚本的 curl 加了限时,但同一步里 `apt-get`/`make`/`check-oracle.sh` 三条命令仍然无界——**只框住了当时报错的那一条命令,不是那一整步**。08-18 那轮 p1 腿在这一步卡了 **5 小时 50 分**被 job 超时掐掉,rolling-seed 与 auto-mode 被 skip、两个 go-fuzz 步骤根本没启动。普查后发现无界的步骤是**三个不是一个**(装 oracle、upload logs、triage) |
+  | **问题一:作用域错**(头条 A) | 装 oracle 步骤 | #236–#241 那轮给取包脚本的 curl 加了限时,但同一步里 `apt-get`/`make`/`check-oracle.sh` 三条命令仍然无界——**只框住了当时报错的那一条命令,不是那一整步**。08-18 那轮 p1 job 在这一步卡了 **5 小时 50 分**被 job 超时掐掉,rolling-seed 与 auto-mode 被 skip、两个 go-fuzz 步骤根本没启动。普查后发现无界的步骤是**三个不是一个**(装 oracle、upload logs、triage) |
   | 修法 | 三个步骤各加 step 级 `timeout-minutes`(12/15/10) | 选 step 级而不是逐条包 timeout,是因为它对**以后新加的命令同样生效**——这正是这次出问题的地方 |
   | **问题二:量错了成本中心**(头条 B) | native go-fuzz 步骤 | 连续五轮建议把 auto-mode 从 150m 压到 90m,**实测这个建议省不下任何时间**——auto-mode 只跑 2 分钟,150m 是从没接近过的防卡死超时上限。真正的成本中心是 native go-fuzz 步骤,**312 分钟的 job 里它占 270 分钟(87%)**,而这一步从没被量过 |
-  | 270 分钟的原因 | `scripts/go-fuzz.sh` + workflow input description | `go-fuzz.sh` 按**源码扫描**发现目标、每个目标跑满 fuzztime;无 tag 可见目标是 **6 个**不是 description 里写着的「4 targets」——root 包 `FuzzCompileRun`/`FuzzAutoPromote`/`FuzzP4ForceAllPromote` + `internal/frontend/lex`/`internal/frontend/parse`/`internal/stdlib` 各一个(`FuzzOracleDiff` 被 `wangshu_oracle_cgo` gate、在自己的步骤里跑,不算在内)。`6 × 45m = 270(审计实测补正:各层实际跑到的目标数并不相同 —— p1 4 个、p3 5 个、p4 6 个 target-run,所以 45m 下三条腿分别约 180 / 225 / 270 分钟,p4 恰好 6 × 45;35m 之后约 140 / 175 / 210 分钟。另外 `go-fuzz.sh` 对 golang/go#75804 的假性 deadline 会把该目标重跑一次,于是最坏情形要再加一个 fuzztime —— 审计抓到一次 45m 下真实跑到 315 分钟的 run,所以 go-fuzz 那一步的 step 超时按「最坏腿 + 一次重试 + 余量」取 300 分钟,而不是按中位数取。)`,与实测吻合——这个过时的「4」正是这一步成本被长期低估的原因 |
+  | 270 分钟的原因 | `scripts/go-fuzz.sh` + workflow input description | `go-fuzz.sh` 按**源码扫描**发现目标、每个目标跑满 fuzztime;无 tag 可见目标是 **6 个**不是 description 里写着的「4 targets」——root 包 `FuzzCompileRun`/`FuzzAutoPromote`/`FuzzP4ForceAllPromote` + `internal/frontend/lex`/`internal/frontend/parse`/`internal/stdlib` 各一个(`FuzzOracleDiff` 被 `wangshu_oracle_cgo` gate、在自己的步骤里跑,不算在内)。`6 × 45m = 270(审计实测补正:各层实际跑到的目标数并不相同 —— p1 4 个、p3 5 个、p4 6 个 target-run,所以 45m 下三个 job 分别约 180 / 225 / 270 分钟,p4 恰好 6 × 45;35m 之后约 140 / 175 / 210 分钟。另外 `go-fuzz.sh` 对 golang/go#75804 的假性 deadline 会把该目标重跑一次,于是最坏情形要再加一个 fuzztime —— 审计抓到一次 45m 下真实跑到 315 分钟的 run,所以 go-fuzz 那一步的 step 超时按「最慢的那个 job + 一次重试 + 余量」取 300 分钟,而不是按中位数取。)`,与实测吻合——这个过时的「4」正是这一步成本被长期低估的原因 |
 
 
 **审计逐轮补正**(三轮各修一处定值错误,保留过程):
 
-- 审计第二轮补正两点:(1)#75804 的重试是**按目标**而不是按腿的 —— `go-fuzz.sh` 对每个发现的目标各调一次 `run_target`、各有两次尝试,跨目标没有任何上限,所以 p4 那条腿可以有两个不同目标各重试一次,得 210 + 35 + 35 = 280;而先前把 go-fuzz 那步的上限正好取成 280,等于在一次**健康**运行上就把余量吃光 ——「按一次重试取」与「按中位数取」是同一个错误往外挪了一格。现取 **320**。(2)另外三步(rolling-seed、GC-stress、auto-mode)先前只靠内层 `go test -timeout`,而 `-timeout` 只看着 `go test` 那个进程,**以后往这一步新加的命令仍然无界** —— 那正是装 oracle 那步卡了 5 小时 50 分的成因。现在每个带 `run:` 的步骤都有 step 级上限,实测总时长约 215 / 217 / 252 分钟(p1/p3/p4),对 350 的 job 上限余量 98~135 分钟。
+- 审计第二轮补正两点:(1)#75804 的重试是**按目标**而不是按 job 的 —— `go-fuzz.sh` 对每个发现的目标各调一次 `run_target`、各有两次尝试,跨目标没有任何上限,所以 p4 那个 job 可以有两个不同目标各重试一次,得 210 + 35 + 35 = 280;而先前把 go-fuzz 那步的上限正好取成 280,等于在一次**健康**运行上就把余量吃光 ——「按一次重试取」与「按中位数取」是同一个错误往外挪了一格。现取 **320**。(2)另外三步(rolling-seed、GC-stress、auto-mode)先前只靠内层 `go test -timeout`,而 `-timeout` 只看着 `go test` 那个进程,**以后往这一步新加的命令仍然无界** —— 那正是装 oracle 那步卡了 5 小时 50 分的成因。现在每个带 `run:` 的步骤都有 step 级上限,实测总时长约 215 / 217 / 252 分钟(p1/p3/p4),对 350 的 job 上限余量 98~135 分钟。
 
 - 审计第三轮补正:step 上限是**两侧**约束,而我前两轮都只看了一侧 —— 下界要盖过合法最坏情形(p4 两次重试 280),上界要**在 job 上限之前触发**,即小于 350 减去这一步之前已消耗的时间(约 40 分钟)。取 320 时会在约 360 分钟触发,已在 350 之后,于是这个上限**永远不会生效**,真卡死时依旧退化成「cancelled、triage 被 skip、静默丢覆盖」—— 正是这次改动要消除的结果。窗口是 280 < bound < 310,现取 **300**(实测三层分别在 338 / 340 / 340 分钟触发)。oracle-diff 那步同理:合法最坏 70 分钟、窗口上界 172,取 120。
 
-- 还有一处值得记的自查失误:我写脚本核验「每个 step 上限都能在 job 上限之前触发」时,用子串匹配去查每步的实测耗时,而 `auto-mode rolling-seed diff` 这个名字**同时**含有 `auto-mode` 与`rolling-seed`,匹配先命中后者,于是给它记了 36 分钟而不是 2 分钟 —— 前置耗时被算成 74 而不是 40,脚本因此报「300 也不可达」。改成按前缀精确匹配后三层都可达。判据:用名字做键去查表时,先确认**没有一个名字能匹配多个键**;这类错误不会报错,只会给出一个看似严谨的错数字。  | 修法 | `gofuzztime` 45m→35m | `6 × 35m = 210` 分钟,job 约 250 分钟,余量从约 38 分钟升到约 98 分钟。**真实减少约 22% 的每轮探索量**,选它而不是砍差分步骤是因为差分步骤实际便宜(rolling-seed 36 分钟、auto-mode 2 分钟)而这一步占 87%;description 里的「4 targets」改成「6 untagged targets」 |  | 自我纠正 ①:抬到 420 不可能 | — | 连提四轮把 job `timeout-minutes` 抬到 420,而 GitHub 托管 runner 单 job 硬上限是 **360 分钟**,推荐了四轮却从没查过这个平台限制 |  | 自我纠正 ②:求和框架本身是错的 | — | 曾按「所有 step 上限之和必须低于 job 上限」算出某 leg 最坏 548 分钟、判「只能大幅压缩」;**这个框架本身是错的**——job 超时才是总预算,step 上限只是防一条卡死的命令悄悄吃掉这个预算,两者不是同一件事,不该按求和去配 |
+- 还有一处值得记的自查失误:我写脚本核验「每个 step 上限都能在 job 上限之前触发」时,用子串匹配去查每步的实测耗时,而 `auto-mode rolling-seed diff` 这个名字**同时**含有 `auto-mode` 与`rolling-seed`,匹配先命中后者,于是给它记了 36 分钟而不是 2 分钟 —— 前置耗时被算成 74 而不是 40,脚本因此报「300 也不可达」。改成按前缀精确匹配后三层都可达。判据:用名字做键去查表时,先确认**没有一个名字能匹配多个键**;这类错误不会报错,只会给出一个看似严谨的错数字。  | 修法 | `gofuzztime` 45m→35m | `6 × 35m = 210` 分钟,job 约 250 分钟,余量从约 38 分钟升到约 98 分钟。**真实减少约 22% 的每轮探索量**,选它而不是砍差分步骤是因为差分步骤实际便宜(rolling-seed 36 分钟、auto-mode 2 分钟)而这一步占 87%;description 里的「4 targets」改成「6 untagged targets」 |  | 自我纠正 ①:抬到 420 不可能 | — | 连提四轮把 job `timeout-minutes` 抬到 420,而 GitHub 托管 runner 单 job 硬上限是 **360 分钟**,推荐了四轮却从没查过这个平台限制 |  | 自我纠正 ②:求和框架本身是错的 | — | 曾按「所有 step 上限之和必须低于 job 上限」算出某个 job 最坏 548 分钟、判「只能大幅压缩」;**这个框架本身是错的**——job 超时才是总预算,step 上限只是防一条卡死的命令悄悄吃掉这个预算,两者不是同一件事,不该按求和去配 |
 
 - 五条判据写进 `llmdoc/guides/unreproducible-crasher-triage.md`「给一条报错的命令加超时」与「job 超时  与 step 超时」两节、`llmdoc/guides/design-claims-vs-codebase-physics.md` §3.1(优化建议先量成本  分布)与 §5(陈旧计数);过程反思见  `llmdoc/memory/reflections/2026-08-19-nightly-step-timeouts-and-budget.md`。
 
@@ -579,7 +579,7 @@
   force-all 下实际没有帧升层(本地审查用 `PromotionCount` 查出),只说明解释器路径正确;编译层由
   `issue276_279_compiled_callers_test.go` 覆盖，它的调用方只调用已知局部函数和白名单 stdlib,force-all 与阈值 1
   的 auto 各跑一遍并断言 `PromotionCount` 非零(P4 在 arm64 上不断言：那里的翻译器只有原生路径，原生路径不接受的函数没有
-  head-op replay 可退，这些调用方大多留在解释器里，PR CI 的 arm64 / macOS P4 腿因此失败过一次;用例仍与 lua5.1 比输出),去掉 gibbous
+  head-op replay 可退，这些调用方大多留在解释器里，PR CI 的 arm64 / macOS P4 job 因此失败过一次;用例仍与 lua5.1 比输出),去掉 gibbous
   调用 helper 的 `pc + 1` 修复后它会失败。它原先的预热调用每次都报错，P4 的调用点从没成功过，走不到 `ExecutePlainCallInlineFrame`;第二次全范围终审查出这条路径不写调用方 pc,补了「调用点先成功、后出错」的两个用例(未捕获与 `xpcall(f, debug.traceback)`),`ExecuteCalleeFromInlineFrame` 的同一检查在 `internal/crescent` 的 `TestInlineFrameCalleeAddsNoCLevel` 里;
   `crescent` 内部测试 `TestTraceback_NotBuiltForCaughtErrors`
   钉住「被 pcall / resume 捕获的错误不生成 traceback」。各修复去掉后对应用例都会失败。`test/api` 里原先断言

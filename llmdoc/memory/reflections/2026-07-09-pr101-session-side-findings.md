@@ -35,7 +35,7 @@ PR #101 的 `fuzz-smoke (p4 / ubuntu-latest)` 跑出 seed `3edb662d8f1525de`
 **教训(#89→#102 链,「修复即维度重置」的又一环)**:#89 修 CALL 派发计费时,反思里就该问「同一类情况
 (段内绕过 host 的控制流)还有哪些?」——FORLOOP back edge 与 seg2seg CALL 是同类(都绕过 host 计费点),当时只修
 了遇到的那一半。给绕过 host 的快路径接抢占/计费时,**列出全部段内控制流写法**(CALL 派发 / 循环 back edge / 将来的
-TFORLOOP 继续臂),不是只修触发用例那条。
+TFORLOOP 的继续分支),不是只修触发用例那条。
 
 ## 事件 2:多机同分支协作的 push 事故(工作流失败,须记)
 
