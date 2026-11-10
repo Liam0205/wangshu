@@ -694,6 +694,12 @@ runner 镜像换成 ubuntu-26.04 后，在它上面编出来的官方 Lua 把 `a
 - #315 的输入经 `FuzzOracleDiffTiered`（p4，`CGO_CFLAGS="-O2 -mfma"`）重放：有重定义时通过，去掉后失败。
 - `nummod_test.go` 在 `-mfma` 下去掉重定义，六个用例全部失败。
 
+**同一个 PR 里另修的一个测试期望值**：PR CI 的 `ubuntu-latest` 也已经是 26.04，`test (p1/p3/p4 / ubuntu-latest)`
+三个 job 都在 `TestOSTimeIsDST_DefaultHourFallback` 的 `Africa/Windhoek` 用例上失败，master 上同样失败（上一次 master
+的 CI 是 11-05，当时镜像还是 24.04）。原因是 Ubuntu 26.04 的 tzdata 包换了打包形式，这个时区哪一段算夏令时反过来了，
+glibc 的结果也跟着变。望舒在两种 tzdata 上都与 glibc `mktime` 一致（各 14976 例，差异为 0），只是测试把其中一种的
+结果写成了固定期望值。用例换成 `Asia/Amman`，产品代码没有改。细节见 [10 §9.1](./10-stdlib.md) 末尾的 2026-11-10 补记。
+
 只在 x86-64 上固定的原因、`-ffp-contract=off` 对参照实现其他代码的影响、还没弄清楚的一点（镜像为什么默认融合），
 见 [12 §4.9g](./12-testing-difftest.md)。arm64 上望舒自己的 `%` 是融合的，与 amd64 结果不同，记在
 [#323](https://github.com/Liam0205/wangshu/issues/323)。过程记录见
