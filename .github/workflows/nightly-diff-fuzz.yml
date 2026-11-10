@@ -126,7 +126,7 @@ jobs:
       # The tarball comes from the Actions cache when it can, so an unreachable www.lua.org no longer
       # fails the run: #306, #307, #308 and #312 were each a round that tested nothing because the
       # download timed out. This job is the cache's one producer (scheduled runs are on master, whose
-      # caches every branch and PR can read; three legs six times a day keep the entry from expiring);
+      # caches every branch and PR can read; three jobs six times a day keep the entry from expiring);
       # ci.yml and bench-acceptance.yml only restore it.
       #
       # The key carries the checksum fetch-lua-tarball.sh verifies, and that script re-verifies whatever
@@ -167,7 +167,7 @@ jobs:
 
       - name: save the lua 5.1.5 tarball
         # Right after the install rather than in a post-job step, so a round that later finds a
-        # divergence still leaves the tarball behind for the next one. The three legs race for one key;
+        # divergence still leaves the tarball behind for the next one. The three jobs race for one key;
         # the losers get a warning from the action, which is harmless.
         if: steps.luatarball.outputs.cache-hit != 'true'
         timeout-minutes: 5
