@@ -147,10 +147,10 @@ jobs:
           for attempt in 1 2 3; do
             if timeout 180 sudo apt-get update && timeout 120 sudo apt-get install -y lua5.1; then
               # Installed is not the same as usable. check-oracle.sh verifies the version and, on
-              # x86-64, that '%' was not compiled into a fused multiply-subtract (#309): the package is
-              # whatever the image's archive ships, and a fused reference gives different answers for
-              # some operands. A package that fails the check is replaced by the source build below
-              # (/usr/local/bin precedes /usr/bin on PATH).
+              # x86-64, that '%' was not compiled into a fused multiply-subtract (#309). The
+              # ubuntu-26.04 image installs Ubuntu's amd64v3 packages, and that lua5.1 IS fused, so on
+              # ubuntu-latest this check fails and the source build below is the normal path
+              # (/usr/local/bin precedes /usr/bin on PATH). The arm64 legs keep the package.
               if ./scripts/check-oracle.sh; then
                 exit 0
               fi
@@ -396,10 +396,10 @@ jobs:
           for attempt in 1 2 3; do
             if timeout 180 sudo apt-get update && timeout 120 sudo apt-get install -y lua5.1; then
               # Installed is not the same as usable. check-oracle.sh verifies the version and, on
-              # x86-64, that '%' was not compiled into a fused multiply-subtract (#309): the package is
-              # whatever the image's archive ships, and a fused reference gives different answers for
-              # some operands. A package that fails the check is replaced by the source build below
-              # (/usr/local/bin precedes /usr/bin on PATH).
+              # x86-64, that '%' was not compiled into a fused multiply-subtract (#309). The
+              # ubuntu-26.04 image installs Ubuntu's amd64v3 packages, and that lua5.1 IS fused, so on
+              # ubuntu-latest this check fails and the source build below is the normal path
+              # (/usr/local/bin precedes /usr/bin on PATH). The arm64 legs keep the package.
               if ./scripts/check-oracle.sh; then
                 exit 0
               fi

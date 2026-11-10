@@ -20,8 +20,10 @@
 #   agree; pinning one side alone would manufacture a divergence. Making '%' unfused everywhere is a
 #   product change tracked in #323.
 #
-# The compiler facts that decide whether the default would have fused are logged, because the reason the
-# 2026-11 image did so was never established from the outside.
+# The compiler facts that decide whether the default would have fused are logged. That log is how the
+# cause was found: the ubuntu-26.04 runner image installs Ubuntu's amd64v3 packages, whose gcc has the
+# same version string as the plain amd64 one but defaults to -march=x86-64-v3, a target with FMA. A
+# stock ubuntu:26.04 is amd64 and does not fuse, which is why this never reproduced locally.
 #
 # Environment:
 #   LUA_ORACLE_CC    compiler command (default: gcc). The contraction flag is appended to it.
