@@ -123,6 +123,26 @@ jobs:
         with:
           go-version-file: go.mod
 
+      # The tarball comes from the Actions cache when it can, so an unreachable www.lua.org no longer
+      # fails the run: #306, #307, #308 and #312 were each a round that tested nothing because the
+      # download timed out. This job is the cache's one producer (scheduled runs are on master, whose
+      # caches every branch and PR can read; three legs six times a day keep the entry from expiring);
+      # ci.yml and bench-acceptance.yml only restore it.
+      #
+      # The key carries the checksum fetch-lua-tarball.sh verifies, and that script re-verifies whatever
+      # is restored, so a damaged entry is re-downloaded rather than trusted.
+      #
+      # continue-on-error on both cache steps: the cache is an optimisation, and a cache-service error
+      # must not become a new way for the run to fail.
+      - name: restore the lua 5.1.5 tarball
+        id: luatarball
+        timeout-minutes: 5
+        continue-on-error: true
+        uses: actions/cache/restore@v6
+        with:
+          path: lua-5.1.5.tar.gz
+          key: lua-5.1.5-tarball-2640fc56a795f29d28ef15e13c34a47e223960b0240e8cb0a82d9b0738695333
+
       - name: install lua 5.1.5 oracle (source build)
         # Step-level bound, covering EVERY command here rather than one of them.
         #
@@ -134,15 +154,28 @@ jobs:
         # is added later, which a per-command wrapper would not.
         timeout-minutes: 12
         run: |
-          sudo apt-get update -qq && sudo apt-get install -y -qq libreadline-dev
-          # Bounded + retried + checksum-verified (#236-#241): a bare curl with no --max-time sat
-          # ~2m15s on an unreachable lua.org and exited 28 (curl's TIMEDOUT), which failed this step
-          # and left the differential fuzz steps skipped -- a run reporting failure while testing
-          # nothing, and six issues filed for one upstream blip.
-          ./scripts/fetch-lua-tarball.sh
-          make -C lua-5.1.5 posix -j2
-          sudo cp lua-5.1.5/src/lua /usr/local/bin/lua5.1
+          # build-lua-oracle.sh fetches the tarball (bounded, retried, checksum-verified; a restored
+          # copy is reused), builds it and installs lua5.1. On x86-64 it builds with -ffp-contract=off
+          # so '%' does not depend on whether this image's compiler fuses a - q*b (#309); the script
+          # header has the details. No apt-get here any more: `make posix` never needed libreadline,
+          # and apt was one more thing that could hang.
+          #
+          # check-oracle.sh then verifies the version AND that '%' is not fused, so a wrong build stops
+          # here as one environment failure instead of surfacing as dozens of DIVERGENCE lines.
+          ./scripts/build-lua-oracle.sh
           ./scripts/check-oracle.sh
+
+      - name: save the lua 5.1.5 tarball
+        # Right after the install rather than in a post-job step, so a round that later finds a
+        # divergence still leaves the tarball behind for the next one. The three legs race for one key;
+        # the losers get a warning from the action, which is harmless.
+        if: steps.luatarball.outputs.cache-hit != 'true'
+        timeout-minutes: 5
+        continue-on-error: true
+        uses: actions/cache/save@v6
+        with:
+          path: lua-5.1.5.tar.gz
+          key: lua-5.1.5-tarball-2640fc56a795f29d28ef15e13c34a47e223960b0240e8cb0a82d9b0738695333
 
       - name: rolling-seed differential fuzz (${{ matrix.variant }})
         # Step-level bound as well as the inner `go test -timeout 150m`: -timeout only watches the
