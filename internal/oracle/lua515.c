@@ -152,6 +152,45 @@ static void wangshu_number2str (char *s, double n) {
 #undef lua_number2str
 #define lua_number2str(s,n) wangshu_number2str((s), (n))
 
+/*
+ * '%' without floating-point contraction (x86-64 only).
+ *
+ * luaconf.h defines luai_nummod(a,b) as a - floor(a/b)*b. A compiler that is
+ * allowed to contract the expression (GCC's default outside ISO mode) and
+ * targets a CPU with FMA computes a - q*b in one fused instruction, so the
+ * product is never rounded on its own. The two readings differ whenever q*b is
+ * not exactly representable: 84572069678023671808 % 89 is 0 with the product
+ * rounded and -2944 fused; 3 % 0.1 is 0 against -1.6653345369377348e-16.
+ *
+ * Both are conforming C. The differential baseline has to be one of them,
+ * though, and on x86-64 it is the rounded product: that is what a default
+ * -march=x86-64 build of the official sources computes, and what wangshu's Go
+ * code compiles to on amd64. On 2026-11-08 the nightly runner image started
+ * producing a fused oracle and every round reported dozens of divergences that
+ * no other machine reproduced (#309 .. #320). The oracle's answer should not
+ * depend on which image built it, so the product is forced through a volatile
+ * double here; cgo rejects -ffp-contract=off in #cgo CFLAGS, which is why this
+ * is done in the source.
+ *
+ * Restricted to x86-64 on purpose. On arm64 both this oracle and wangshu's Go
+ * code are fused by default and agree with each other; pinning only one side
+ * would manufacture a divergence there. Making '%' unfused on every platform
+ * is a product change tracked separately.
+ *
+ * The three users of luai_nummod (lcode.c constant folding, lvm.c OP_MOD and
+ * Arith) are all included below; lapi.c above has none. Vendored sources stay
+ * byte-identical.
+ */
+#if defined(__x86_64__)
+static double wangshu_nummod (double a, double b) {
+  volatile double p = floor(a/b)*b;  /* the store rounds the product */
+  return a - p;
+}
+
+#undef luai_nummod
+#define luai_nummod(a,b) wangshu_nummod((a), (b))
+#endif
+
 #include "_lua515/src/lcode.c"
 #include "_lua515/src/ldebug.c"
 #include "_lua515/src/ldo.c"
