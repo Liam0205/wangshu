@@ -278,6 +278,7 @@ func TestCodegenGolden(t *testing.T) {
 - **官方 Lua**:锁 **5.1.5**(5.1 系列最后一版,bug 修订完成)。golden 由 5.1.5 生成,文档记录版本号。
 - **gopher-lua**:锁一个具体 commit/tag(差分基准,roadmap §7)。gopher-lua 自身可能有与官方 5.1 的**已知差异**(它是独立实现),这些差异进 §4 的「gopher-lua 已知偏差豁免表」,不算望舒的错。
 - 版本升级(如未来差分测试 5.1.x 新修订)走 PR,golden 重新生成,diff 可审。
+- **锁版本不等于锁行为**：同一份 5.1.5 源码，编译器是否把 `a - q*b` 合成一条 FMA 指令会改变 `%` 的结果。x86-64 上的参照实现固定为不融合，`scripts/check-oracle.sh` 除了版本号还实际验算 `%`，见 §4.9g。
 
 ---
 
@@ -782,6 +783,8 @@ arena 推到上限、`1<<16` 时没有,所以那条 arena-cap 错误分支在这
 | **UB 且跨 arch 不一致** | 产品侧**固定参照平台**(x86-64)+ 差分侧**跳过那个区间** | ① `%u`/`%x`/`%o` 的 `(unsigned long long)(double)`(#158,`cUnsignedCast`);② `string.char` 的 `luaL_checkint` 越界 double→int(#193,`cCharCast`)——`luaL_checkint` 是 `(int)luaL_checkinteger`,double 先变 `lua_Integer` 再窄化成 int,x86-64 `cvttsd2si` 给 `INT64_MIN`(低 32 位 0,PUC 接受得 byte 0)、arm64 `FCVTZS` 把 `+inf` 饱和到 `INT64_MAX`(低 32 位 -1,PUC 报错)。skip 的执行体是 `internal/oracle/prelude.go` 的 sentinel |
 | **UB 且参照实现直接崩** | 差分侧**跳过那个区间**(产品侧无事可做) | `unpack` 的索引让 PUC **段错误**(#244):`luaB_unpack` 在 int 上算 `n = e - i + 1` 并用 `n <= 0` 检查,而这个减法本身是有符号溢出 UB —— gcc -O2 把该检查当不可达**删掉**,`lua_checkstack` 随后收到负的 `size` 并照单接受(`lapi.c` 两个比较都为假),于是崩掉;**同一份源码在 -O0 下干净地报错,所以这个崩溃依赖优化等级**。(此前这里写「回绕成正的巨大值绕过检查」是错的:`i <= e` 时 int32 回绕恒 `<= 0`。)内嵌 oracle 拿到 SIGSEGV(栈迹在 cgo 里)、真 `lua5.1` 二进制同样 dumped core,而望舒对整段报 `too many results to unpack`、从不崩。**边界的判定见 §4.9f** |
 
+表里三格之外还有一类：C 标准允许两种结果、由编译器和目标 CPU 决定（浮点表达式的融合，影响 `%`）。处理办法是把参照实现的编译方式固定下来，不是跳过，见 §4.9g。
+
 **只跳 UB 区间,不要顺手把周边一起跳掉**:`string.char(2^53)` 输入大,但 int64 可表示,截断在 C 里有定义,所以照旧逐字节比对;跳过的只是 NaN 与超出 int64 范围那一段。in-range 的小数、负数、`[0,255]` 边界全部保持比对。
 
 **与 §4.2 判据的顺序**:先判**位置**(差异属于「同一个抽象值的不同书写方式」→ 在渲染处消除;属于「两侧本来就是不同的东西」→ 才在比较时归一或跳过),再判**有定义 / UB**。UB 区间属于后一类(两个官方 build 各给一个结果,没有「正确值」可对齐),所以在比较侧跳过是对的。
@@ -909,6 +912,62 @@ issue**,都不指着守卫说话。并且注意**窄化之后的值才是判据�
 同域:那条比的是 skip 与**产品规则**的形状,本节比的是 skip 与**参照实现机制**的形状。方法论见
 `llmdoc/guides/prove-the-path-under-test.md` §9.6a 与 §4.5、
 `llmdoc/guides/cross-backend-semantic-fix-sweep.md` 第八个刻度。
+
+### 4.9g 参照实现的 `%` 在 x86-64 上固定为「乘积先舍入」（#309，2026-11-10）
+
+§4.9b 的三格都假设同一份源码在同一个平台上只有一种结果。浮点表达式的融合不满足这个假设：C 标准允许编译器把
+`a*b + c` 合成一次运算、中间的乘积不单独舍入，是否这样做由编译器的默认设置和目标 CPU 决定。同一份 5.1.5
+源码、同样是 x86-64，可以编出两个对 `%` 给出不同结果的二进制，版本号都是 5.1.5。
+
+Lua 5.1 的 `a % b` 是 `a - floor(a/b)*b`（`luaconf.h` 的 `luai_nummod`）。目标 CPU 有 FMA 指令、编译器又允许
+融合时，`a - q*b` 被编成一条指令。乘积 `q*b` 不能精确表示成 double 时，两种算法的结果不同：
+
+| 表达式 | 乘积先舍入 | 融合 |
+|---|---|---|
+| `84572069678023671808 % 89` | `0` | `-2944` |
+| `3 % 0.1` | `0` | `-1.6653345369377348e-16` |
+
+望舒在 amd64 上是「乘积先舍入」（Go 在 amd64 上不融合，`GOAMD64=v3` 下也不融合），按默认 `-march=x86-64`
+编出来的官方 Lua 也是。
+
+**经过**：2026-11-08 起 nightly 每一轮都报几十到九十多条 `DIVERGENCE`，三个 tier 报的是同一批种子，分层 go-fuzz
+也报了一条（#309 到 #322）。这些种子在本地全部通过。原因是 nightly 用的 runner 镜像换成 ubuntu-26.04 之后，在它
+上面编出来的参照实现是融合的。证据：11-08 两轮的 344 条和 11-09 两轮的 187 个种子，对着用 `-march=x86-64-v3`
+编的参照实现全部分歧，对着同样参数再加 `-ffp-contract=off` 编的参照实现全部通过；所有分歧都只在 `%` 的结果上。
+望舒的代码没有变，这一轮也没有改它。
+
+**现在的做法**：x86-64 上把参照实现固定为「乘积先舍入」，不依赖镜像里编译器的默认行为。
+
+| 参照实现 | 固定的位置 | 写法 |
+|---|---|---|
+| `lua5.1` 二进制（滚动种子、GC 压力、conformance） | `scripts/build-lua-oracle.sh` | x86-64 上编译时加 `-ffp-contract=off` |
+| cgo 内嵌的 5.1.5（`FuzzOracleDiff` / `FuzzOracleDiffTiered`） | `internal/oracle/lua515.c` | x86-64 上重定义 `luai_nummod`，让乘积先存进一个 `volatile double`。cgo 不接受 `#cgo CFLAGS` 里的 `-ffp-contract=off`，所以写在源码里；`_lua515/` 下的文件不动 |
+| 任何来源的 `lua5.1`（包括 apt 装的） | `scripts/check-oracle.sh` | x86-64 上实际算三次 `84572069678023671808 % 89`（常量折叠、运行期数字、字符串操作数各一次，对应参照实现里求值 `%` 的三处代码），有一处不是 `0` 就失败 |
+
+`check-oracle.sh` 失败时 nightly 停在安装步骤，开出的是一个 `ci` 标签的 issue，写明原因；不再是一轮几十条分歧、
+每个 tier 各开一个 `bug` issue。PR CI 里 apt 装的 `lua5.1` 也要过这个检查，不过就改用源码构建。
+
+对应的测试：`internal/oracle/nummod_test.go`（六个用例）和 `scripts/test-check-oracle.sh`。默认的 amd64 构建
+本来就不融合，所以前者在默认构建下有没有那段重定义都通过；CI 的 `oracle-smoke` 和 `make fuzz-oracle` 会用
+`CGO_CFLAGS="-O2 -mfma"` 再跑一遍，这时去掉重定义六个用例全部失败。
+
+**为什么只在 x86-64 上固定**：arm64 的编译器默认就融合（clang 对 `aarch64-linux-gnu` 和 `arm64-apple-macos`
+实测如此），Go 在 arm64 上也把望舒的 `%` 编成一条 `FMSUBD`。两侧现在都融合，结果一致。只固定参照实现这一侧，
+会在 arm64 上新增分歧。要让 `%` 在所有平台、所有层都不融合，需要改望舒的代码，另记在
+[#323](https://github.com/Liam0205/wangshu/issues/323)，由维护者决定什么时候做。
+
+**`-ffp-contract=off` 对参照实现的其他影响**：用 `-march=x86-64-v3` 编 5.1.5，出现 FMA 指令的只有四个函数：
+`luaV_execute`、`Arith`、`codearith`（都是 `%`）和 `luaB_collectgarbage`（`collectgarbage("count")` 的
+`b + x/1024`，除以 1024 是精确的，融合与否结果相同）。所以这个参数只改变 `%`。
+
+**还没弄清楚的一点**：ubuntu-26.04 的 runner 镜像为什么默认编出融合的代码。nightly 的编译命令是普通的
+`gcc -O2`；本地的 ubuntu:26.04 容器（gcc 15.2，默认 `-march=x86-64`）编不出 FMA 指令。`build-lua-oracle.sh` 会把
+编译器版本、默认 `-march`、默认目标有没有 FMA 打进日志。
+
+**判据**：差分的参照实现由「版本 + 编译方式」共同决定，锁版本（§2.6）不够。分歧数从 0 跳到几十条、三个 tier
+同一批种子一起报、集中在一个算子上，先查参照实现是不是变了（runner 镜像、编译器、编译参数），再查望舒。
+这时 issue 里的重放命令在本地通过不说明问题不存在：本地的 `lua5.1` 和 CI 上那个不是同一个二进制。
+方法见 `llmdoc/guides/unreproducible-crasher-triage.md`「版本核对也包括参照实现」。
 
 ---
 

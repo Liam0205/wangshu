@@ -670,6 +670,35 @@
 机制见 [10 §9.1.1](./10-stdlib.md)，
 过程记录见 [#299 复盘](../../../llmdoc/memory/reflections/2026-10-14-issue299-os-time-index.md)。
 
+## 2026-11-10：参照实现的 `%` 在 x86-64 上固定为不融合，tarball 进 cache（#309）
+
+nightly 从 2026-11-08 起每轮报几十到九十多条分歧（#309 到 #322，其中 #315 是分层 go-fuzz 报的）。原因在参照实现：
+runner 镜像换成 ubuntu-26.04 后，在它上面编出来的官方 Lua 把 `a - floor(a/b)*b` 里的乘法和减法合成了一条 FMA 指令，
+`%` 对一部分操作数的结果变了。望舒的代码没有变，这一轮也没有改它。同期另有五轮因为 `www.lua.org` 连接超时什么都没测
+（#306、#307、#308、#312、#321）。
+
+| 改动 | 位置 | 内容 |
+|---|---|---|
+| `lua5.1` 二进制固定编译方式 | `scripts/build-lua-oracle.sh`（新增） | 取包、`make posix`、安装；x86-64 上加 `-ffp-contract=off`；日志里记编译器版本、默认 `-march`、默认目标有没有 FMA |
+| 内嵌参照实现固定 `%` | `internal/oracle/lua515.c` | x86-64 上重定义 `luai_nummod`，乘积先存进 `volatile double`；`_lua515/` 不动 |
+| 参照实现不对时在安装步骤失败 | `scripts/check-oracle.sh` | x86-64 上验算三次 `84572069678023671808 % 89`，有一处不是 `0` 就失败；其他架构只打印 |
+| 测试 | `internal/oracle/nummod_test.go`、`scripts/test-check-oracle.sh`（均新增） | 前者六个用例，`oracle-smoke` 和 `make fuzz-oracle` 用 `CGO_CFLAGS="-O2 -mfma"` 再跑一遍；后者六个用例，离线，挂进 `make test-scripts` |
+| workflow | `nightly-diff-fuzz.yml`、`ci.yml`、`bench-acceptance.yml` | nightly 用新脚本装参照实现，tarball 存进 Actions cache（nightly 写，其余只读）；`ci.yml` 里 apt 装的包要过 `check-oracle.sh`，不过就用源码构建 |
+
+验证（本机 x86-64，gcc 15.2）：
+
+- 用 `-march=x86-64-v3` 编参照实现：经 `build-lua-oracle.sh` 编的通过 `check-oracle.sh`；不加 `-ffp-contract=off`
+  编的得到 `-2944 -2944 -2944`，被拒绝。
+- 11-09 两轮 nightly 日志里的 187 个分歧种子：对着融合的参照实现 187 个都分歧，对着固定后的 187 个都通过。
+  #309、#313、#316、#318、#322 标题里的五个种子单独重放，结果相同。
+- #315 的输入经 `FuzzOracleDiffTiered`（p4，`CGO_CFLAGS="-O2 -mfma"`）重放：有重定义时通过，去掉后失败。
+- `nummod_test.go` 在 `-mfma` 下去掉重定义，六个用例全部失败。
+
+只在 x86-64 上固定的原因、`-ffp-contract=off` 对参照实现其他代码的影响、还没弄清楚的一点（镜像为什么默认融合），
+见 [12 §4.9g](./12-testing-difftest.md)。arm64 上望舒自己的 `%` 是融合的，与 amd64 结果不同，记在
+[#323](https://github.com/Liam0205/wangshu/issues/323)。过程记录见
+[#309 复盘](../../../llmdoc/memory/reflections/2026-11-10-issue309-oracle-fp-contraction.md)。
+
 ## 相关
 
 [00-overview](./00-overview.md) · [../engineering](../engineering.md) ·
