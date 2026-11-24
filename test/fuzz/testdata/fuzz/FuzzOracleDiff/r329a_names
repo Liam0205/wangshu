@@ -1,0 +1,2 @@
+go test fuzz v1
+string("print(type(table.unpack), type(__ipairs_iter), pairs({}) == next, ipairs({}) == ipairs({}))")

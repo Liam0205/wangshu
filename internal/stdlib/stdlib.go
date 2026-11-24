@@ -32,14 +32,18 @@ func OpenAll(st *crescent.State) {
 		cl := st.MakeHostClosure(id)
 		st.SetGlobal(e.name, value.MakeGC(value.TagFunction, cl))
 	}
-	// The internal stepping iterator of ipairs (referenced indirectly via a
-	// global name; script-side invisibility is not required -- 5.1 exposes
-	// next too).
-	{
-		id := st.RegisterHostFn(ipairsIter)
-		cl := st.MakeHostClosure(id)
-		st.SetGlobal("__ipairs_iter", value.MakeGC(value.TagFunction, cl))
-	}
+	// pairs and ipairs own their iterator; it is not looked up through a
+	// global. lbaselib.c's auxopen builds each of them as a C closure whose
+	// upvalue is the iterator (luaB_next for pairs, ipairsaux for ipairs), so
+	// rebinding or clearing the global next changes nothing about pairs, the
+	// function pairs hands back is not the global next (pairs({}) == next is
+	// false), and ipairs' iterator has no global name at all.
+	//
+	// Both used to read a global on every call -- pairs read next, ipairs read
+	// a wangshu-only global __ipairs_iter -- which made `next = nil` break
+	// pairs and left an extra name in _G that official 5.1 does not have (#329).
+	registerIterFactory(st, "pairs", baseFnNext, value.Nil)
+	registerIterFactory(st, "ipairs", ipairsIter, value.NumberValue(0))
 	registerNamespaced(st, "math", append(mathFns, mathExtraFns...), mathIntrinsics)
 	strTbl := registerNamespaced(st, "string", stringFns, nil)
 	st.SetStringLib(strTbl) // per-type __index for string values (`("x"):upper()`)
@@ -57,14 +61,10 @@ func OpenAll(st *crescent.State) {
 		gm, _ := st.RawGet(strTbl, intern(st, "gmatch"))
 		st.SetTableField(strTbl, "gfind", gm)
 	}
-	tblTbl := registerNamespaced(st, "table", tableFns, nil)
-	// table.unpack alias (in 5.1 the main entry is the global unpack; in
-	// 5.2+ it is table.unpack; provide both).
-	{
-		id := st.RegisterHostFn(baseFnUnpackImpl)
-		cl := st.MakeHostClosure(id)
-		st.SetTableField(tblTbl, "unpack", value.MakeGC(value.TagFunction, cl))
-	}
+	// No table.unpack: that is where 5.2 moved it. 5.1 has only the global
+	// unpack, and a script probing table.unpack must see nil as it does on
+	// official 5.1 (#329; 10-stdlib section 4.5).
+	registerNamespaced(st, "table", tableFns, nil)
 	registerNamespaced(st, "os", osFns, nil)
 	ioTbl := registerNamespaced(st, "io", ioFns, nil)
 	registerStdStreams(st, ioTbl)
@@ -227,8 +227,7 @@ var baseFns = []entry{
 	{"rawset", baseFnRawSet},
 	{"rawequal", baseFnRawEqual},
 	{"next", baseFnNext},
-	{"pairs", baseFnPairs},
-	{"ipairs", baseFnIpairs},
+	// pairs and ipairs are registered by registerIterFactory in OpenAll.
 	{"xpcall", baseFnXpcall},
 	{"loadstring", baseFnLoadstring},
 	{"load", baseFnLoad},
@@ -375,26 +374,30 @@ func baseFnNext(st *crescent.State, args []value.Value) ([]value.Value, *crescen
 	return []value.Value{k, v}, nil
 }
 
-// baseFnPairs: pairs(t) -> (next, t, nil).
-func baseFnPairs(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
-	if len(args) == 0 || value.Tag(args[0]) != value.TagTable {
-		return nil, crescent.NewArgError(1, "table expected, got "+argTypeName(args, 0))
+// registerIterFactory registers the global `name` as a function that checks
+// its argument is a table and returns (iter, t, init) -- the shape shared by
+// pairs (next, t, nil) and ipairs (ipairsaux, t, 0).
+//
+// The iterator is a host closure created here and reachable only as the
+// factory's result. The factory's Go closure captures it, and the factory's
+// host closure also holds it as an upvalue so the collector keeps it alive for
+// exactly as long as the factory itself is reachable (the same arrangement
+// coroutine.wrap uses for its coroutine). One iterator per State: every call
+// returns the same function object, as on PUC.
+func registerIterFactory(st *crescent.State, name string, iter crescent.HostFn, init value.Value) {
+	iterV := value.MakeGC(value.TagFunction, st.MakeHostClosure(st.RegisterHostFn(iter)))
+	factory := func(_ *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
+		if len(args) == 0 || value.Tag(args[0]) != value.TagTable {
+			return nil, crescent.NewArgError(1, "table expected, got "+argTypeName(args, 0))
+		}
+		return []value.Value{iterV, args[0], init}, nil
 	}
-	nextFn, _ := st.RawGet(st.Globals(), intern(st, "next"))
-	return []value.Value{nextFn, args[0], value.Nil}, nil
+	cl := st.MakeHostClosureKeeping(st.RegisterHostFn(factory), iterV)
+	st.SetGlobal(name, value.MakeGC(value.TagFunction, cl))
 }
 
-// baseFnIpairs: ipairs(t) -> (iter, t, 0); iter(t, i) -> (i+1, t[i+1]) | nil.
-func baseFnIpairs(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
-	if len(args) == 0 || value.Tag(args[0]) != value.TagTable {
-		return nil, crescent.NewArgError(1, "table expected, got "+argTypeName(args, 0))
-	}
-	iterFn, _ := st.RawGet(st.Globals(), intern(st, "__ipairs_iter"))
-	return []value.Value{iterFn, args[0], value.NumberValue(0)}, nil
-}
-
-// ipairsIter is the stepping iterator of ipairs (registered as the internal
-// global __ipairs_iter).
+// ipairsIter is the stepping iterator of ipairs (PUC's ipairsaux). Scripts
+// reach it only as ipairs' first result; see registerIterFactory.
 func ipairsIter(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
 	// PUC ipairsaux: luaL_checkint(L, 2) FIRST, then checktype(L, 1, TABLE).
 	if len(args) < 2 || !value.IsNumber(args[1]) {
@@ -408,10 +411,10 @@ func ipairsIter(st *crescent.State, args []value.Value) ([]value.Value, *crescen
 		return nil, crescent.NewArgError(1, "table expected, got "+st.TypeName(args[0]))
 	}
 	// PUC's ipairsaux reads the control value with luaL_checkint, so it narrows
-	// to int32 and truncates a fraction: __ipairs_iter(t, 2^32+2) continues from
-	// 2, and (t, 1.5) continues from 1. Taking the raw double skipped straight to
+	// to int32 and truncates a fraction: called with (t, 2^32+2) it continues
+	// from 2, and with (t, 1.5) from 1. Taking the raw double skipped straight to
 	// nil for both. This site sat outside the earlier sweep, which enumerated
-	// public stdlib functions -- the iterator is installed as a private global.
+	// public stdlib functions -- the iterator has no public name.
 	// The increment happens in int32 too, so it WRAPS like PUC's C int does:
 	// from 2147483647 the next index is -2147483648, not 2147483648. Adding 1 to
 	// the narrowed value as a float64 never wraps and missed that key.

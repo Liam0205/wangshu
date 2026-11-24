@@ -1,0 +1,2 @@
+go test fuzz v1
+string("local f = ipairs({}) print(pcall(f)) print(pcall(f, 1, 1)) print(pcall(f, {}, \"x\")) print(select(\"#\", f({5}, 1)))")

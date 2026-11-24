@@ -278,12 +278,6 @@ math.random = function() return 0.5 end
 math.randomseed = function() end
 loadfile = function() return nil, "oracle-harness: loadfile disabled" end
 dofile = function() error("oracle-harness: dofile disabled") end
--- __ipairs_iter: wangshu implements ipairs via this internal global
--- (its enumeration puts it on the whitelist, so the trim keeps it).
--- PUC has no such global; give it PUC's own ipairs aux iterator so
--- BOTH sides expose a working function with the same (t, i) ->
--- (i+1, t[i+1]) | nil contract. Symmetric text, equivalent result.
-__ipairs_iter = __ipairs_iter or select(1, ipairs({}))
 `
 
 // preludeGuards: input-bounding wrappers. All error texts are either
@@ -605,15 +599,25 @@ _G.tonumber = (function(orig)
     return orig(v, b, ...)
   end
 end)(tonumber)
-_G.__ipairs_iter = (function(orig)
-  if orig == nil then return nil end
-  return function(t, i, ...)
+-- The ipairs iterator narrows its control value with luaL_checkint, so it needs the same guard.
+-- It has no global name on either engine (wangshu used to publish it as __ipairs_iter, #329): a
+-- script reaches it only as ipairs' first result, so ipairs is wrapped to hand out a guarded
+-- iterator instead. ONE guarded function, created here, so ipairs(a) == ipairs(b) still compares
+-- the way it does unwrapped. The upvalue is NAMED ipairs so an argument error raised inside still
+-- reads "bad argument #1 to 'ipairs'" (both engines take the name from the call site).
+_G.ipairs = (function(ipairs)
+  local raw = ipairs({})
+  local guarded = function(t, i, ...)
     if __nonfinite(i) then
       __error("` + LimitSentinel + `: luaL_checkint UB range", 0)
     end
-    return orig(t, i, ...)
+    return raw(t, i, ...)
   end
-end)(__ipairs_iter)
+  return function(...)
+    local _, s, c = ipairs(...)
+    return guarded, s, c
+  end
+end)(ipairs)
 
 -- table.insert shift-span guard.
 --
