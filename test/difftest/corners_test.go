@@ -10,6 +10,8 @@
 package difftest
 
 import (
+	"sort"
+	"strings"
 	"testing"
 
 	"github.com/Liam0205/wangshu"
@@ -231,5 +233,143 @@ func TestApprox_ExistenceOnly(t *testing.T) {
 				t.Errorf("existence check failed: %v", r)
 			}
 		})
+	}
+}
+
+// stdlibNamesSrc lists every string-keyed global, every field of the library tables, the file-handle
+// metatable and methods, and the string metatable -- one "name : type" per line, sorted. The package
+// table is not descended into (its contents are paths and loader state, not library surface).
+const stdlibNamesSrc = `
+local out = {}
+local function keys(t)
+  local ks = {}
+  for k in pairs(t) do if type(k) == "string" then ks[#ks + 1] = k end end
+  table.sort(ks)
+  return ks
+end
+for _, k in ipairs(keys(_G)) do
+  local v = _G[k]
+  out[#out + 1] = k .. " : " .. type(v)
+  if type(v) == "table" and v ~= _G and k ~= "package" then
+    for _, k2 in ipairs(keys(v)) do out[#out + 1] = k .. "." .. k2 .. " : " .. type(v[k2]) end
+  end
+end
+local fm = getmetatable(io.stdout)
+if type(fm) == "table" then
+  for _, k in ipairs(keys(fm)) do out[#out + 1] = "(file metatable)." .. k .. " : " .. type(fm[k]) end
+  if type(fm.__index) == "table" and fm.__index ~= fm then
+    for _, k in ipairs(keys(fm.__index)) do out[#out + 1] = "(file methods)." .. k .. " : " .. type(fm.__index[k]) end
+  end
+end
+local sm = getmetatable("")
+for _, k in ipairs(keys(sm)) do out[#out + 1] = "(string metatable)." .. k .. " : " .. type(sm[k]) end
+return table.concat(out, "\n")`
+
+// stdlibAbsent is every name official Lua 5.1.5 defines that wangshu does not, and why. It is the
+// executable form of the "not provided" rows in the README and of `exemptions` above: a name missing
+// from wangshu that is NOT listed here fails TestDiff_StdlibNames, and so does a listed name that
+// wangshu has since gained (the entry must then be deleted).
+//
+// There is deliberately no matching table for the other direction. wangshu must define nothing that
+// 5.1 lacks; an extra name is how #329 happened (table.unpack is 5.2's, and the ipairs iterator was
+// published as a global), and nothing noticed for five months because the only executor of "the name
+// sets must match" was the hand-written exemptions list, which records what is missing and cannot see
+// what is extra.
+var stdlibAbsent = map[string]string{
+	"getfenv : function":  "exemptions: getfenv/setfenv",
+	"setfenv : function":  "exemptions: getfenv/setfenv",
+	"module : function":   "exemptions: require/module/package",
+	"require : function":  "exemptions: require/module/package",
+	"package : table":     "exemptions: require/module/package",
+	"newproxy : function": "undocumented 5.1 function creating a zero-size userdata; not in the 10 section 11 surface",
+	// Not a library name: lua.c, the standalone interpreter this test runs, sets it to the command
+	// line. A host embedding the library (wangshu's situation) never has it.
+	"arg : table": "set by the standalone lua.c interpreter, not by the library",
+
+	"string.dump : function": "exemptions: string.dump",
+
+	"os.execute : function":   "exemptions: os.execute",
+	"os.exit : function":      "10 section 9.3: must not exit the host process; not registered",
+	"os.remove : function":    "10 section 9.3: file-system side effect; not registered",
+	"os.rename : function":    "10 section 9.3: file-system side effect; not registered",
+	"os.tmpname : function":   "10 section 9.3: file-system side effect; not registered",
+	"os.setlocale : function": "10 section 9.4: pure Go has no C locale; not registered",
+
+	"io.open : function":    "exemptions: io library lacks open/popen/tmpfile/seek",
+	"io.popen : function":   "exemptions: io.popen/io.tmpfile",
+	"io.tmpfile : function": "exemptions: io.popen/io.tmpfile",
+	"io.close : function":   "10 section 10: the global form depends on io.open; standard-stream f:close() is provided",
+	"io.flush : function":   "10 section 10: default-output management depends on io.output; f:flush() is provided",
+	"io.input : function":   "10 section 10: default streams are fixed to the process stdin/stdout",
+	"io.output : function":  "10 section 10: default streams are fixed to the process stdin/stdout",
+	"io.type : function":    "10 section 10: not provided while every handle is a standard stream",
+
+	"(file metatable).__gc : function":    "no real files to close on collection",
+	"(file metatable).seek : function":    "exemptions: io library lacks open/popen/tmpfile/seek",
+	"(file metatable).setvbuf : function": "standard streams are unbuffered; nothing to configure",
+
+	"debug.debug : function":        "exemptions: debug library provides only traceback/getinfo",
+	"debug.getfenv : function":      "exemptions: debug library provides only traceback/getinfo",
+	"debug.gethook : function":      "exemptions: debug library provides only traceback/getinfo",
+	"debug.getlocal : function":     "exemptions: debug library provides only traceback/getinfo",
+	"debug.getmetatable : function": "exemptions: debug library provides only traceback/getinfo",
+	"debug.getregistry : function":  "exemptions: debug library provides only traceback/getinfo",
+	"debug.getupvalue : function":   "exemptions: debug library provides only traceback/getinfo",
+	"debug.setfenv : function":      "exemptions: debug library provides only traceback/getinfo",
+	"debug.sethook : function":      "exemptions: debug library provides only traceback/getinfo",
+	"debug.setlocal : function":     "exemptions: debug library provides only traceback/getinfo",
+	"debug.setmetatable : function": "exemptions: debug library provides only traceback/getinfo",
+	"debug.setupvalue : function":   "exemptions: debug library provides only traceback/getinfo",
+}
+
+// TestDiff_StdlibNames compares the standard library's whole name set against a live lua5.1, in both
+// directions. It is the existence differential that 10 section 12.3 calls for.
+func TestDiff_StdlibNames(t *testing.T) {
+	oracle := findOracle()
+	if oracle == "" {
+		t.Skip("lua5.1 oracle not found on PATH; skipping difftest")
+	}
+	lines := func(s string) map[string]bool {
+		m := map[string]bool{}
+		for _, l := range strings.Split(strings.TrimSpace(s), "\n") {
+			if l != "" {
+				m[l] = true
+			}
+		}
+		return m
+	}
+	puc := lines(runOracle(t, oracle, wrapForOracle(stdlibNamesSrc)))
+	got := lines(runWangshu(t, stdlibNamesSrc))
+	if len(puc) < 100 || len(got) < 60 {
+		t.Fatalf("name dump looks truncated: lua5.1 %d lines, wangshu %d lines", len(puc), len(got))
+	}
+
+	var extra, missing, stale []string
+	for l := range got {
+		if !puc[l] {
+			extra = append(extra, l)
+		}
+	}
+	for l := range puc {
+		if !got[l] && stdlibAbsent[l] == "" {
+			missing = append(missing, l)
+		}
+	}
+	for l := range stdlibAbsent {
+		if got[l] || !puc[l] {
+			stale = append(stale, l)
+		}
+	}
+	sort.Strings(extra)
+	sort.Strings(missing)
+	sort.Strings(stale)
+	if len(extra) > 0 {
+		t.Errorf("wangshu defines names official Lua 5.1 does not (never allowed):\n  %s", strings.Join(extra, "\n  "))
+	}
+	if len(missing) > 0 {
+		t.Errorf("official Lua 5.1 defines names wangshu lacks and stdlibAbsent does not list:\n  %s", strings.Join(missing, "\n  "))
+	}
+	if len(stale) > 0 {
+		t.Errorf("stdlibAbsent lists names that wangshu now has, or that lua5.1 does not define:\n  %s", strings.Join(stale, "\n  "))
 	}
 }
