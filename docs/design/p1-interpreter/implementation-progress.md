@@ -709,6 +709,39 @@ glibc 的结果也跟着变。望舒在两种 tzdata 上都与 glibc `mktime` �
 [#323](https://github.com/Liam0205/wangshu/issues/323)。过程记录见
 [#309 复盘](../../../llmdoc/memory/reflections/2026-11-10-issue309-oracle-fp-contraction.md)。
 
+## 2026-11-25：标准库删掉两个 5.1 没有的名字，`pairs` / `ipairs` 私有持有迭代器（#329）
+
+nightly 的 go-fuzz（p1，`FuzzOracleDiff`）找到 `t={}table.unpack(t)`：官方 Lua 5.1 报
+`attempt to call field 'unpack' (a nil value)`，望舒照常执行。在当前 master 上精确重放可以复现，是产品缺陷。
+
+把望舒和 `lua5.1` 的全部全局名字、库字段各导出一份比对，望舒多出来的名字一共两个：
+
+| 多出的名字 | 来历 | 连带的行为差异 |
+|---|---|---|
+| `table.unpack` | `OpenAll` 从 2026-06-11 起多注册的别名，与 [10 §4.5](./10-stdlib.md) 写的「不提供」相反 | 探测 `table.unpack` 的脚本走了 5.2 的分支 |
+| `__ipairs_iter` | `ipairs` 的内部迭代器被放进全局表，`ipairs` 每次调用去全局表里查它 | 清空它 `ipairs` 就报错 |
+
+`pairs` 用同样的办法查全局 `next`，所以还有两处差异：`next = nil` 之后 `pairs` 报错（官方照常遍历）；
+`pairs({}) == next` 是 `true`（官方是 `false`）。
+
+| 改动 | 位置 | 内容 |
+|---|---|---|
+| 删 `table.unpack` | `internal/stdlib/stdlib.go` `OpenAll` | 不再注册 |
+| 迭代器私有化 | 同文件 `registerIterFactory` | `pairs` / `ipairs` 各自在注册时建好迭代器的宿主闭包，由工厂函数的 Go 闭包捕获，同时挂在工厂函数的 upvalue 上让 GC 保活；不再有 `__ipairs_iter`，`pairs` 不再读全局 `next` |
+| fuzz 的 prelude | `internal/oracle/prelude.go` | 原来靠包装全局 `__ipairs_iter` 来拦 `luaL_checkint` 的未定义行为区间，改成包装 `ipairs`、发放同一个带检查的迭代器 |
+| 行为测试 | `test/language/stdlib_names_test.go`（新增） | 19 个用例，期望值逐个在 lua5.1 5.1.5 上实际执行核对过 |
+| 名字集合比对 | `test/difftest/corners_test.go` `TestDiff_StdlibNames`（新增） | 对着真实的 `lua5.1` 双向比对；望舒多出的名字一律失败，缺少的逐个登记在 `stdlibAbsent`（合入时 37 条） |
+| 语料 | `test/fuzz/testdata/fuzz/FuzzOracleDiff/` | 加入 #329 的输入和两条回归语料；原来写着 `__ipairs_iter` 的两条改成经 `ipairs({})` 取迭代器 |
+
+验证：`make all` 与 `make fuzz-oracle` 通过；三种构建下新测试通过。把 `stdlib.go` 的改动撤掉：行为测试 8 个用例
+失败，名字比对报出那两个多余名字，#329 的输入和一条回归语料失败。名字比对测试另做了两种变异（删一条登记、
+加一条过期登记），都会失败。
+
+**对使用者的影响**：调用 `table.unpack(...)` 的脚本会开始报错，改成 `unpack(...)` 即可（Lua 5.1 本来就只有后者）。
+
+机制见 [10 §4.4 / §4.5 / §12.3](./10-stdlib.md)，过程记录见
+[#329 复盘](../../../llmdoc/memory/reflections/2026-11-25-issue329-stdlib-extra-names.md)。
+
 ## 相关
 
 [00-overview](./00-overview.md) · [../engineering](../engineering.md) ·

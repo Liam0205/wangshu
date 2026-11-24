@@ -668,6 +668,7 @@ func DiffN(src string, runners ...Runner) DiffResult { /* N 方比对,§3.3 矩�
 豁免是「合法的不比对」,但豁免**滥用会掏空差分强度**(什么都豁免就什么都测不出)。纪律:
 
 - **豁免清单集中在一处**:`test/difftest/corners_test.go` 的 `exemptions`(`go test -v -run TestExemptions_Documented ./test/difftest/` 逐条列出),每条豁免**必须注明**:① 豁免什么(正则/用例标记)② 根因(为什么本质不可比,指向本文 §4.x)③ 范围(全局脱敏 / 仅某用例)。差分 harness 侧的跳过(C 未定义行为的区间、实现常数类护栏)不在这张表里,执行体在 `internal/oracle/prelude.go`。
+- **标准库的名字集合另有一个逐名字的执行体**(2026-11-25,#329):`exemptions` 是写给读者的分类说明,每条只产生一个 SKIP,它**不会因为实现多了或少了一个函数而失败**。同文件的 `TestDiff_StdlibNames` 才是会失败的那一份:它把望舒和 `lua5.1` 的全部全局名字、库字段、文件句柄方法、字符串元表各导出一份,双向比对。望舒多出的名字一律失败;望舒缺少的名字必须逐个登记在 `stdlibAbsent` 里。`table.unpack`(5.2 才有)和内部全局 `__ipairs_iter` 在这个测试出现之前留了五个多月,因为手工清单只能记录「缺什么」。细节见 [10](./10-stdlib.md) §12.3。
 - **「只断言存在」是第三种处理,不是豁免**:返回值随运行环境变化的函数(`collectgarbage("count")` / `gcinfo` / `os.time` / `os.clock` / `os.date("%Y")` 的位数 / `io.write` 能调用 / `loadfile` 失败时的返回形式)由同一文件的 `TestApprox_ExistenceOnly` 只断言返回值的类型和形式,不比数值。它们不是「不可比」,而是值本身随时间、内存和文件系统变化。`os.date` 的**指令输出**不在这一类,它逐字节比对(§4.6)。
 - **豁免分两类**:**结构性豁免**(地址、random、GC 数值、locale、libc 文本——本质不可比,§4.3-§4.6)是永久的;**gopher 偏差豁免**(§4.7)是「gopher-lua 偏离官方,望舒对齐官方」,**记录但以官方为准**,理论上可随 gopher 修复而移除。
 - **新增豁免需 review**:CI 里豁免清单的改动**高亮**(像 golden 改动一样在 PR diff 显眼),防「为让 fuzz 过而偷偷加豁免掩盖真 bug」。

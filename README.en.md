@@ -165,7 +165,7 @@ Wangshu implements the Lua 5.1 core language, with the same syntax surface as Lu
 
 | Category | Items | Reason |
 | --- | --- | --- |
-| Lua 5.2+ features | `rawlen`, `table.pack` / `table.move` | Not part of Lua 5.1 |
+| Lua 5.2+ features | `rawlen`, `table.unpack` / `table.pack` / `table.move` | Not part of Lua 5.1; `unpack` is a global |
 | Lua 5.3+ features | `math.tointeger` / `type` / `maxinteger` / `mininteger` | The integer type is a 5.3 feature |
 | Embedding safety | `os.execute`, `io.popen`, `os.exit` does not really exit, `loadfile` / `dofile` off by default | An embedded VM does not let scripts run a shell or read the filesystem beyond their scope; `loadfile` / `dofile` can be turned on with `Options.AllowFileLoad` |
 | Real file IO | `io.open` / `io.tmpfile` / `f:seek` | Needs filesystem access control and a `__gc` that closes files; not done yet |
