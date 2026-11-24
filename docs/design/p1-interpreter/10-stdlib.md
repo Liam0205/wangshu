@@ -726,9 +726,19 @@ func hostTonumber(vm *VM, th *Thread) int {
   段(下标 1..asize 顺序)后 node 段(node 数组物理顺序)**(01 §5.2 布局)。`next` 在 node 段从「k 所在槽的下一个
   非空槽」继续。
 - **`pairs(t)`** 返回三元组 `(next, t, nil)`,泛型 for(`for k,v in pairs(t)`)用它:每次 `TFORLOOP`(05 §10.2)
-  调 `next(t, ctrl)`,ctrl 从 nil 起步进。**不查 `__pairs`**(5.2+ 引入,07 §2.3 排除)——`pairs` 直接返回 `next`。
+  调 `next(t, ctrl)`,ctrl 从 nil 起步进。**不查 `__pairs`**(5.2+ 引入,07 §2.3 排除)。
 - **`ipairs(t)`** 返回 `(ipairsIterator, t, 0)`:迭代器每次取 `t[i+1]`,遇 nil 停。**只遍历数组段连续部分**(从 1
   到首个 nil),不遍历 hash 部分。**不查 `__ipairs`**(5.2 引入 5.3 废,排除)。
+- **`pairs` 和 `ipairs` 各自私有持有迭代器,不经过全局表**(2026-11-25,#329)。官方 `lbaselib.c` 的 `auxopen`
+  把这两个函数注册成带一个 upvalue 的 C 闭包,upvalue 就是迭代器(`pairs` 的是 `luaB_next`,`ipairs` 的是
+  `ipairsaux`)。由此有四条可观察的行为,望舒与之一致(`internal/stdlib/stdlib.go` 的 `registerIterFactory`):
+  ① 改写或清空全局 `next` 不影响 `pairs`(`next = nil` 之后 `pairs` 照常遍历);
+  ② `pairs({}) == next` 是 `false`——`pairs` 返回的是它自己的 upvalue,与全局 `next` 是两个函数对象;
+  ③ `ipairs` 的迭代器没有全局名字,脚本只能从 `ipairs` 的第一个返回值拿到它;
+  ④ 每个 State 里迭代器只有一个,所以 `pairs(a) == pairs(b)`、`ipairs(a) == ipairs(b)` 都是 `true`。
+  此前这两个函数每次调用都去全局表里查迭代器(`pairs` 查 `next`,`ipairs` 查一个望舒自己加的全局
+  `__ipairs_iter`),①②③ 都与官方不同。迭代器的宿主闭包同时挂在工厂函数的 upvalue 上,这样只要工厂函数还
+  可达,GC 就不会回收它(与 `coroutine.wrap` 持有协程的做法相同)。
 - **遍历序的差分口径**(呼应 06 §9.3/§11):`pairs`/`next` 的产出顺序由 table 的 array/node 布局决定,而 node
   布局受**字符串哈希(06 §9.3 JSHash)+ rehash 算法 + Brent 变体**影响。06 §9.3 已把哈希环锁成与官方一致;但
   `pairs` 序是否要求逐字节一致**是验收口径问题**,**由 [12](./12-testing-difftest.md) 定**(严格逐字节 vs 排序后
@@ -756,7 +766,9 @@ func hostUnpack(vm *VM, th *Thread) int {
 - **5.1 口径:`unpack` 是全局函数**(`unpack({1,2,3})` → `1, 2, 3`)。**5.2+ 把它移到 `table.unpack`**(全局
   `unpack` 在 5.2 废弃)。**P1 锁 5.1:提供全局 `unpack`,不提供 `table.unpack`**(若提供 table.unpack 会与官方
   5.1 多一个函数,差分时 `table.unpack` 在 5.1 是 nil)。**记口径**:差分基准是 5.1,全局 `unpack` 存在、
-  `table.unpack` 不存在。
+  `table.unpack` 不存在。**实现曾经与这一条相反**:`OpenAll` 从 2026-06-11 起多注册了一个 `table.unpack`
+  别名,直到 2026-11-23 nightly 的 go-fuzz 找到 `t={}table.unpack(t)`(官方报错、望舒照常执行,#329)才发现。
+  2026-11-25 已删除;现在由 §12.3 的名字集合比对测试防住这一类问题。
 - **返回可变个数**:`unpack` push j-i+1 个值,`return n`。调用点(`CALL C=0` 到 top)接收全部(05 §7.2)。
 - **大范围扩栈**:`unpack` 一个大表(`unpack(t)` t 有 1e6 元素)会压 1e6 个值上栈 → `ensureStack` 扩容(05 §1.4)。
   Lua 5.1 有 `unpack` 上限保护:超过栈上限报 `"too many results to unpack"`。**P1 对齐 5.1**,精确口径见下条。
@@ -2213,13 +2225,18 @@ wangshu.NewState(wangshu.Options{Exclude: []string{"os.execute", "os.exit"}})
   有**(否则差分时它们在 5.1 是 nil)。
 - **存在性差分用例**:遍历 5.1 的全部标准库函数名,验证望舒**同名存在 + 5.2+ 函数不存在**。这是 stdlib 差分的
   基础项(指向 12)。**P1 缺口的库**(package/部分 io/部分 debug)在存在性差分上**标注豁免**(已知 P1 未实现)。
-- **实际状态(2026-07-29 核对)**:`test/difftest/corners_test.go::exemptions` 里那三条已随 #205 改写——原来
-  写「三个标准流 + `io.read` 未提供」与「`debug` 库整个未注册」的两条,现在分别是「io 库不提供
-  open/popen/tmpfile/seek」与「debug 库只提供 traceback/getinfo」,如实描述**现在**缺什么。仍然欠的是
-  **遍历全部 5.1 函数名的那个存在性差分用例本身**——它还没写,所以「存在性必须一致」这一条至今只有
-  `exemptions` 这份手工清单当执行体。按 `llmdoc/guides/prove-the-path-under-test.md` §4.2 记成缺口:
-  一句没有执行体的声明比一个已知缺口更糟,这里明确它的执行体只覆盖到「已知缺什么」,不覆盖「有没有多出
-  5.2+ 的函数」。
+- **实际状态(2026-11-25,#329)**:存在性差分用例已经写了,是 `test/difftest/corners_test.go` 的
+  `TestDiff_StdlibNames`。它在望舒和真实的 `lua5.1` 上各导出一份名字清单(全部字符串键的全局、各库表的字段、
+  文件句柄的元表和方法、字符串元表,每行「名字 : 类型」),然后**双向**比对:
+  - **望舒有而 5.1 没有的名字:一律失败**,没有登记表可以放行。
+  - **5.1 有而望舒没有的名字:必须登记在同文件的 `stdlibAbsent` 里并写明原因**(条数以该表为准,其中 `arg` 是
+    独立解释器 `lua.c` 设的,不属于库)。没登记的失败;登记了但望舒其实已经有、或 5.1 其实没有的,也失败。
+  这个用例写出来之前,「存在性必须一致」只有 `exemptions` 那份手工清单当执行体,而那份清单只记「缺什么」,
+  看不到「多了什么」。`table.unpack` 和 `__ipairs_iter` 这两个多出来的名字因此在仓库里留了五个多月(#329)。
+  `exemptions` 仍然保留,它面向读者解释每一类为什么不提供;`stdlibAbsent` 是逐个名字的、会失败的那一份。
+  注意 §11 总表 os 行的「△ 简化」一栏写的 `exit` / `remove` / `rename` / `tmpname` / `setlocale`、io 行的
+  `close` / `input` / `output` / `type`,**实际都没有注册**(调用它们得到的是「attempt to call field … (a nil
+  value)」),`stdlibAbsent` 按实际情况把它们登记为缺少。
 
 ---
 
@@ -2283,7 +2300,7 @@ stdlib 的 shadow stack 纪律(§3)漏 Pin 是**最难调的 bug 类**(06 §6.3:
 | **string** | len, sub, upper, lower, rep, reverse, byte, char, format, find, match, gmatch, gsub(**全 pattern 全集** §6) | — | string.dump(字节码序列化) |
 | **table** | insert, remove, concat, sort, maxn | getn, setn(=`#t`/空操作) | table.unpack/pack/move(5.2+) |
 | **math** | abs, ceil, floor, sqrt, sin, cos, tan, asin, acos, atan, atan2, exp, log, log10, pow, fmod, modf, max, min, random, randomseed, huge, pi, rad, deg, frexp, ldexp, sinh, cosh, tanh | — | math.tointeger/type/maxinteger/mininteger(5.3 整数) |
-| **os** | time, clock, date, difftime, getenv | exit(默认不真退出), remove, rename, tmpname, setlocale(仅 "C") | os.execute(默认禁用,安全) |
+| **os** | time, clock, date, difftime, getenv | — | os.execute(默认禁用,安全);exit, remove, rename, tmpname, setlocale(原计划做简化版,**实际未注册**,见 §12.3) |
 | **io** | write, read, stdout, stdin, stderr(#205 已交付;标准流是真 file-handle userdata,见 §10.1.1 / §10.2.1)+ 标准流的 file:write/close/read/lines/flush | lines(无参已提供、带文件名抬错), close, input, output, type | io.open, io.popen, io.tmpfile, file:seek(需要真实文件) |
 | **coroutine** | create, resume, yield, status, wrap, running(**机制全在 08**) | — | — |
 | **debug**(09 §13) | traceback(#205 已交付,含「显式 nil 原样返回」) | getinfo(只填 P1 能诚实给出的字段:currentline / source / short_src / what / func;nups / activelines / namewhat **宁缺不假造**) | sethook, getlocal/setlocal, getupvalue/setupvalue, getregistry(需要解释器未暴露的内省钩子) |

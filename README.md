@@ -164,7 +164,7 @@ for i := 0; i < 1000; i++ {
 
 | 类别 | 具体项 | 原因 |
 | --- | --- | --- |
-| Lua 5.2+ 特性 | `rawlen`、`table.pack` / `table.move` | 不属于 Lua 5.1 |
+| Lua 5.2+ 特性 | `rawlen`、`table.unpack` / `table.pack` / `table.move` | 不属于 Lua 5.1；`unpack` 是全局函数 |
 | Lua 5.3+ 特性 | `math.tointeger` / `type` / `maxinteger` / `mininteger` | 整数类型是 5.3 的特性 |
 | 嵌入安全 | `os.execute`、`io.popen`、`os.exit` 不真的退出进程、`loadfile` / `dofile` 默认关闭 | 嵌入式 VM 不让脚本执行 shell 或越权读文件系统；`loadfile` / `dofile` 可以用 `Options.AllowFileLoad` 打开 |
 | 真实文件 IO | `io.open` / `io.tmpfile` / `f:seek` | 需要文件系统访问控制和关闭文件的 `__gc`，目前不做 |

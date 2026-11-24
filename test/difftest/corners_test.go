@@ -155,7 +155,7 @@ var exemptions = []struct {
 }{
 	{"rawlen", "5.2 特性,10 §11 base ❌ 列(5.1 无 rawlen,# 走 LEN)"},
 	{"require/module/package", "10 §11 base ❌ 列 + §4.7:嵌入式宿主经 Compile 提供脚本,不从文件系统 require"},
-	{"table.pack/move", "5.2+ 特性,10 §11 table ❌ 列"},
+	{"table.unpack/pack/move", "5.2+ 特性,10 §11 table ❌ 列;5.1 的 unpack 是全局函数"},
 	{"string.dump", "10 §11 string ❌ 列(字节码序列化;自定义 ISA 不兼容官方 .luc)"},
 	{"math.tointeger/type/maxinteger/mininteger", "5.3 整数特性,10 §11 math ❌ 列"},
 	{"os.execute", "10 §11 os ❌ 列(安全:嵌入式 VM 不让脚本跑 shell)"},
