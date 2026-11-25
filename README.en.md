@@ -157,8 +157,9 @@ For long-lived State scenarios (rule-engine hot reload / data-flow transformatio
 Wangshu implements the Lua 5.1 core language, with the same syntax surface as LuaJIT:
 
 - **Language**: the full syntax of the Lua 5.1 reference manual; all 38 bytecode opcodes. `VARARG` runs only on the P1 interpreter, so functions that use it are not promoted to P3/P4.
-- **Standard library**: base, string, table, math, os and coroutine are all provided.
-- **io**: `io.write` / `io.read` / `io.lines` and the three standard streams `io.stdout` / `io.stdin` / `io.stderr`. The streams are real file-handle userdata supporting `:write` / `:read` / `:lines` / `:flush` / `:close`. The parts that need to open real files are not provided; see the table below.
+- **Standard library**: base, string, table, math and coroutine are provided in full, apart from what the table below lists.
+- **os**: `os.time` / `os.clock` / `os.date` / `os.difftime` / `os.getenv`. The rest is not provided; see the table below.
+- **io**: `io.write` / `io.read` / `io.lines` and the three standard streams `io.stdout` / `io.stdin` / `io.stderr`. The streams are real file-handle userdata supporting `:write` / `:read` / `:lines` / `:flush` / `:close`. The parts that need to open real files, and the functions that manage the default streams, are not provided; see the table below.
 - **debug**: `debug.traceback` and `debug.getinfo`. `getinfo` fills only the fields it can answer truthfully (`currentline` / `source` / `short_src` / `what` / `func`); `nups` / `activelines` / `namewhat` are left out.
 
 ### Not provided, or different from the official implementation
@@ -167,12 +168,15 @@ Wangshu implements the Lua 5.1 core language, with the same syntax surface as Lu
 | --- | --- | --- |
 | Lua 5.2+ features | `rawlen`, `table.unpack` / `table.pack` / `table.move` | Not part of Lua 5.1; `unpack` is a global |
 | Lua 5.3+ features | `math.tointeger` / `type` / `maxinteger` / `mininteger` | The integer type is a 5.3 feature |
-| Embedding safety | `os.execute`, `io.popen`, `os.exit` does not really exit, `loadfile` / `dofile` off by default | An embedded VM does not let scripts run a shell or read the filesystem beyond their scope; `loadfile` / `dofile` can be turned on with `Options.AllowFileLoad` |
-| Real file IO | `io.open` / `io.tmpfile` / `f:seek` | Needs filesystem access control and a `__gc` that closes files; not done yet |
-| debug interface | `debug.sethook` / `getlocal` / `setlocal` / `getupvalue` / `setupvalue` / `getregistry` | Needs interpreter-internal hooks |
+| Embedding safety | `os.execute`, `os.exit`, `os.remove` / `os.rename` / `os.tmpname` and `io.popen` are not provided; `loadfile` / `dofile` are off by default | An embedded VM does not let scripts run a shell, end the host process or change the filesystem; `loadfile` / `dofile` can be turned on with `Options.AllowFileLoad` |
+| Real file IO | `io.open` / `io.tmpfile` / `f:seek` / `f:setvbuf` | Needs filesystem access control and a `__gc` that closes files; not done yet |
+| Default-stream management | `io.input` / `io.output` / `io.close` / `io.flush` / `io.type` | The default input and output are fixed to the process stdin / stdout; calling `f:close()` / `f:flush()` on a handle works |
+| Locale | `os.setlocale` | A pure Go implementation has no C locale; character classes and `os.date` always behave as in the C locale |
+| debug interface | Everything in `debug` other than `traceback` / `getinfo` (`sethook` / `gethook` / `getlocal` / `setlocal` / `getupvalue` / `setupvalue` / `getregistry` / `getmetatable` / `setmetatable` / `getfenv` / `setfenv` / `debug`) | Needs interpreter-internal hooks |
 | Module system | `require` / `module` / `package` | The host supplies scripts through `Compile`; modules are not loaded from the filesystem |
 | Bytecode serialisation | `string.dump` | Wangshu's bytecode format is not compatible with the official `.luc` |
 | Environment ops | `getfenv` / `setfenv` | Conflicts with the shape analysis that tiered execution relies on |
+| Undocumented function | `newproxy` | Not in the official 5.1 manual; not provided |
 | Incremental GC | `collectgarbage("step")` / `collectgarbage("setstepmul")` | The GC is stop-the-world with no incremental parameters; the calls return placeholder values |
 | Hang protection | Catastrophic pattern backtracking (e.g. `.*.+%A*x`) | Past `1<<20` backtracking steps it reports `pattern too complex`; the official implementation keeps going |
 | C undefined behaviour | `string.char` given a number outside the int range (including NaN, ±inf) | The official result comes from C undefined behaviour and differs between x86-64 and arm64; Wangshu always uses the x86-64 result |

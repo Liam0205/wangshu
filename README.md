@@ -156,8 +156,9 @@ for i := 0; i < 1000; i++ {
 望舒实现 Lua 5.1 的核心语言，语法范围与 LuaJIT 一致：
 
 - **语言**：Lua 5.1 参考手册的全部语法；38 个字节码 opcode 全部实现。其中 `VARARG` 只在 P1 解释器上执行，用到它的函数不会升到 P3/P4。
-- **标准库**：base、string、table、math、os、coroutine 全部提供。
-- **io**：提供 `io.write` / `io.read` / `io.lines` 和三个标准流 `io.stdout` / `io.stdin` / `io.stderr`。标准流是真正的文件句柄 userdata，支持 `:write` / `:read` / `:lines` / `:flush` / `:close`。需要打开真实文件的部分没有提供，见下表。
+- **标准库**：base、string、table、math、coroutine 除下表列出的以外全部提供。
+- **os**：提供 `os.time` / `os.clock` / `os.date` / `os.difftime` / `os.getenv`。其余没有提供，见下表。
+- **io**：提供 `io.write` / `io.read` / `io.lines` 和三个标准流 `io.stdout` / `io.stdin` / `io.stderr`。标准流是真正的文件句柄 userdata，支持 `:write` / `:read` / `:lines` / `:flush` / `:close`。需要打开真实文件的部分和管理默认流的函数没有提供，见下表。
 - **debug**：提供 `debug.traceback` 和 `debug.getinfo`。`getinfo` 只返回能如实给出的字段（`currentline` / `source` / `short_src` / `what` / `func`），`nups` / `activelines` / `namewhat` 不返回。
 
 ### 不提供或与官方不同的部分
@@ -166,12 +167,15 @@ for i := 0; i < 1000; i++ {
 | --- | --- | --- |
 | Lua 5.2+ 特性 | `rawlen`、`table.unpack` / `table.pack` / `table.move` | 不属于 Lua 5.1；`unpack` 是全局函数 |
 | Lua 5.3+ 特性 | `math.tointeger` / `type` / `maxinteger` / `mininteger` | 整数类型是 5.3 的特性 |
-| 嵌入安全 | `os.execute`、`io.popen`、`os.exit` 不真的退出进程、`loadfile` / `dofile` 默认关闭 | 嵌入式 VM 不让脚本执行 shell 或越权读文件系统；`loadfile` / `dofile` 可以用 `Options.AllowFileLoad` 打开 |
-| 真实文件 IO | `io.open` / `io.tmpfile` / `f:seek` | 需要文件系统访问控制和关闭文件的 `__gc`，目前不做 |
-| debug 接口 | `debug.sethook` / `getlocal` / `setlocal` / `getupvalue` / `setupvalue` / `getregistry` | 需要解释器内部的钩子 |
+| 嵌入安全 | `os.execute`、`os.exit`、`os.remove` / `os.rename` / `os.tmpname`、`io.popen` 不提供；`loadfile` / `dofile` 默认关闭 | 嵌入式 VM 不让脚本执行 shell、结束宿主进程或改动文件系统；`loadfile` / `dofile` 可以用 `Options.AllowFileLoad` 打开 |
+| 真实文件 IO | `io.open` / `io.tmpfile` / `f:seek` / `f:setvbuf` | 需要文件系统访问控制和关闭文件的 `__gc`，目前不做 |
+| 默认流管理 | `io.input` / `io.output` / `io.close` / `io.flush` / `io.type` | 默认输入输出固定为进程的 stdin / stdout；对句柄调用 `f:close()` / `f:flush()` 是可以的 |
+| locale | `os.setlocale` | 纯 Go 实现没有 C locale，字符分类和 `os.date` 固定为 C locale 的行为 |
+| debug 接口 | `debug` 库里除 `traceback` / `getinfo` 以外的函数（`sethook` / `gethook` / `getlocal` / `setlocal` / `getupvalue` / `setupvalue` / `getregistry` / `getmetatable` / `setmetatable` / `getfenv` / `setfenv` / `debug`） | 需要解释器内部的钩子 |
 | 模块系统 | `require` / `module` / `package` | 宿主通过 `Compile` 提供脚本，不从文件系统加载模块 |
 | 字节码序列化 | `string.dump` | 望舒的字节码格式与官方 `.luc` 不兼容 |
 | 环境操作 | `getfenv` / `setfenv` | 与分层执行的形状分析冲突 |
+| 未写入手册的函数 | `newproxy` | 官方 5.1 里没有文档的函数，不提供 |
 | 增量 GC | `collectgarbage("step")` / `collectgarbage("setstepmul")` | GC 是 stop-the-world，没有增量参数，调用只返回占位值 |
 | 防挂起 | 模式匹配的灾难性回溯（如 `.*.+%A*x`） | 回溯超过 `1<<20` 步时报 `pattern too complex`，官方会一直算下去 |
 | C 未定义行为 | `string.char` 收到超出 int 范围的数（含 NaN、±inf） | 官方行为由 C 未定义行为决定，x86-64 与 arm64 结果不同；望舒固定采用 x86-64 的结果 |

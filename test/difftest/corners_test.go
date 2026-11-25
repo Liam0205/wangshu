@@ -10,6 +10,7 @@
 package difftest
 
 import (
+	"os"
 	"sort"
 	"strings"
 	"testing"
@@ -165,7 +166,8 @@ var exemptions = []struct {
 	{"io 库不提供 open/popen/tmpfile/seek", "三个标准流与 io.read / io.lines / :write / :close / :flush / :read / :lines 现已提供(file-handle userdata,type() 报 userdata,与 lua5.1 一致);仍缺的是需要真实文件的部分——io.open / io.popen / io.tmpfile / f:seek,按 10 §11 的 ❌ 列。io.lines(filename) 因此会抬错而不是静默返回空迭代器"},
 	{"getfenv/setfenv", "不在 10 §11 提供面任何列;唯一设计出处是 P2 不升层形状 F4(p2-bridge §358)——按设计豁免"},
 	{"load(func) 渐进分块语义差", "已实现 reader 循环全量拼接;与 5.1 流式编译的差异仅在超大 chunk 内存峰值,语义等价"},
-	{"os.exit 真退出", "10 §11:默认不真退出宿主进程(嵌入式安全)"},
+	{"os.exit/remove/rename/tmpname/setlocale", "未注册(10 §9.5)。原设计是做简化版(os.exit 不真退出宿主进程、setlocale 只支持 C、文件操作受沙箱限制),一直没有做;要不要补见 issue #330"},
+	{"io.close/flush/input/output/type", "未注册(10 §10.1.1)。默认输入输出固定为进程的 stdin/stdout;句柄上的 f:close() / f:flush() 已提供。要不要补见 issue #330"},
 	{"collectgarbage step/setstepmul 精确语义", "10 §13:STW GC 无增量调参,占位返回;数值不可逐字节比"},
 	{"pattern 灾难性回溯有界失败", "回溯预算 1<<20 步:`.*.+%A*x` 级灾难回溯报 'pattern too complex',oracle 慢速算完——嵌入式防挂起裁量(官方成功/本实现报错的有意分歧)"},
 	{"loadfile/dofile 默认禁用", "文件系统读默认关(不可信脚本越权探测面);Options.AllowFileLoad 显式开启后行为对齐官方"},
@@ -266,9 +268,14 @@ for _, k in ipairs(keys(sm)) do out[#out + 1] = "(string metatable)." .. k .. " 
 return table.concat(out, "\n")`
 
 // stdlibAbsent is every name official Lua 5.1.5 defines that wangshu does not, and why. It is the
-// executable form of the "not provided" rows in the README and of `exemptions` above: a name missing
-// from wangshu that is NOT listed here fails TestDiff_StdlibNames, and so does a listed name that
-// wangshu has since gained (the entry must then be deleted).
+// per-name, failing counterpart of `exemptions` above: a name missing from wangshu that is NOT listed
+// here fails TestDiff_StdlibNames, and so does a listed name that wangshu has since gained (the entry
+// must then be deleted). A reason of the form "exemptions: X" points at the exemptions entry named X;
+// TestStdlibAbsentReasonsResolve keeps those pointers from going stale.
+//
+// The README's "not provided" table is written from this map, and TestStdlibAbsentIsInREADME fails
+// when a name listed here has no row there. Two entries are excused because they are not library API
+// a script would call: arg, and the file metatable's __gc.
 //
 // There is deliberately no matching table for the other direction. wangshu must define nothing that
 // 5.1 lacks; an extra name is how #329 happened (table.unpack is 5.2's, and the ipairs iterator was
@@ -289,37 +296,37 @@ var stdlibAbsent = map[string]string{
 	"string.dump : function": "exemptions: string.dump",
 
 	"os.execute : function":   "exemptions: os.execute",
-	"os.exit : function":      "10 section 9.3: must not exit the host process; not registered",
-	"os.remove : function":    "10 section 9.3: file-system side effect; not registered",
-	"os.rename : function":    "10 section 9.3: file-system side effect; not registered",
-	"os.tmpname : function":   "10 section 9.3: file-system side effect; not registered",
-	"os.setlocale : function": "10 section 9.4: pure Go has no C locale; not registered",
+	"os.exit : function":      "exemptions: os.exit/remove/rename/tmpname/setlocale",
+	"os.remove : function":    "exemptions: os.exit/remove/rename/tmpname/setlocale",
+	"os.rename : function":    "exemptions: os.exit/remove/rename/tmpname/setlocale",
+	"os.tmpname : function":   "exemptions: os.exit/remove/rename/tmpname/setlocale",
+	"os.setlocale : function": "exemptions: os.exit/remove/rename/tmpname/setlocale",
 
-	"io.open : function":    "exemptions: io library lacks open/popen/tmpfile/seek",
+	"io.open : function":    "exemptions: io 库不提供 open/popen/tmpfile/seek",
 	"io.popen : function":   "exemptions: io.popen/io.tmpfile",
 	"io.tmpfile : function": "exemptions: io.popen/io.tmpfile",
-	"io.close : function":   "10 section 10: the global form depends on io.open; standard-stream f:close() is provided",
-	"io.flush : function":   "10 section 10: default-output management depends on io.output; f:flush() is provided",
-	"io.input : function":   "10 section 10: default streams are fixed to the process stdin/stdout",
-	"io.output : function":  "10 section 10: default streams are fixed to the process stdin/stdout",
-	"io.type : function":    "10 section 10: not provided while every handle is a standard stream",
+	"io.close : function":   "exemptions: io.close/flush/input/output/type",
+	"io.flush : function":   "exemptions: io.close/flush/input/output/type",
+	"io.input : function":   "exemptions: io.close/flush/input/output/type",
+	"io.output : function":  "exemptions: io.close/flush/input/output/type",
+	"io.type : function":    "exemptions: io.close/flush/input/output/type",
 
 	"(file metatable).__gc : function":    "no real files to close on collection",
-	"(file metatable).seek : function":    "exemptions: io library lacks open/popen/tmpfile/seek",
+	"(file metatable).seek : function":    "exemptions: io 库不提供 open/popen/tmpfile/seek",
 	"(file metatable).setvbuf : function": "standard streams are unbuffered; nothing to configure",
 
-	"debug.debug : function":        "exemptions: debug library provides only traceback/getinfo",
-	"debug.getfenv : function":      "exemptions: debug library provides only traceback/getinfo",
-	"debug.gethook : function":      "exemptions: debug library provides only traceback/getinfo",
-	"debug.getlocal : function":     "exemptions: debug library provides only traceback/getinfo",
-	"debug.getmetatable : function": "exemptions: debug library provides only traceback/getinfo",
-	"debug.getregistry : function":  "exemptions: debug library provides only traceback/getinfo",
-	"debug.getupvalue : function":   "exemptions: debug library provides only traceback/getinfo",
-	"debug.setfenv : function":      "exemptions: debug library provides only traceback/getinfo",
-	"debug.sethook : function":      "exemptions: debug library provides only traceback/getinfo",
-	"debug.setlocal : function":     "exemptions: debug library provides only traceback/getinfo",
-	"debug.setmetatable : function": "exemptions: debug library provides only traceback/getinfo",
-	"debug.setupvalue : function":   "exemptions: debug library provides only traceback/getinfo",
+	"debug.debug : function":        "exemptions: debug 库只提供 traceback/getinfo",
+	"debug.getfenv : function":      "exemptions: debug 库只提供 traceback/getinfo",
+	"debug.gethook : function":      "exemptions: debug 库只提供 traceback/getinfo",
+	"debug.getlocal : function":     "exemptions: debug 库只提供 traceback/getinfo",
+	"debug.getmetatable : function": "exemptions: debug 库只提供 traceback/getinfo",
+	"debug.getregistry : function":  "exemptions: debug 库只提供 traceback/getinfo",
+	"debug.getupvalue : function":   "exemptions: debug 库只提供 traceback/getinfo",
+	"debug.setfenv : function":      "exemptions: debug 库只提供 traceback/getinfo",
+	"debug.sethook : function":      "exemptions: debug 库只提供 traceback/getinfo",
+	"debug.setlocal : function":     "exemptions: debug 库只提供 traceback/getinfo",
+	"debug.setmetatable : function": "exemptions: debug 库只提供 traceback/getinfo",
+	"debug.setupvalue : function":   "exemptions: debug 库只提供 traceback/getinfo",
 }
 
 // TestDiff_StdlibNames compares the standard library's whole name set against a live lua5.1, in both
@@ -371,5 +378,100 @@ func TestDiff_StdlibNames(t *testing.T) {
 	}
 	if len(stale) > 0 {
 		t.Errorf("stdlibAbsent lists names that wangshu now has, or that lua5.1 does not define:\n  %s", strings.Join(stale, "\n  "))
+	}
+}
+
+// TestStdlibAbsentReasonsResolve keeps the "exemptions: X" reasons in stdlibAbsent pointing at an
+// entry that exists. Without it, renaming or deleting an exemptions entry leaves the per-name table
+// citing a category nobody can look up.
+func TestStdlibAbsentReasonsResolve(t *testing.T) {
+	names := map[string]bool{}
+	for _, e := range exemptions {
+		names[e.name] = true
+	}
+	for name, reason := range stdlibAbsent {
+		if ref, ok := strings.CutPrefix(reason, "exemptions: "); ok && !names[ref] {
+			t.Errorf("stdlibAbsent[%q] cites exemptions entry %q, which does not exist", name, ref)
+		}
+	}
+}
+
+// TestStdlibAbsentIsInREADME checks that every library name wangshu lacks is listed in the "not
+// provided" section of both READMEs. The READMEs said "os is fully provided" and "os.exit does not
+// really exit" for months while neither was true (#329); the section is what a user reads to learn
+// what their script cannot call, so it is held to the same per-name list as the test above.
+//
+// A name counts as listed when one table row of the section mentions it: `lib.name` spelled out, or
+// the bare name on a row that also names its library (rows abbreviate, e.g. "debug.sethook /
+// getlocal"), or `f:name` for a file method.
+func TestStdlibAbsentIsInREADME(t *testing.T) {
+	excused := map[string]bool{"arg : table": true, "(file metatable).__gc : function": true}
+	for _, readme := range []struct{ path, heading string }{
+		{"../../README.md", "### 不提供或与官方不同的部分"},
+		{"../../README.en.md", "### Not provided, or different from the official implementation"},
+	} {
+		raw, err := os.ReadFile(readme.path)
+		if err != nil {
+			t.Fatalf("read %s: %v", readme.path, err)
+		}
+		_, section, ok := strings.Cut(string(raw), readme.heading)
+		if !ok {
+			t.Fatalf("%s: heading %q not found", readme.path, readme.heading)
+		}
+		if i := strings.Index(section, "\n## "); i >= 0 {
+			section = section[:i]
+		}
+		var rows []string
+		for _, l := range strings.Split(section, "\n") {
+			if strings.HasPrefix(l, "|") {
+				rows = append(rows, l)
+			}
+		}
+		if len(rows) < 8 {
+			t.Fatalf("%s: only %d table rows under %q; the section moved or changed format", readme.path, len(rows), readme.heading)
+		}
+		// word reports whether w occurs in row as a whole name, not as part of a longer one.
+		isIdent := func(c byte) bool {
+			return c == '_' || c == '.' || c == ':' || (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+		}
+		word := func(row, w string) bool {
+			for from := 0; ; {
+				i := strings.Index(row[from:], w)
+				if i < 0 {
+					return false
+				}
+				i += from
+				end := i + len(w)
+				if (i == 0 || !isIdent(row[i-1])) && (end == len(row) || !isIdent(row[end])) {
+					return true
+				}
+				from = i + 1
+			}
+		}
+		for entry := range stdlibAbsent {
+			if excused[entry] {
+				continue
+			}
+			name, _, _ := strings.Cut(entry, " : ")
+			listed := false
+			for _, row := range rows {
+				switch {
+				case strings.HasPrefix(name, "(file metatable)."):
+					listed = strings.Contains(row, "`f:"+strings.TrimPrefix(name, "(file metatable).")+"`")
+				case strings.Contains(name, "."):
+					lib, fn, _ := strings.Cut(name, ".")
+					listed = strings.Contains(row, "`"+name+"`") ||
+						(strings.Contains(row, "`"+lib+".") || strings.Contains(row, "`"+lib+"`")) && word(row, fn)
+				default:
+					listed = strings.Contains(row, "`"+name+"`")
+				}
+				if listed {
+					break
+				}
+			}
+			if !listed {
+				t.Errorf("%s: %q is in stdlibAbsent but no row of the \"not provided\" section lists it", readme.path, name)
+			}
+		}
 	}
 }
