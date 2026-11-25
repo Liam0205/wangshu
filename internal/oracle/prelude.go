@@ -603,15 +603,18 @@ end)(tonumber)
 -- It has no global name on either engine (wangshu used to publish it as __ipairs_iter, #329): a
 -- script reaches it only as ipairs' first result, so ipairs is wrapped to hand out a guarded
 -- iterator instead. ONE guarded function, created here, so ipairs(a) == ipairs(b) still compares
--- the way it does unwrapped. The upvalue is NAMED ipairs so an argument error raised inside still
--- reads "bad argument #1 to 'ipairs'" (both engines take the name from the call site).
+-- the way it does unwrapped. The arguments are forwarded as received, so a missing control value
+-- still reads "got no value" and not "got nil". What the wrapping does change, identically on both
+-- engines, is where an argument error is attributed: it names the forwarding local below and
+-- carries a prelude position, like every other wrapper in this file. The upvalue is NAMED ipairs so
+-- that the factory's own argument error still says 'ipairs'.
 _G.ipairs = (function(ipairs)
   local raw = ipairs({})
-  local guarded = function(t, i, ...)
-    if __nonfinite(i) then
+  local guarded = function(...)
+    if __select("#", ...) >= 2 and __nonfinite((__select(2, ...))) then
       __error("` + LimitSentinel + `: luaL_checkint UB range", 0)
     end
-    return raw(t, i, ...)
+    return raw(...)
   end
   return function(...)
     local _, s, c = ipairs(...)

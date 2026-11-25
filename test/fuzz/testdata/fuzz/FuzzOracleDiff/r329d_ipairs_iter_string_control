@@ -1,0 +1,2 @@
+go test fuzz v1
+string("local f = ipairs({}) print(f({10, 20, 30}, \"1\")) print(f({10, 20, 30}, \"0x1\")) for i, v in f, {7, 8}, \"0\" do print(i, v) end print(pcall(f, {}, \"x\"))")
