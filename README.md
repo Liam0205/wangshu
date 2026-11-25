@@ -171,7 +171,7 @@ for i := 0; i < 1000; i++ {
 | 真实文件 IO | `io.open` / `io.tmpfile` / `f:seek` / `f:setvbuf` | 需要文件系统访问控制和关闭文件的 `__gc`，目前不做 |
 | 默认流管理 | `io.input` / `io.output` / `io.close` / `io.flush` / `io.type` | 默认输入输出固定为进程的 stdin / stdout；对句柄调用 `f:close()` / `f:flush()` 是可以的 |
 | locale | `os.setlocale` | 纯 Go 实现没有 C locale，字符分类和 `os.date` 固定为 C locale 的行为 |
-| debug 接口 | `debug` 库里除 `traceback` / `getinfo` 以外的函数（`sethook` / `gethook` / `getlocal` / `setlocal` / `getupvalue` / `setupvalue` / `getregistry` / `getmetatable` / `setmetatable` / `getfenv` / `setfenv` / `debug`） | 需要解释器内部的钩子 |
+| debug 接口 | `debug` 库里除 `traceback` / `getinfo` 以外的函数（`sethook` / `gethook` / `getlocal` / `setlocal` / `getupvalue` / `setupvalue` / `getregistry` / `getmetatable` / `setmetatable` / `getfenv` / `setfenv` / `debug.debug`） | 需要解释器内部的钩子 |
 | 模块系统 | `require` / `module` / `package` | 宿主通过 `Compile` 提供脚本，不从文件系统加载模块 |
 | 字节码序列化 | `string.dump` | 望舒的字节码格式与官方 `.luc` 不兼容 |
 | 环境操作 | `getfenv` / `setfenv` | 与分层执行的形状分析冲突 |
