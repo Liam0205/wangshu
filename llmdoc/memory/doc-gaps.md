@@ -5,6 +5,16 @@
 
 ## 当前缺口
 
+- **【未做，等维护者决定】os / io 库缺少十个官方函数，库开关没有实现** — `os.exit` / `remove` / `rename` / `tmpname` /
+  `setlocale` 和 `io.close` / `flush` / `input` / `output` / `type` 没有注册；设计文档 10 §12.1 的 `Libs` / `LibsSafe` /
+  `Exclude` 三层开关没有实现。README 和设计文档已按现状改过（2026-11-25，#329）。哪些要补、`os.exit` 取什么语义，见
+  [#330](https://github.com/Liam0205/wangshu/issues/330)。
+
+- **【未做，等维护者决定】主块之下的 C 帧在两处取了相反的答案** — 栈回溯和 `debug.getinfo` 按独立的 `lua5.1`（末尾有
+  `[C]: ?`，#279），C 调用深度按内嵌用法（下面 #281-#288 一条里登记的已知限制）。`FuzzOracleDiff` 的参照实现是内嵌用法，
+  所以含 `debug.traceback` / `debug.getinfo(2)` 的脚本在那里两侧输出不同；现有语料里没有这两个名字，nightly 还没有报过。
+  见 [#331](https://github.com/Liam0205/wangshu/issues/331)。
+
 - **【未做，等维护者决定】arm64 上望舒的 `%` 被编译成 FMA** — 与 amd64 结果不同，P3 与 P1/P4 之间也可能不同
   （后一条是从编译产物推出来的，没有在 arm64 机器上跑过）。见
   [#323](https://github.com/Liam0205/wangshu/issues/323)。改它会让 v0.3.0 的 30 天计时重新开始。

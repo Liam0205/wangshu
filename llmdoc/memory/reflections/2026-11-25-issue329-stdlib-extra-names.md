@@ -30,8 +30,33 @@ nightly 的 go-fuzz 找到 `t={}table.unpack(t)`：官方 Lua 5.1 报错，望�
 「两个集合必须相等这类规则，比对要做成常驻测试，而且两个方向都要比」：看到「A 必须等于 B」的规则先问执行体
 是什么；执行体是手工清单时，它表达不了的那个方向就是没人看的。
 
+## 独立审查指出的三件事
+
+合入前的独立审查没有发现阻塞问题，但有三处是我自己本该先做到的。
+
+**一、测试写着「热函数」，实际没有升层。** 我假设「循环 3000 次的函数会被升到 P3 / P4」，于是写了一个
+在循环里调用 `ipairs` / `pairs` 的用例，注释说它覆盖升层后的路径。实际上直接调用全局函数的函数会被判成
+不可升层，这个用例在三种构建下执行的都是解释器。能提前发现它的检查只有一行：读 `PromotionCount()`。
+[prove-the-path-under-test](../../guides/prove-the-path-under-test.md) 早就写了「测试通过不证明被测路径被执行」，
+我没有照做。改成 `TestTiered_StdlibNames`，把「升层次数大于 0」写成断言。
+
+**二、发现文档与实现不一致，只改了一处。** 核对名字集合时我确认了 `os.exit` 等十个函数没有注册，改了
+§11 总表的 os 那一行就停了。同一件事在 README（两个语言版本）、§9.1、§9.3、§9.4、§10.1、§11 的 io 行、
+`exemptions` 里还有七八处说法，其中 README 写的「`os.exit` 不真的退出进程」是使用者会照着写代码的。
+能提前发现它的检查是在全仓搜索同一个说法（`git grep "os.exit"`），这也是已有的约定。现在由
+`TestStdlibAbsentIsInREADME` 检查 README 的「不提供」表与登记表一致。
+
+**三、存量差异没有开 issue。** 我在复盘里写了「这些函数要不要补上，没有在这一轮决定」，但没有留下任何
+可以跟踪的东西。按约定，本轮不修的存量差异要开 issue。补开了 #330（os / io 缺少的函数）和 #331
+（主块之下的 C 帧，栈回溯按独立解释器、C 调用深度按内嵌用法）。
+
+审查还指出 `ipairs` 的迭代器不接受数字字符串。这是存量差异，但它就在这次改动的函数里，而且属于同一类
+原因：迭代器没有公开的名字，以前按函数名逐个核对 `luaL_checkint` 的行为时轮不到它。这一轮直接修了。
+
 ## 顺带核对出的文档错误
 
-`10-stdlib.md` §11 总表把 `os.exit` / `os.remove` / `os.rename` / `os.tmpname` / `os.setlocale` 和
-`io.close` / `io.input` / `io.output` / `io.type` 列在「简化/部分」一栏，实际都没有注册。这次按实际情况改了
-os 那一行，并在 §12.3 里写明；`stdlibAbsent` 把它们登记为缺少。这些函数要不要补上，没有在这一轮决定。
+`10-stdlib.md` 把 `os.exit` / `os.remove` / `os.rename` / `os.tmpname` / `os.setlocale` 和
+`io.close` / `io.flush` / `io.input` / `io.output` / `io.type` 写成「做简化版」，README 写「os 全部提供」，
+实际都没有注册。设计文档里的 `Libs` / `LibsSafe` / `Exclude` 三层开关也没有实现。这次把 README 和设计文档
+各处都按现状改了（设计文档新增 §9.5），原始设计的段落保留并标明不是现状。这些函数和开关要不要做，
+记在 [#330](https://github.com/Liam0205/wangshu/issues/330)。
