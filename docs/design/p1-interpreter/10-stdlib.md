@@ -575,7 +575,7 @@ base 库的函数挂在 **globals 表**(直接全局可见,无需 `base.` 前缀
 | `type(v)` | 返回 v 的类型名 | `(v)` → string | ✅ | `"nil"`/`"boolean"`/`"number"`/`"string"`/`"table"`/`"function"`/`"userdata"`/`"thread"`(01 §3.3);light+full ud 都 `"userdata"` |
 | `tostring(v)` | v 转字符串(查 `__tostring`) | `(v)` → string | ✅ | 机制 07 §11(`__tostring` + 默认格式);number 用 `%.14g`;table/function 地址格式差分豁免(§4.2) |
 | `tonumber(v [, base])` | v 转数字;带 base 时按进制解析整数 | `(v [,base])` → number or nil | ✅ | 无 base **与 `base == 10`** 都走 `parseLuaNumber`(07 §5.2,与算术共用);**只有非 10 的 base** 走逐字符进制解析(§4.3) |
-| `pairs(t)` | 返回 `next, t, nil`(遍历全表迭代三元组) | `(t)` → (function, table, nil) | ✅ | 返回 `next` host fn + t + nil;**不查 `__pairs`**(5.2+,07 §2.3 排除);遍历序见 §4.4 |
+| `pairs(t)` | 返回遍历全表的迭代三元组 | `(t)` → (function, table, nil) | ✅ | 返回的迭代器与 `next` 行为相同，但**不是全局 `next` 那个函数对象**(§4.4);**不查 `__pairs`**(5.2+,07 §2.3 排除);遍历序见 §4.4 |
 | `ipairs(t)` | 返回数组迭代三元组(从 1 连续到首个 nil) | `(t)` → (function, table, 0) | ✅ | 返回 ipairs 迭代器 host fn + t + 0;**不查 `__ipairs`**(5.2+ 引入 5.3 废,排除) |
 | `next(t [, k])` | 表的下一个键值对(`k=nil` 取第一个) | `(t [,k])` → (key, val) or nil | ✅ | 遍历序 = 内部 array 段后 node 段顺序(§4.4,呼应 06 §9.3/§11) |
 | `select(n, ...)` | `n` 是数字:返回从第 n 个起的可变参;`n=='#'`:返回参数个数 | `(n, ...)` → ... or number | ✅ | `select('#', ...)` 取个数;`select(2, a,b,c)` 返回 b,c;负 n 从尾数(5.1) |
@@ -725,20 +725,24 @@ func hostTonumber(vm *VM, th *Thread) int {
 - **`next(t, k)`** 是遍历的核心 host function:`k=nil` 返回第一个键值对;给 `k` 返回其后继。遍历顺序 = **先 array
   段(下标 1..asize 顺序)后 node 段(node 数组物理顺序)**(01 §5.2 布局)。`next` 在 node 段从「k 所在槽的下一个
   非空槽」继续。
-- **`pairs(t)`** 返回三元组 `(next, t, nil)`,泛型 for(`for k,v in pairs(t)`)用它:每次 `TFORLOOP`(05 §10.2)
-  调 `next(t, ctrl)`,ctrl 从 nil 起步进。**不查 `__pairs`**(5.2+ 引入,07 §2.3 排除)。
+- **`pairs(t)`** 返回三元组 `(iter, t, nil)`,其中 `iter` 与 `next` 行为相同、但不是全局 `next` 那个函数对象(见下面
+  「私有持有迭代器」一条)。泛型 for(`for k,v in pairs(t)`)用它:每次 `TFORLOOP`(05 §10.2)调 `iter(t, ctrl)`，ctrl 从 nil 起步进。**不查 `__pairs`**（5.2+ 引入，07 §2.3 排除）。
 - **`ipairs(t)`** 返回 `(ipairsIterator, t, 0)`:迭代器每次取 `t[i+1]`,遇 nil 停。**只遍历数组段连续部分**(从 1
   到首个 nil),不遍历 hash 部分。**不查 `__ipairs`**(5.2 引入 5.3 废,排除)。
-- **`pairs` 和 `ipairs` 各自私有持有迭代器,不经过全局表**(2026-11-25,#329)。官方 `lbaselib.c` 的 `auxopen`
-  把这两个函数注册成带一个 upvalue 的 C 闭包,upvalue 就是迭代器(`pairs` 的是 `luaB_next`,`ipairs` 的是
-  `ipairsaux`)。由此有四条可观察的行为,望舒与之一致(`internal/stdlib/stdlib.go` 的 `registerIterFactory`):
-  ① 改写或清空全局 `next` 不影响 `pairs`(`next = nil` 之后 `pairs` 照常遍历);
-  ② `pairs({}) == next` 是 `false`——`pairs` 返回的是它自己的 upvalue,与全局 `next` 是两个函数对象;
-  ③ `ipairs` 的迭代器没有全局名字,脚本只能从 `ipairs` 的第一个返回值拿到它;
-  ④ 每个 State 里迭代器只有一个,所以 `pairs(a) == pairs(b)`、`ipairs(a) == ipairs(b)` 都是 `true`。
-  此前这两个函数每次调用都去全局表里查迭代器(`pairs` 查 `next`,`ipairs` 查一个望舒自己加的全局
-  `__ipairs_iter`),①②③ 都与官方不同。迭代器的宿主闭包同时挂在工厂函数的 upvalue 上,这样只要工厂函数还
-  可达,GC 就不会回收它(与 `coroutine.wrap` 持有协程的做法相同)。
+- **`pairs` 和 `ipairs` 各自私有持有迭代器，不经过全局表**（2026-11-25，#329）。官方 `lbaselib.c` 的 `auxopen`
+  把这两个函数注册成带一个 upvalue 的 C 闭包，upvalue 就是迭代器（`pairs` 的是 `luaB_next`，`ipairs` 的是
+  `ipairsaux`）。由此有四条可观察的行为，望舒与之一致（`internal/stdlib/stdlib.go` 的 `registerIterFactory`）：
+  ① 改写或清空全局 `next` 不影响 `pairs`（`next = nil` 之后 `pairs` 照常遍历）；
+  ② `pairs({}) == next` 是 `false`——`pairs` 返回的是它自己的 upvalue，与全局 `next` 是两个函数对象；
+  ③ `ipairs` 的迭代器没有全局名字，脚本只能从 `ipairs` 的第一个返回值拿到它；
+  ④ 每个 State 里迭代器只有一个，所以 `pairs(a) == pairs(b)`、`ipairs(a) == ipairs(b)` 都是 `true`。
+  此前这两个函数每次调用都去全局表里查迭代器（`pairs` 查 `next`，`ipairs` 查一个望舒自己加的全局
+  `__ipairs_iter`），①②③ 都与官方不同。迭代器的宿主闭包同时挂在工厂函数的 upvalue 上，这样只要工厂函数还
+  可达，GC 就不会回收它（与 `coroutine.wrap` 持有协程的做法相同）。
+- **`ipairs` 的迭代器按 `luaL_checkint` 读控制值**：先查第 2 个参数、再查第 1 个参数；小数截断、超出 int32 的值回绕；
+  **数字字符串也接受**（`ipairs({})(t, "1")` 从下标 1 继续，`for i, v in ipairs({}), t, "0" do … end` 会遍历 `t`）。
+  最后一条在 2026-11-25 之前是错的（报 `number expected, got string`），由 #329 的独立审查发现。别的用
+  `luaL_checkint` 的库函数早就接受数字字符串，漏掉这一处是因为迭代器没有公开的名字，按函数名逐个核对时轮不到它。
 - **遍历序的差分口径**(呼应 06 §9.3/§11):`pairs`/`next` 的产出顺序由 table 的 array/node 布局决定,而 node
   布局受**字符串哈希(06 §9.3 JSHash)+ rehash 算法 + Brent 变体**影响。06 §9.3 已把哈希环锁成与官方一致;但
   `pairs` 序是否要求逐字节一致**是验收口径问题**,**由 [12](./12-testing-difftest.md) 定**(严格逐字节 vs 排序后
@@ -766,9 +770,9 @@ func hostUnpack(vm *VM, th *Thread) int {
 - **5.1 口径:`unpack` 是全局函数**(`unpack({1,2,3})` → `1, 2, 3`)。**5.2+ 把它移到 `table.unpack`**(全局
   `unpack` 在 5.2 废弃)。**P1 锁 5.1:提供全局 `unpack`,不提供 `table.unpack`**(若提供 table.unpack 会与官方
   5.1 多一个函数,差分时 `table.unpack` 在 5.1 是 nil)。**记口径**:差分基准是 5.1,全局 `unpack` 存在、
-  `table.unpack` 不存在。**实现曾经与这一条相反**:`OpenAll` 从 2026-06-11 起多注册了一个 `table.unpack`
-  别名,直到 2026-11-23 nightly 的 go-fuzz 找到 `t={}table.unpack(t)`(官方报错、望舒照常执行,#329)才发现。
-  2026-11-25 已删除;现在由 §12.3 的名字集合比对测试防住这一类问题。
+  `table.unpack` 不存在。**实现曾经与这一条相反**：`OpenAll` 从 2026-06-11 起多注册了一个 `table.unpack`
+  别名，直到 2026-11-23 nightly 的 go-fuzz 找到 `t={}table.unpack(t)`（官方报错、望舒照常执行，#329）才发现。
+  2026-11-25 已删除；现在由 §12.3 的名字集合比对测试防住这一类问题。
 - **返回可变个数**:`unpack` push j-i+1 个值,`return n`。调用点(`CALL C=0` 到 top)接收全部(05 §7.2)。
 - **大范围扩栈**:`unpack` 一个大表(`unpack(t)` t 有 1e6 元素)会压 1e6 个值上栈 → `ensureStack` 扩容(05 §1.4)。
   Lua 5.1 有 `unpack` 上限保护:超过栈上限报 `"too many results to unpack"`。**P1 对齐 5.1**,精确口径见下条。
@@ -1777,12 +1781,12 @@ os 库**纯 Go 实现**(roadmap §0 禁 cgo),用 Go `time`/`os` 包。跨平台�
 | `os.date([fmt [, t]])` | 格式化时间(strftime 指令,§9.2) | 手写指令循环(`strftime`) | ✅ | fmt 默认 `"%c"`;`*t`/`!*t` 前缀返回 table;未定义指令原样输出(§9.2) |
 | `os.difftime(t2, t1)` | 时间差(秒) | `t2 - t1` | ✅ | 简单减法 |
 | `os.getenv(name)` | 环境变量 | `os.Getenv` | ✅ | 不存在返回 nil;**嵌入场景可禁用**(§9.3) |
-| `os.exit([code [, close]])` | 退出进程 | `os.Exit` | △ | **嵌入危险**(§9.3):宿主可禁用(退出宿主进程!) |
-| `os.remove(filename)` | 删文件 | `os.Remove` | △ | **嵌入危险**(§9.3):文件系统副作用,可禁用 |
-| `os.rename(old, new)` | 重命名 | `os.Rename` | △ | 同上 |
-| `os.tmpname()` | 临时文件名 | `os.CreateTemp` 等 | △ | 跨平台差异;可禁用 |
-| `os.execute([cmd])` | 执行 shell 命令 | `os/exec` | **❌/△ 危险** | **嵌入场景默认禁用**(§9.3):任意命令执行,安全风险最高 |
-| `os.setlocale([loc [, cat]])` | 设 locale | (有限/缺) | **△/❌ 部分** | **纯 Go 无 C locale**(§9.4);P1 仅支持 `"C"`/缺 |
+| `os.exit([code [, close]])` | 退出进程 | — | ❌ 未注册 | 原计划做「不真退出」的简化版，实际没有注册（§9.5） |
+| `os.remove(filename)` | 删文件 | — | ❌ 未注册 | 同上（§9.5） |
+| `os.rename(old, new)` | 重命名 | — | ❌ 未注册 | 同上（§9.5） |
+| `os.tmpname()` | 临时文件名 | — | ❌ 未注册 | 同上（§9.5） |
+| `os.execute([cmd])` | 执行 shell 命令 | — | ❌ 未注册 | 任意命令执行，安全风险最高；按设计不提供 |
+| `os.setlocale([loc [, cat]])` | 设 locale | — | ❌ 未注册 | 纯 Go 没有 C locale（§9.4）；原计划只支持 `"C"`，实际没有注册（§9.5） |
 | `os.getenv`/`os.time` 等只读项 | — | — | ✅ | 无副作用,默认启用 |
 
 #### 9.1.1 `os.time` 的表协议:`isdst` 参与解释,不能忽略(#202,2026-07-28)
@@ -1866,6 +1870,9 @@ os 库**纯 Go 实现**(roadmap §0 禁 cgo),用 Go `time`/`os` 包。跨平台�
 
 ### 9.3 安全:os.execute/exit 等的嵌入限制(任务点名,记口径)
 
+> **本节是原始设计，不是现状。** 现状见 §9.5：`os.execute`、`os.exit`、`os.remove`、`os.rename`、`os.tmpname`
+> 都没有注册，下面提到的 `Libs` / `LibsSafe` / `Exclude` 三层开关也没有实现。
+
 **关键嵌入安全口径**(任务点名:os.execute/exit 在嵌入场景的限制,宿主可禁用):
 
 os 库的部分函数有**进程级副作用或安全风险**,在嵌入式宿主(尤其跑**不可信脚本**)场景必须可控:
@@ -1891,6 +1898,9 @@ os 库的部分函数有**进程级副作用或安全风险**,在嵌入式宿主
 
 ### 9.4 `os.setlocale`:纯 Go 无 C locale(部分/缺)
 
+> **现状（§9.5）：`os.setlocale` 没有注册。** 下面「仅支持 `"C"`」是原始设计。字符分类、大小写、`os.date`
+> 月名固定为 C locale 的行为这一点是已经实现的现状。
+
 - **`os.setlocale(loc, cat)`** 在 C Lua 调 C `setlocale`,影响 `string.upper`/`%a` 字符类/`os.date` 月名等的
   **locale 相关行为**。**纯 Go 没有 C locale 机制**(Go 不暴露 `setlocale`)。
 - **P1 定稿:`os.setlocale` 仅支持 `"C"` locale(返回 `"C"`),其它 locale 返回 nil(设置失败)**。这意味着:
@@ -1900,6 +1910,20 @@ os 库的部分函数有**进程级副作用或安全风险**,在嵌入式宿主
 - **为什么不做**:Go 标准库无 locale-aware 的字符分类/大小写(`unicode` 包是 Unicode 而非 C locale 语义);
   复刻 C locale 是大工程且差分基准(5.1)本身 locale 行为平台相关。**锁 C locale(ASCII)是纯 Go 的务实选择**,
   也让望舒跨平台行为**一致**(C Lua 反而因 locale 跨平台不一致)。
+
+### 9.5 实际状态：os 库只注册了五个函数（2026-11-25 核对，#329）
+
+`internal/stdlib` 注册的 os 函数只有 `time`、`clock`、`date`、`difftime`、`getenv`。官方 5.1.5 的另外六个
+（`execute`、`exit`、`remove`、`rename`、`tmpname`、`setlocale`）都**没有注册**，脚本调用它们得到的是
+`attempt to call field 'exit' (a nil value)` 这一类错误。§9.1 的表已经按这个现状改了。
+
+§9.3 和 §9.4 写的「做简化版」（`os.exit` 不真退出、`os.setlocale` 只支持 `"C"`、文件操作受沙箱限制）一直
+没有做，这两节保留作为原始设计。它与实现不一致这件事，是 #329 把望舒和官方的名字集合逐个比对时才确认的；
+在那之前 README 也写着「os 全部提供」「`os.exit` 不真的退出进程」。
+
+现在由 `test/difftest/corners_test.go` 的 `TestDiff_StdlibNames` 逐个名字检查（§12.3）：这六个名字登记在
+`stdlibAbsent` 里，以后补上任何一个都必须同时删掉对应的登记。哪些要补、`os.exit` 在嵌入场景下取什么语义、
+改动文件系统的函数是否需要宿主显式打开，记在 [#330](https://github.com/Liam0205/wangshu/issues/330)，还没有决定。
 
 ---
 
@@ -1916,10 +1940,11 @@ io 库涉及**文件句柄**(full userdata + `__gc`,01 §5.5 / 06 §10),是 stdl
 | `io.read([fmt...])` | 从默认输入(stdin)读 | ✅ **必做** | 格式 `"*l"`(行,默认)/`"*L"（**5.2+，5.1 拒绝**）`/`"*n"`(数)/`"*a"`(全)/数字(n 字节);与 `file:read` 共用一份实现(§10.3) |
 | `io.stdout`/`io.stdin`/`io.stderr` | 标准流(file handle) | ✅ **必做** | **真 file-handle userdata**(§10.2),`type()` 报 `userdata` 与 PUC 一致;分配走 `State.NewUserdata`(§10.2.1) |
 | `io.open(filename [, mode])` | 打开文件,返回 file handle | **❌ 缺口** | 需要文件系统访问控制 + `__gc` 关文件(§10.2 / §9.3);P1 不做 |
-| `io.close([file])` | 关闭文件(默认默认输出) | △ | 标准流的 `file:close` 已提供(返回 `(nil, msg)`);全局形式依赖 open |
+| `io.close([file])` | 关闭文件(默认默认输出) | ❌ 未注册 | 标准流的 `file:close` 已提供(返回 `(nil, msg)`)；全局形式没有注册（§10.1.1，#330） |
+| `io.flush()` | 刷新默认输出 | ❌ 未注册 | 标准流的 `file:flush` 已提供；全局形式没有注册（§10.1.1，#330） |
 | `io.lines([filename])` | 行迭代器 | △ **部分** | 无参形式(默认输入)已提供;`io.lines(filename)` **抬错**而不是静默返回空迭代器(依赖 open) |
-| `io.input([file])`/`io.output([file])` | 取/设默认输入/输出 | △ | 默认流管理;当前默认输入/输出固定为进程的 stdin/stdout |
-| `io.type(obj)` | 判断是否 file handle(`"file"`/`"closed file"`/nil) | △ | 检查 userdata 的 metatable 身份 |
+| `io.input([file])`/`io.output([file])` | 取/设默认输入/输出 | ❌ 未注册 | 默认输入/输出固定为进程的 stdin/stdout（§10.1.1，#330） |
+| `io.type(obj)` | 判断是否 file handle(`"file"`/`"closed file"`/nil) | ❌ 未注册 | 没有注册（§10.1.1，#330） |
 | `file:read(...)` | 从 file 读(同 io.read 格式) | ✅(标准流) | 与 `io.read` 共用实现;读一个**只写**句柄返回 PUC 的 errno 三元组(§10.3) |
 | `file:write(...)` | 写 file | ✅(标准流) | 返回**布尔**成功标志(与 `io.write` 同,5.1 口径);非句柄 receiver 报 `FILE* expected, got X` |
 | `file:close()` | 关闭 file | ✅(标准流) | 标准流**返回** `(nil, "cannot close standard file")` 而不是抬错 |
@@ -1954,6 +1979,11 @@ file-handle userdata**,共享一张 metatable 提供 `write`/`close`/`read`/`lin
 **仍然缺的是需要真实文件的那一档**:`io.open` / `io.popen` / `io.tmpfile` / `f:seek`(按 §11 的 ❌ 列)。
 所以 `io.lines(filename)` **抬错**而不是静默返回一个空迭代器——静默返回空迭代器会让「文件读不到」看起来
 像「文件是空的」。
+
+**另有五个不需要真实文件的全局函数也没有注册**（2026-11-25 核对，#329）：`io.close`、`io.flush`、`io.input`、
+`io.output`、`io.type`。§10.1 的表原先把它们标成「简化」，实际调用得到的是 `attempt to call field 'type' (a nil
+value)` 这一类错误；表已按现状改过。它们对应的方法形式（`f:close()`、`f:flush()`）是有的。要不要补上，以及
+`io.input` / `io.output` 是否允许脚本替换默认流，记在 [#330](https://github.com/Liam0205/wangshu/issues/330)。
 
 **上一轮撤回的根因只有一行**(#205 的由来,2026-07-28):原型直接调 `object.AllocUserdata`,**跳过了
 collector 的 `LinkSweep`**,所以对象 header 里既没有颜色也没有 sweep 链,收集器根本看不见它;创建句柄
@@ -2017,7 +2047,7 @@ file handle 设计:
   **句柄表索引**(11 §6.2),`handles[idx]` = `*os.File`(或带 buffer 的包装)。host 方法(read/write)经
   `FromHandle`(11 §6.2)取回 `*os.File` 操作。
 - **closed 状态**:file close 后,句柄表项置 nil 或标记 closed;后续 `file:read` 报 `"attempt to use a closed file"`
-  (5.1 措辞,待 12 核对)。`io.type` 据此返回 `"file"`/`"closed file"`/nil。
+  (5.1 措辞,待 12 核对)。`io.type` 设计上据此返回 `"file"`/`"closed file"`/nil(`io.type` 目前没有注册,见 §10.1.1)。
 
 #### 10.2.1 userdata 的分配必须经 `State.NewUserdata`(`LinkSweep` 约定,#205)
 
@@ -2130,6 +2160,12 @@ coroutine 库的**机制全在 [08-coroutines](./08-coroutines.md)** 定稿(Thre
 
 ### 12.1 `luaL_openlibs` 等价物:openlibs
 
+> **本节的三层开关（`Libs` 位掩码、`LibsSafe` 预设、`Exclude` 路径表）是原始设计，没有实现。** 现状是
+> `internal/stdlib` 的 `OpenAll` 无条件注册全部已实现的函数，`wangshu.Options` 里没有这三个字段；宿主能调的
+> 只有 `Options.AllowFileLoad`（打开 `loadfile` / `dofile`）。「缺省对齐 gopher-lua 的提供面」也不是现状：
+> package 库和一部分 os / io 函数没有注册（§9.5、§10.1.1）。要不要做这套开关记在
+> [#330](https://github.com/Liam0205/wangshu/issues/330)。
+
 Lua 5.1 用 `luaL_openlibs(L)` 一次性打开所有标准库。望舒等价物在 `NewState`(11 §1.2 `Options.OpenLibs`)时
 调用:
 
@@ -2225,18 +2261,25 @@ wangshu.NewState(wangshu.Options{Exclude: []string{"os.execute", "os.exit"}})
   有**(否则差分时它们在 5.1 是 nil)。
 - **存在性差分用例**:遍历 5.1 的全部标准库函数名,验证望舒**同名存在 + 5.2+ 函数不存在**。这是 stdlib 差分的
   基础项(指向 12)。**P1 缺口的库**(package/部分 io/部分 debug)在存在性差分上**标注豁免**(已知 P1 未实现)。
-- **实际状态(2026-11-25,#329)**:存在性差分用例已经写了,是 `test/difftest/corners_test.go` 的
-  `TestDiff_StdlibNames`。它在望舒和真实的 `lua5.1` 上各导出一份名字清单(全部字符串键的全局、各库表的字段、
-  文件句柄的元表和方法、字符串元表,每行「名字 : 类型」),然后**双向**比对:
-  - **望舒有而 5.1 没有的名字:一律失败**,没有登记表可以放行。
-  - **5.1 有而望舒没有的名字:必须登记在同文件的 `stdlibAbsent` 里并写明原因**(条数以该表为准,其中 `arg` 是
-    独立解释器 `lua.c` 设的,不属于库)。没登记的失败;登记了但望舒其实已经有、或 5.1 其实没有的,也失败。
-  这个用例写出来之前,「存在性必须一致」只有 `exemptions` 那份手工清单当执行体,而那份清单只记「缺什么」,
-  看不到「多了什么」。`table.unpack` 和 `__ipairs_iter` 这两个多出来的名字因此在仓库里留了五个多月(#329)。
-  `exemptions` 仍然保留,它面向读者解释每一类为什么不提供;`stdlibAbsent` 是逐个名字的、会失败的那一份。
-  注意 §11 总表 os 行的「△ 简化」一栏写的 `exit` / `remove` / `rename` / `tmpname` / `setlocale`、io 行的
-  `close` / `input` / `output` / `type`,**实际都没有注册**(调用它们得到的是「attempt to call field … (a nil
-  value)」),`stdlibAbsent` 按实际情况把它们登记为缺少。
+- **实际状态（2026-11-25，#329）**：存在性差分用例已经写了，是 `test/difftest/corners_test.go` 的
+  `TestDiff_StdlibNames`。它在望舒和真实的 `lua5.1` 上各导出一份名字清单（全部字符串键的全局、各库表的字段、
+  文件句柄的元表和方法、字符串元表，每行「名字 ：类型」），然后**双向**比对：
+  - **望舒有而 5.1 没有的名字：一律失败**，没有登记表可以放行。
+  - **5.1 有而望舒没有的名字：必须登记在同文件的 `stdlibAbsent` 里并写明原因**（条数以该表为准，其中 `arg` 是
+    独立解释器 `lua.c` 设的，不属于库）。没登记的失败；登记了但望舒其实已经有、或 5.1 其实没有的，也失败。
+  这个用例写出来之前，「存在性必须一致」只有 `exemptions` 那份手工清单当执行体，而那份清单只记「缺什么」，
+  看不到「多了什么」。`table.unpack` 和 `__ipairs_iter` 这两个多出来的名字因此在仓库里留了五个多月（#329）。
+  `exemptions` 仍然保留，它面向读者解释每一类为什么不提供；`stdlibAbsent` 是逐个名字的、会失败的那一份。
+  另有两个测试把这份登记表和别处的说法连起来：`TestStdlibAbsentReasonsResolve` 要求登记理由里写的
+  「exemptions: X」确实对应 `exemptions` 里名为 X 的条目；`TestStdlibAbsentIsInREADME` 要求登记表里的每个库名字
+  都出现在两个语言版本 README 的「不提供」表里（`arg` 和文件句柄元表的 `__gc` 除外，它们不是脚本会调用的接口）。
+  三种构建是否一致由 `test/difftest/tiered_stdlib_names_test.go` 的 `TestTiered_StdlibNames` 检查，它断言
+  `PromotionCount() > 0`，保证比较的确实是升层之后的执行路径。
+  写这个用例时还确认了一批「设计文档说有、实际没有」的名字：`os.exit` / `remove` / `rename` / `tmpname` /
+  `setlocale` 和 `io.close` / `flush` / `input` / `output` / `type` 都没有注册（调用它们得到的是
+  `attempt to call field 'exit' (a nil value)` 这一类错误）。`stdlibAbsent` 按实际情况把它们登记为缺少，本文
+  §9.1、§10.1 和 §11 总表也已按现状改过（§9.5、§10.1.1）；要不要补上记在
+  [#330](https://github.com/Liam0205/wangshu/issues/330)。
 
 ---
 
@@ -2300,8 +2343,8 @@ stdlib 的 shadow stack 纪律(§3)漏 Pin 是**最难调的 bug 类**(06 §6.3:
 | **string** | len, sub, upper, lower, rep, reverse, byte, char, format, find, match, gmatch, gsub(**全 pattern 全集** §6) | — | string.dump(字节码序列化) |
 | **table** | insert, remove, concat, sort, maxn | getn, setn(=`#t`/空操作) | table.unpack/pack/move(5.2+) |
 | **math** | abs, ceil, floor, sqrt, sin, cos, tan, asin, acos, atan, atan2, exp, log, log10, pow, fmod, modf, max, min, random, randomseed, huge, pi, rad, deg, frexp, ldexp, sinh, cosh, tanh | — | math.tointeger/type/maxinteger/mininteger(5.3 整数) |
-| **os** | time, clock, date, difftime, getenv | — | os.execute(默认禁用,安全);exit, remove, rename, tmpname, setlocale(原计划做简化版,**实际未注册**,见 §12.3) |
-| **io** | write, read, stdout, stdin, stderr(#205 已交付;标准流是真 file-handle userdata,见 §10.1.1 / §10.2.1)+ 标准流的 file:write/close/read/lines/flush | lines(无参已提供、带文件名抬错), close, input, output, type | io.open, io.popen, io.tmpfile, file:seek(需要真实文件) |
+| **os** | time, clock, date, difftime, getenv | — | os.execute(默认禁用,安全);exit, remove, rename, tmpname, setlocale(原计划做简化版,**实际未注册**,见 §9.5 与 #330) |
+| **io** | write, read, stdout, stdin, stderr(#205 已交付;标准流是真 file-handle userdata,见 §10.1.1 / §10.2.1)+ 标准流的 file:write/close/read/lines/flush | lines(无参已提供、带文件名抬错) | io.open, io.popen, io.tmpfile, file:seek(需要真实文件);close, flush, input, output, type(原计划做简化版,**实际未注册**,见 §10.1.1 与 #330) |
 | **coroutine** | create, resume, yield, status, wrap, running(**机制全在 08**) | — | — |
 | **debug**(09 §13) | traceback(#205 已交付,含「显式 nil 原样返回」) | getinfo(只填 P1 能诚实给出的字段:currentline / source / short_src / what / func;nups / activelines / namewhat **宁缺不假造**) | sethook, getlocal/setlocal, getupvalue/setupvalue, getregistry(需要解释器未暴露的内省钩子) |
 
@@ -2317,8 +2360,8 @@ stdlib 的 shadow stack 纪律(§3)漏 Pin 是**最难调的 bug 类**(06 §6.3:
    操作延后。嵌入式场景文件 IO 弱,数据走 arena(11)。
 3. **module/package 系统缺口**(§4.7):嵌入式宿主不从文件系统 require,脚本由宿主 Compile 提供。这是 P1 与
    「独立 Lua 解释器」的最大功能差距,但符合嵌入式定位(roadmap §8 首个宿主)。
-4. **os 危险函数默认禁用**(§9.3):execute/exit/文件操作受安全配置控,默认安全子集。嵌入式 VM 不该让脚本杀
-   宿主进程或跑 shell。
+4. **os 危险函数不提供**(§9.3 / §9.5):嵌入式 VM 不该让脚本杀宿主进程或跑 shell。现状是 execute/exit/文件操作
+   **都没有注册**(原设计是「受安全配置控制」,那套配置没有实现)。
 5. **5.2+ 特性主动不做**(全表):rawlen/table.unpack/整数 math/位运算等显式不实现,保差分与官方 5.1 一致。
 
 ---
@@ -2348,8 +2391,8 @@ stdlib 的 shadow stack 纪律(§3)漏 Pin 是**最难调的 bug 类**(06 §6.3:
    不可混用。floor/ceil 返回 double(§8.2)。
 10. **5.2+ 特性主动不实现**(§4/§7/§8/§14):rawlen、table.unpack/pack/move、整数 math、位运算、`__pairs` 等
     显式不做;全局 `unpack` 在(5.1),`table.unpack` 不在;`_VERSION == "Lua 5.1"`。保差分与官方 5.1 一致。
-11. **os 危险函数默认安全子集**(§9.3):execute/exit/文件操作受配置控,默认仅只读 time/clock/date/difftime;
-    `os.exit` 默认不真退出宿主进程。
+11. **os 只有只读的安全子集**(§9.5):只注册了 time/clock/date/difftime/getenv;execute/exit/remove/rename/
+    tmpname/setlocale 没有注册(原设计的「`os.exit` 不真退出」没有做,见 #330)。
 12. **io P1 最小集 + file = full userdata + `__gc`**(§10):必做 write/read/标准流;file handle 是 full userdata
     带 metatable(`__index`=方法表,`__gc`=关文件,经句柄表存 `*os.File`)。
 13. **coroutine 机制全委托 08**(§11):本文只列 6 函数清单 + 语义;状态机/搬运/yield 冒泡/跨边界限制在 08;
@@ -2376,10 +2419,10 @@ stdlib 的 shadow stack 纪律(§3)漏 Pin 是**最难调的 bug 类**(06 §6.3:
   九种格式与系统 `lua5.1` 逐字节一致,`%c` 是 glibc 的 `"%a %b %e %H:%M:%S %Y"`),此项的「待 12 核对」已完成。
 - **io 完整度**(§10.1,2026-07-29 收窄):三个标准流、`io.read`、`io.lines`(无参)与标准流的
   `:write`/`:close`/`:read`/`:lines`/`:flush` **已交付**(#205,§10.1.1);仍缺的是需要真实文件的
-  `io.open`/`io.popen`/`io.tmpfile`/`f:seek`,以及 `io.input`/`io.output`/`io.type`。`__gc` 关文件那一环
+  `io.open`/`io.popen`/`io.tmpfile`/`f:seek`,以及 `io.close`/`io.flush`/`io.input`/`io.output`/`io.type`(后五个见 #330)。`__gc` 关文件那一环
   要等 `io.open` 一起做。默认输出可重定向(宿主捕获 print 输出)的配置接口仍待定(记缺口)。
-- **`os.exit` 嵌入语义**(§9.3):P1 默认不真退出(防杀宿主进程);具体语义(抛特殊错误 vs 标记请求退出 vs
-  返回控制权)待定,记缺口。
+- **`os.exit` 嵌入语义**(§9.3 / §9.5):`os.exit` **目前没有注册**。原设计是「不真退出(防杀宿主进程)」,具体语义
+  (抛特殊错误 vs 标记请求退出 vs 返回控制权)一直待定,记在 [#330](https://github.com/Liam0205/wangshu/issues/330)。
 - **`CheckInt` 非整数 double 行为**(§2.2):P1 定「截断(向零),不报错」(对齐 5.1 `luaL_checkinteger`)。
   超 int64 范围行为待 12 核对。
 - **`CheckFunction` 严格度 / pcall 的 f 放宽**(§2.6):`CheckFunction` 严格要 function tag;`pcall`/`xpcall` 的 f

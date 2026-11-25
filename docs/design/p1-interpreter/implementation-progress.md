@@ -729,17 +729,32 @@ nightly 的 go-fuzz（p1，`FuzzOracleDiff`）找到 `t={}table.unpack(t)`：官
 | 删 `table.unpack` | `internal/stdlib/stdlib.go` `OpenAll` | 不再注册 |
 | 迭代器私有化 | 同文件 `registerIterFactory` | `pairs` / `ipairs` 各自在注册时建好迭代器的宿主闭包，由工厂函数的 Go 闭包捕获，同时挂在工厂函数的 upvalue 上让 GC 保活；不再有 `__ipairs_iter`，`pairs` 不再读全局 `next` |
 | fuzz 的 prelude | `internal/oracle/prelude.go` | 原来靠包装全局 `__ipairs_iter` 来拦 `luaL_checkint` 的未定义行为区间，改成包装 `ipairs`、发放同一个带检查的迭代器 |
-| 行为测试 | `test/language/stdlib_names_test.go`（新增） | 19 个用例，期望值逐个在 lua5.1 5.1.5 上实际执行核对过 |
+| 行为测试 | `test/language/stdlib_names_test.go`（新增） | 20 个用例，期望值逐个在 lua5.1 5.1.5 上实际执行核对过 |
 | 名字集合比对 | `test/difftest/corners_test.go` `TestDiff_StdlibNames`（新增） | 对着真实的 `lua5.1` 双向比对；望舒多出的名字一律失败，缺少的逐个登记在 `stdlibAbsent`（合入时 37 条） |
-| 语料 | `test/fuzz/testdata/fuzz/FuzzOracleDiff/` | 加入 #329 的输入和两条回归语料；原来写着 `__ipairs_iter` 的两条改成经 `ipairs({})` 取迭代器 |
-
-验证：`make all` 与 `make fuzz-oracle` 通过；三种构建下新测试通过。把 `stdlib.go` 的改动撤掉：行为测试 8 个用例
-失败，名字比对报出那两个多余名字，#329 的输入和一条回归语料失败。名字比对测试另做了两种变异（删一条登记、
-加一条过期登记），都会失败。
+| 语料 | `test/fuzz/testdata/fuzz/FuzzOracleDiff/` | 加入 #329 的输入和四条回归语料；原来写着 `__ipairs_iter` 的两条改成经 `ipairs({})` 取迭代器 |
 
 **对使用者的影响**：调用 `table.unpack(...)` 的脚本会开始报错，改成 `unpack(...)` 即可（Lua 5.1 本来就只有后者）。
 
-机制见 [10 §4.4 / §4.5 / §12.3](./10-stdlib.md)，过程记录见
+### 独立审查之后补的内容
+
+合入前的独立审查没有发现阻塞问题，提出两条重要问题、三条小问题和两处存量差异，都在同一个 PR 里处理了。
+
+| 审查意见 | 处理 |
+|---|---|
+| 行为测试里标着「热函数」的用例其实没有升层：直接调用全局 `ipairs` / `pairs` 的函数不会升到 P3 / P4，所以「三种构建一致」没有任何测试在执行 | 新增 `test/difftest/tiered_stdlib_names_test.go` 的 `TestTiered_StdlibNames`：三段确实会升层的脚本，分别在只用解释器、强制升层、自然升温三种方式下执行，要求彼此一致并与 `lua5.1` 一致，并断言 `PromotionCount() > 0`。原用例改了写法和注释，不再声称覆盖升层路径 |
+| 文档对 os / io 缺少的函数前后矛盾：`stdlibAbsent` 登记它们没有注册，而 README 写「os 全部提供」「`os.exit` 不真的退出进程」，设计文档多处写「做简化版」 | README 两个语言版本、[10](./10-stdlib.md) 的 §9.1 / §9.3 / §9.4 / §10.1 / §11 / §12.1 都按现状改了，新增 §9.5 说明 os 库只注册了五个函数；`exemptions` 里与 `stdlibAbsent` 矛盾的条目改掉。新增 `TestStdlibAbsentIsInREADME` 和 `TestStdlibAbsentReasonsResolve`，以后 README 或登记理由与实际不符会失败。这些函数要不要补记在 [#330](https://github.com/Liam0205/wangshu/issues/330) |
+| 设计文档还有两处写 `pairs` 返回 `next` | 改成「返回的迭代器与 `next` 行为相同，但不是同一个函数对象」 |
+| 一条新语料里有两个表达式在 fuzz 的 prelude 之下恒成立；prelude 里拦截 `ipairs` 迭代器非有限控制值的检查没有任何测试 | 语料删掉那两个表达式；新增 `internal/oracle/ipairs_guard_test.go` 的 `TestIpairsIteratorGuard` 和两条语料。写测试时还发现这个检查用固定形参接收参数，会把「没有传控制值」变成「传了 nil」，改成原样转发 |
+| 新增的中文段落用了半角标点 | 改成全角 |
+| 存量差异：`ipairs` 的迭代器不接受数字字符串作控制值（官方用 `luaL_checkint`，`ipairs({})(t, "1")` 从下标 1 继续，望舒报 `number expected, got string`） | 在这个 PR 里修了。另用 58 段脚本把所有接收数字参数的库函数逐个传入数字字符串与 `lua5.1` 比对，没有发现第二处 |
+| 存量差异：`debug.traceback` 在 `FuzzOracleDiff` 里两侧输出不同（望舒在主块之下多一层 C 帧，与独立的 `lua5.1` 相同，与内嵌用法不同） | 需要先定以哪种用法为准，记在 [#331](https://github.com/Liam0205/wangshu/issues/331)，这一轮没有改 |
+
+验证：`make all` 与 `make fuzz-oracle` 通过。把 `stdlib.go` 换回修复前的版本：行为测试 9 个用例失败，
+`TestTiered_StdlibNames` 在 P3、P4 两种构建下三段脚本全部失败，名字比对报出那两个多余名字，#329 的输入和两条回归
+语料失败。名字比对测试另做了两种变异（删一条登记、加一条过期登记），都会失败。去掉 prelude 里的检查，
+`TestIpairsIteratorGuard` 报 8 处；README 删掉一行或一个名字、`exemptions` 改一个条目名，对应的两个测试都会失败。
+
+机制见 [10 §4.4 / §4.5 / §9.5 / §12.3](./10-stdlib.md)，过程记录见
 [#329 复盘](../../../llmdoc/memory/reflections/2026-11-25-issue329-stdlib-extra-names.md)。
 
 ## 相关
