@@ -56,10 +56,20 @@ local s = 0 for _, v in f, t, c do s = s + v end return tostring(s)`, "9"},
 ipairs, pairs = nil, nil collectgarbage() collectgarbage()
 local junk = {} for i = 1, 200 do junk[i] = {i} end
 local s = 0 for _, v in ip({1, 2, 3}) do s = s + v end for _, v in pr({x = 10}) do s = s + v end return tostring(s)`, "16"},
-		// A function hot enough to be promoted under the P3 / P4 builds takes the same answers.
-		{"in a hot function", `next = nil
-local function sum(t) local s = 0 for _, v in ipairs(t) do s = s + v end for _, v in pairs(t) do s = s + v end return s end
-local total = 0 for i = 1, 3000 do total = total + sum({1, 2, 3}) end return tostring(total)`, "36000"},
+		// luaL_checkint reads through lua_tonumber, so a numeric string is a valid control value.
+		{"ipairs iterator coerces a numeric string", `local f = ipairs({}) local a, b = f({10, 20, 30}, "1") local c, d = f({10, 20, 30}, "0x1")
+local n = 0 for _, v in f, {7, 8}, "0" do n = n + v end
+return a .. "," .. b .. " " .. c .. "," .. d .. " " .. n .. " " .. tostring(select(2, pcall(f, {}, "x")))`,
+			"2,20 2,20 15 bad argument #2 to '?' (number expected, got string)"},
+		// The same answers when the loop sits in a function that is called many times. The helper
+		// takes the iterator triple as arguments because that is the form the P3 / P4 tiers
+		// promote; a function that calls the global ipairs / pairs itself stays in the interpreter.
+		// This case only pins the answer on every build. That the loop really runs promoted, and
+		// still agrees, is asserted by test/difftest's TestTiered_StdlibNames.
+		{"iterating inside a repeatedly called function", `next = nil
+local function loop(f, s, c) local n = 0 for _, v in f, s, c do n = n + v end return n end
+local t, total = {1, 2, 3}, 0
+for i = 1, 3000 do total = total + loop(ipairs(t)) + loop(pairs(t)) end return tostring(total)`, "36000"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := testutil.RunOne(t, tc.src).Str(); got != tc.want {
