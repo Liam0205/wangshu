@@ -298,7 +298,7 @@ func TestCodegenGolden(t *testing.T) {
 | O2 | **顶层返回值** | `Program.Call` 的返回值序列,逐个 `tostring` 后拼接 | 逐字节 | 脚本 `return a,b,c` 的可观察化 |
 | O3 | **错误信息(值 + 位置 + traceback)** | 捕获 `*LuaError`,取 `value`(tostring)+ 产生位置 + traceback 文本 | **类型/位置严格,措辞见 §5.4** | 含 `chunk:line:` 前缀、`[C]:`、`(tail call): ?`([09](./09-errors-pcall.md) §7.1;`(...tail calls...)` 是 5.2 的写法) |
 | O4 | **副作用的相对顺序** | O1/O3 在同一字节流里**按发生顺序**交织 | 顺序严格 | 「先 print 再报错」与「先报错」可区分;副作用序是语义的一部分 |
-| O5 | **退出状态** | 正常结束 / 错误结束 / 退出码 | 离散值相等 | `os.exit` 默认不真退([10](./10-stdlib.md) §14),记逻辑退出态 |
+| O5 | **退出状态** | 正常结束 / 错误结束 / 退出码 | 离散值相等 | 望舒没有注册 `os.exit`([10](./10-stdlib.md) §9.5),脚本不能主动设置退出码;退出状态只有「正常结束」和「错误结束」两种 |
 
 **不属于可观察输出**(VM 内部状态,差分**不比**):对象在 arena 的偏移、GC 何时触发 / 回收了哪块 / freelist 复用、IC 命中与否、dispatch 用 switch 还是 closure、栈扩容时机、Proto 在 Go 堆的地址。这些是实现自由度,Lua 程序无法直接观察(除非经 §4 的「泄漏到可观察面」的少数口子——`tostring` 地址、`pairs` 序、`collectgarbage("count")`,逐项在 §4 处理)。
 

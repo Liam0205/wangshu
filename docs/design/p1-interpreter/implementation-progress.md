@@ -733,7 +733,13 @@ nightly 的 go-fuzz（p1，`FuzzOracleDiff`）找到 `t={}table.unpack(t)`：官
 | 名字集合比对 | `test/difftest/corners_test.go` `TestDiff_StdlibNames`（新增） | 对着真实的 `lua5.1` 双向比对；望舒多出的名字一律失败，缺少的逐个登记在 `stdlibAbsent`（合入时 37 条） |
 | 语料 | `test/fuzz/testdata/fuzz/FuzzOracleDiff/` | 加入 #329 的输入和四条回归语料；原来写着 `__ipairs_iter` 的两条改成经 `ipairs({})` 取迭代器 |
 
-**对使用者的影响**：调用 `table.unpack(...)` 的脚本会开始报错，改成 `unpack(...)` 即可（Lua 5.1 本来就只有后者）。
+**对使用者的影响**（五项都是改成与官方 5.1 一致）：
+
+- 调用 `table.unpack(...)` 的脚本会开始报错，改成 `unpack(...)` 即可（Lua 5.1 本来就只有后者）。
+- 全局 `__ipairs_iter` 没有了。读过它的脚本或宿主代码改成 `ipairs({})` 的第一个返回值。
+- 改写或清空全局 `next` 不再影响 `pairs`。以前靠替换 `next` 来改变 `pairs` 行为的脚本不再生效，要改就替换 `pairs` 本身。
+- `ipairs` 的迭代器接受数字字符串作控制值，以前这种调用会报错。
+- `io.lines(nil)` 现在报 `FILE* expected, got nil`，以前返回默认输入的迭代器；不带参数的 `io.lines()` 不变。
 
 ### 独立审查之后补的内容
 
@@ -742,12 +748,26 @@ nightly 的 go-fuzz（p1，`FuzzOracleDiff`）找到 `t={}table.unpack(t)`：官
 | 审查意见 | 处理 |
 |---|---|
 | 行为测试里标着「热函数」的用例其实没有升层：直接调用全局 `ipairs` / `pairs` 的函数不会升到 P3 / P4，所以「三种构建一致」没有任何测试在执行 | 新增 `test/difftest/tiered_stdlib_names_test.go` 的 `TestTiered_StdlibNames`：三段确实会升层的脚本，分别在只用解释器、强制升层、自然升温三种方式下执行，要求彼此一致并与 `lua5.1` 一致，并断言 `PromotionCount() > 0`。原用例改了写法和注释，不再声称覆盖升层路径 |
-| 文档对 os / io 缺少的函数前后矛盾：`stdlibAbsent` 登记它们没有注册，而 README 写「os 全部提供」「`os.exit` 不真的退出进程」，设计文档多处写「做简化版」 | README 两个语言版本、[10](./10-stdlib.md) 的 §9.1 / §9.3 / §9.4 / §10.1 / §11 / §12.1 都按现状改了，新增 §9.5 说明 os 库只注册了五个函数；`exemptions` 里与 `stdlibAbsent` 矛盾的条目改掉。新增 `TestStdlibAbsentIsInREADME` 和 `TestStdlibAbsentReasonsResolve`，以后 README 或登记理由与实际不符会失败。这些函数要不要补记在 [#330](https://github.com/Liam0205/wangshu/issues/330) |
+| 文档对 os / io 缺少的函数前后矛盾：`stdlibAbsent` 登记它们没有注册，而 README 写「os 全部提供」「`os.exit` 不真的退出进程」，设计文档多处写「做简化版」 | README 两个语言版本、[10](./10-stdlib.md) 的 §9.1 / §9.3 / §9.4 / §10.1 / §12.1 / §14 都按现状改了，新增 §9.5 说明 os 库只注册了五个函数；`exemptions` 里与 `stdlibAbsent` 矛盾的条目改掉。新增 `TestStdlibAbsentIsInREADME` 和 `TestStdlibAbsentReasonsResolve`，以后 README 或登记理由与实际不符会失败。这些函数要不要补记在 [#330](https://github.com/Liam0205/wangshu/issues/330) |
 | 设计文档还有两处写 `pairs` 返回 `next` | 改成「返回的迭代器与 `next` 行为相同，但不是同一个函数对象」 |
 | 一条新语料里有两个表达式在 fuzz 的 prelude 之下恒成立；prelude 里拦截 `ipairs` 迭代器非有限控制值的检查没有任何测试 | 语料删掉那两个表达式；新增 `internal/oracle/ipairs_guard_test.go` 的 `TestIpairsIteratorGuard` 和两条语料。写测试时还发现这个检查用固定形参接收参数，会把「没有传控制值」变成「传了 nil」，改成原样转发 |
 | 新增的中文段落用了半角标点 | 改成全角 |
 | 存量差异：`ipairs` 的迭代器不接受数字字符串作控制值（官方用 `luaL_checkint`，`ipairs({})(t, "1")` 从下标 1 继续，望舒报 `number expected, got string`） | 在这个 PR 里修了。另用 58 段脚本把所有接收数字参数的库函数逐个传入数字字符串与 `lua5.1` 比对，没有发现第二处 |
 | 存量差异：`debug.traceback` 在 `FuzzOracleDiff` 里两侧输出不同（望舒在主块之下多一层 C 帧，与独立的 `lua5.1` 相同，与内嵌用法不同） | 需要先定以哪种用法为准，记在 [#331](https://github.com/Liam0205/wangshu/issues/331)，这一轮没有改 |
+
+第二轮独立审查（全范围，另一位 reviewer）确认代码和测试没有问题，并用它自己的变异确认 `TestTiered_StdlibNames`
+验证的确实是升层之后的路径（只改升层路径的 `TForLoop` 时，它在 P3、P4 下失败，而解释器上的行为测试照常通过）。
+它提出一条重要问题、四条小问题和三处存量差异：
+
+| 审查意见 | 处理 |
+|---|---|
+| 同一组说法在别处的副本没有改完：[10](./10-stdlib.md) §12.1 新写的说明漏了 `Options.HideFileLoaders`；[12](./12-testing-difftest.md) 还写「`os.exit` 默认不真退」；`llmdoc/reference/embedding-contract.md` 还写「默认面对齐 gopher-lua」；`llmdoc/memory/doc-gaps.md` 里同一个缺口有三条互相矛盾的登记；[11](./11-embedding-arena-abi.md) 把 `Options.Libs` / `Exclude` 写成现有字段；10 §14 的 os 行写「os.execute 默认禁用」 | 六处都按现状改了；doc-gaps 的三条合并成一条。顺着同一个说法还改了 10 §4.7（package 系统没有注册）、§10.4、§15.2，并在 2026-06-11 评审决定的归档里补记「第 6 项没有照此实现」 |
+| `TestStdlibAbsentIsInREADME` 对 `debug.debug` 不起作用：库名和函数名相同，行里本来就有 `debug` 这个词 | 函数与库同名时要求写出全名；README 相应写成 `debug.debug`。从 README 删掉它，测试现在会失败 |
+| 新写的文字把范围总表叫成「§11」，实际是 §14（§11 是 coroutine 库） | 新写的三处改了；`corners_test.go` 和 `tablelib.go` 里原有的「10 §11」也一起改成 §14 |
+| 「对使用者的影响」只写了 `table.unpack` 一项 | 补全为五项 |
+| 改写的一条里全角、半角标点混用 | 统一成全角 |
+| 存量差异：`io.lines(nil)` 官方报 `FILE* expected, got nil`，望舒返回迭代器 | 在这个 PR 里修了：`io.lines` 现在区分「没有参数」和「显式 nil」，非字符串参数先报 `string expected`，与 `liolib.c` 的 `io_lines` 一致。测试在 `test/api/io_handles_test.go` |
+| 存量差异：10 §14 总表不完整（base 行缺 `getfenv` / `setfenv` / `newproxy`，debug 行只列了 12 个缺少函数里的 6 个） | 补全 |
 
 验证：`make all` 与 `make fuzz-oracle` 通过。把 `stdlib.go` 换回修复前的版本：行为测试 9 个用例失败，
 `TestTiered_StdlibNames` 在 P3、P4 两种构建下三段脚本全部失败，名字比对报出那两个多余名字，#329 的输入和两条回归
