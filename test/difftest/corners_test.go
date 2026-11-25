@@ -1,5 +1,5 @@
 // Manual-corner probes + explicit exemptions (a probe-surface mirror of the
-// three provisioning columns in 10 §11).
+// three provisioning columns in 10 §14).
 //
 // Three kinds of entries:
 //   - probe (required column): difftest oracle; missing/mismatched = FAIL;
@@ -18,7 +18,7 @@ import (
 	"github.com/Liam0205/wangshu"
 )
 
-// cornerProbes: corners in the required columns of 10 §11 not covered before
+// cornerProbes: corners in the required columns of 10 §14 not covered before
 // (difftest oracle).
 var cornerProbes = []diffCase{
 	// base required-column supplements
@@ -148,23 +148,23 @@ local ok, e = pcall(print, t)
 return ok, (e:gsub("^[^:]+:%d+: ", ""))`},
 }
 
-// exemptions: the design-exemption list (10 §11 ❌ columns + prose
+// exemptions: the design-exemption list (10 §14 ❌ columns + prose
 // discretion), recorded explicitly to guard against "missed" misjudgments.
 var exemptions = []struct {
 	name   string
 	reason string
 }{
-	{"rawlen", "5.2 特性,10 §11 base ❌ 列(5.1 无 rawlen,# 走 LEN)"},
-	{"require/module/package", "10 §11 base ❌ 列 + §4.7:嵌入式宿主经 Compile 提供脚本,不从文件系统 require"},
-	{"table.unpack/pack/move", "5.2+ 特性,10 §11 table ❌ 列;5.1 的 unpack 是全局函数"},
-	{"string.dump", "10 §11 string ❌ 列(字节码序列化;自定义 ISA 不兼容官方 .luc)"},
-	{"math.tointeger/type/maxinteger/mininteger", "5.3 整数特性,10 §11 math ❌ 列"},
-	{"os.execute", "10 §11 os ❌ 列(安全:嵌入式 VM 不让脚本跑 shell)"},
-	{"io.popen/io.tmpfile", "10 §11 io ❌ 列"},
-	{"debug 库只提供 traceback/getinfo", "10 §11 把 debug.traceback/getinfo 列为要做的、其余列在 ❌ 列。现在这两个已提供并与 lua5.1 一致;sethook / getlocal / setlocal / getupvalue / setupvalue / getregistry 仍然不存在——它们需要解释器没有暴露的内省钩子。getinfo 只填 P1 能诚实给出的字段(currentline / source / short_src / what / func),nups / activelines / namewhat 宁缺不假造"},
+	{"rawlen", "5.2 特性,10 §14 base ❌ 列(5.1 无 rawlen,# 走 LEN)"},
+	{"require/module/package", "10 §14 base ❌ 列 + §4.7:嵌入式宿主经 Compile 提供脚本,不从文件系统 require"},
+	{"table.unpack/pack/move", "5.2+ 特性,10 §14 table ❌ 列;5.1 的 unpack 是全局函数"},
+	{"string.dump", "10 §14 string ❌ 列(字节码序列化;自定义 ISA 不兼容官方 .luc)"},
+	{"math.tointeger/type/maxinteger/mininteger", "5.3 整数特性,10 §14 math ❌ 列"},
+	{"os.execute", "10 §14 os ❌ 列(安全:嵌入式 VM 不让脚本跑 shell)"},
+	{"io.popen/io.tmpfile", "10 §14 io ❌ 列"},
+	{"debug 库只提供 traceback/getinfo", "10 §14 把 debug.traceback/getinfo 列为要做的、其余列在 ❌ 列。现在这两个已提供并与 lua5.1 一致;sethook / getlocal / setlocal / getupvalue / setupvalue / getregistry 仍然不存在——它们需要解释器没有暴露的内省钩子。getinfo 只填 P1 能诚实给出的字段(currentline / source / short_src / what / func),nups / activelines / namewhat 宁缺不假造"},
 	{"os.time{isdst=} 采用 glibc 的 mktime 搜索规则(跨平台统一)", "该字段的解析需要在 tzdata transition 表里搜索,而各家 libc 的搜索步长与顺序不同。wangshu 在所有平台上都用 glibc 的规则(601200 秒步长、每步先后再前、上限 381 步、找不到邻居按默认 1 小时、邻居偏移相同则 delta 取 0),因此**同一脚本在各平台答案一致**;而 PUC 的答案随宿主 libc 变化,所以在非 glibc 宿主(macOS/BSD)上,少数贴着 transition 的输入会与本地编译的 PUC 不同。产品是纯 Go(cgo 只在 internal/oracle 的 build tag 后面),调不到宿主 mktime;逐平台重写各家 libc 的搜索会把一个可验证的答案换成几个无法验证的答案。glibc 上实测零差异:598 个时区 × 1850-2199 九个年份共 21528 例"},
-	{"io 库不提供 open/popen/tmpfile/seek", "三个标准流与 io.read / io.lines / :write / :close / :flush / :read / :lines 现已提供(file-handle userdata,type() 报 userdata,与 lua5.1 一致);仍缺的是需要真实文件的部分——io.open / io.popen / io.tmpfile / f:seek,按 10 §11 的 ❌ 列。io.lines(filename) 因此会抬错而不是静默返回空迭代器"},
-	{"getfenv/setfenv", "不在 10 §11 提供面任何列;唯一设计出处是 P2 不升层形状 F4(p2-bridge §358)——按设计豁免"},
+	{"io 库不提供 open/popen/tmpfile/seek", "三个标准流与 io.read / io.lines / :write / :close / :flush / :read / :lines 现已提供(file-handle userdata,type() 报 userdata,与 lua5.1 一致);仍缺的是需要真实文件的部分——io.open / io.popen / io.tmpfile / f:seek,按 10 §14 的 ❌ 列。io.lines(filename) 因此会抬错而不是静默返回空迭代器"},
+	{"getfenv/setfenv", "不在 10 §14 提供面任何列;唯一设计出处是 P2 不升层形状 F4(p2-bridge §358)——按设计豁免"},
 	{"load(func) 渐进分块语义差", "已实现 reader 循环全量拼接;与 5.1 流式编译的差异仅在超大 chunk 内存峰值,语义等价"},
 	{"os.exit/remove/rename/tmpname/setlocale", "未注册(10 §9.5)。原设计是做简化版(os.exit 不真退出宿主进程、setlocale 只支持 C、文件操作受沙箱限制),一直没有做;要不要补见 issue #330"},
 	{"io.close/flush/input/output/type", "未注册(10 §10.1.1)。默认输入输出固定为进程的 stdin/stdout;句柄上的 f:close() / f:flush() 已提供。要不要补见 issue #330"},
@@ -288,7 +288,7 @@ var stdlibAbsent = map[string]string{
 	"module : function":   "exemptions: require/module/package",
 	"require : function":  "exemptions: require/module/package",
 	"package : table":     "exemptions: require/module/package",
-	"newproxy : function": "undocumented 5.1 function creating a zero-size userdata; not in the 10 section 11 surface",
+	"newproxy : function": "undocumented 5.1 function creating a zero-size userdata; not in the 10 section 14 scope table",
 	// Not a library name: lua.c, the standalone interpreter this test runs, sets it to the command
 	// line. A host embedding the library (wangshu's situation) never has it.
 	"arg : table": "set by the standalone lua.c interpreter, not by the library",
@@ -403,7 +403,7 @@ func TestStdlibAbsentReasonsResolve(t *testing.T) {
 //
 // A name counts as listed when one table row of the section mentions it: `lib.name` spelled out, or
 // the bare name on a row that also names its library (rows abbreviate, e.g. "debug.sethook /
-// getlocal"), or `f:name` for a file method.
+// getlocal"; not accepted when the function is named like the library), or `f:name` for a file method.
 func TestStdlibAbsentIsInREADME(t *testing.T) {
 	excused := map[string]bool{"arg : table": true, "(file metatable).__gc : function": true}
 	for _, readme := range []struct{ path, heading string }{
@@ -460,8 +460,10 @@ func TestStdlibAbsentIsInREADME(t *testing.T) {
 					listed = strings.Contains(row, "`f:"+strings.TrimPrefix(name, "(file metatable).")+"`")
 				case strings.Contains(name, "."):
 					lib, fn, _ := strings.Cut(name, ".")
+					// A function named like its library (debug.debug) must be spelled out: the bare
+					// word is on the row anyway, as the library's name.
 					listed = strings.Contains(row, "`"+name+"`") ||
-						(strings.Contains(row, "`"+lib+".") || strings.Contains(row, "`"+lib+"`")) && word(row, fn)
+						fn != lib && (strings.Contains(row, "`"+lib+".") || strings.Contains(row, "`"+lib+"`")) && word(row, fn)
 				default:
 					listed = strings.Contains(row, "`"+name+"`")
 				}
