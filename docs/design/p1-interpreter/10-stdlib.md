@@ -1946,7 +1946,7 @@ io 库涉及**文件句柄**(full userdata + `__gc`,01 §5.5 / 06 §10),是 stdl
 | `io.read([fmt...])` | 从默认输入(stdin)读 | ✅ **必做** | 格式 `"*l"`(行,默认)/`"*L"（**5.2+，5.1 拒绝**）`/`"*n"`(数)/`"*a"`(全)/数字(n 字节);与 `file:read` 共用一份实现(§10.3) |
 | `io.stdout`/`io.stdin`/`io.stderr` | 标准流(file handle) | ✅ **必做** | **真 file-handle userdata**(§10.2),`type()` 报 `userdata` 与 PUC 一致;分配走 `State.NewUserdata`(§10.2.1) |
 | `io.open(filename [, mode])` | 打开文件,返回 file handle | **❌ 缺口** | 需要文件系统访问控制 + `__gc` 关文件(§10.2 / §9.3);P1 不做 |
-| `io.close([file])` | 关闭文件(默认默认输出) | ❌ 未注册 | 标准流的 `file:close` 已提供(返回 `(nil, msg)`)；全局形式没有注册（§10.1.1，#330） |
+| `io.close([file])` | 关闭文件（默认关闭默认输出） | ❌ 未注册 | 标准流的 `file:close` 已提供（返回 `(nil, msg)`）；全局形式没有注册（§10.1.1，#330） |
 | `io.flush()` | 刷新默认输出 | ❌ 未注册 | 标准流的 `file:flush` 已提供；全局形式没有注册（§10.1.1，#330） |
 | `io.lines([filename])` | 行迭代器 | △ **部分** | 无参形式(默认输入)已提供;`io.lines(filename)` **抬错**而不是静默返回空迭代器(依赖 open) |
 | `io.input([file])`/`io.output([file])` | 取/设默认输入/输出 | ❌ 未注册 | 默认输入/输出固定为进程的 stdin/stdout（§10.1.1，#330） |
