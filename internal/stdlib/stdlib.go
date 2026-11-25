@@ -400,7 +400,13 @@ func registerIterFactory(st *crescent.State, name string, iter crescent.HostFn, 
 // reach it only as ipairs' first result; see registerIterFactory.
 func ipairsIter(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
 	// PUC ipairsaux: luaL_checkint(L, 2) FIRST, then checktype(L, 1, TABLE).
-	if len(args) < 2 || !value.IsNumber(args[1]) {
+	// luaL_checkint goes through lua_tonumber, so a numeric string is a valid
+	// control value: ipairs({})(t, "1") continues from 1.
+	ctl, ok := 0.0, false
+	if len(args) >= 2 {
+		ctl, ok = toNumberStr(st, args[1])
+	}
+	if !ok {
 		got := "no value"
 		if len(args) >= 2 {
 			got = st.TypeName(args[1])
@@ -418,7 +424,7 @@ func ipairsIter(st *crescent.State, args []value.Value) ([]value.Value, *crescen
 	// The increment happens in int32 too, so it WRAPS like PUC's C int does:
 	// from 2147483647 the next index is -2147483648, not 2147483648. Adding 1 to
 	// the narrowed value as a float64 never wraps and missed that key.
-	i32 := cCharCastInt32(value.AsNumber(args[1])) + 1
+	i32 := cCharCastInt32(ctl) + 1
 	i := float64(i32)
 	v, e := st.RawGet(value.GCRefOf(args[0]), value.NumberValue(i))
 	if e != nil {
