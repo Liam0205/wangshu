@@ -91,7 +91,7 @@ func tableFnForeachi(st *crescent.State, args []value.Value) ([]value.Value, *cr
 }
 
 // tableFnSetn: table.setn -- 5.1.5 empirically raises "'setn' is obsolete"
-// directly (the 10 §11 △ column says "no-op", but oracle behavior takes
+// directly (the 10 §14 △ column says "no-op", but oracle behavior takes
 // priority: match the error wording to preserve the diff).
 func tableFnSetn(_ *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
 	// PUC's setn runs luaL_checktype(L, 1, LUA_TTABLE) BEFORE reaching the
@@ -1462,7 +1462,7 @@ const (
 // registerStdStreams installs io.stdout / io.stderr / io.stdin as file-handle userdata
 // sharing one metatable that provides :write, :close, :read and :lines.
 //
-// 10 §11 lists these as required. PUC reports them as "userdata", so a table would be
+// 10 §14 lists these as required. PUC reports them as "userdata", so a table would be
 // visible through type() -- which is why this needs real userdata and therefore the
 // GC-registered allocator in crescent (see State.NewUserdata for what a first attempt
 // got wrong).
@@ -1819,11 +1819,20 @@ func ioFnRead(st *crescent.State, args []value.Value) ([]value.Value, *crescent.
 
 // ioFnLines is io.lines with no filename: iterate lines of the default input.
 func ioFnLines(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
-	if len(args) > 0 && args[0] != value.Nil {
-		// io.lines(filename) needs io.open, which P1 does not provide (10 §11 ❌).
-		return nil, crescent.NewError("io.lines with a filename is not supported")
+	if len(args) == 0 {
+		return []value.Value{makeLineIterator(st, true)}, nil
 	}
-	return []value.Value{makeLineIterator(st, true)}, nil
+	// PUC's io_lines, argument by argument. An explicit nil is not "no argument": it takes the
+	// default-input branch, which then runs f_lines on stack slot 1 -- the nil itself -- and
+	// raises. Anything else goes through luaL_checkstring before the file is opened.
+	if args[0] == value.Nil {
+		return nil, crescent.NewArgError(1, "FILE* expected, got nil")
+	}
+	if value.Tag(args[0]) != value.TagString && !value.IsNumber(args[0]) {
+		return nil, crescent.NewArgError(1, "string expected, got "+st.TypeName(args[0]))
+	}
+	// io.lines(filename) needs io.open, which P1 does not provide (10 §14 ❌).
+	return nil, crescent.NewError("io.lines with a filename is not supported")
 }
 
 // makeLineIterator builds the closure both io.lines and file:lines hand back.
@@ -1853,7 +1862,7 @@ func makeLineIterator(st *crescent.State, readable bool) value.Value {
 
 // debugFns is the P1 subset: traceback and getinfo (09 §13). The rest of 5.1's debug
 // library (sethook, getlocal, setlocal, getupvalue, setupvalue, getregistry) stays out --
-// 10 §11 lists those in the ❌ column, and they need introspection hooks the interpreter
+// 10 §14 lists those in the ❌ column, and they need introspection hooks the interpreter
 // does not expose.
 var debugFns = []entry{
 	{"traceback", debugFnTraceback},

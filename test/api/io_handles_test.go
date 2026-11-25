@@ -54,6 +54,18 @@ func TestIOHandles_MatchPUC(t *testing.T) {
 			`local a, b, c = io.stdout:read() return tostring(a) .. "," .. tostring(b) .. "," .. tostring(c)`,
 			"nil,Bad file descriptor,9"},
 		{"lines is a function", `return type(io.stdin:lines())`, "function"},
+		// io.lines distinguishes "no argument" from an explicit nil, as PUC's io_lines does: the nil
+		// takes the default-input branch and is then rejected as a file handle. Other non-strings
+		// fail luaL_checkstring before any file would be opened.
+		{"io.lines without arguments", `return type(io.lines())`, "function"},
+		{"io.lines explicit nil", `return tostring(select(2, pcall(io.lines, nil)))`,
+			"bad argument #1 to '?' (FILE* expected, got nil)"},
+		{"io.lines explicit nil, called by name", `return tostring(select(2, pcall(function() return io.lines(nil) end)))`,
+			`[string "test"]:1: bad argument #1 to 'lines' (FILE* expected, got nil)`},
+		{"io.lines boolean", `return tostring(select(2, pcall(io.lines, false)))`,
+			"bad argument #1 to '?' (string expected, got boolean)"},
+		{"io.lines table", `return tostring(select(2, pcall(io.lines, {})))`,
+			"bad argument #1 to '?' (string expected, got table)"},
 	} {
 		if got := testutil.RunOne(t, tc.src).Str(); got != tc.want {
 			t.Errorf("%s: got %q, want %q", tc.name, got, tc.want)
