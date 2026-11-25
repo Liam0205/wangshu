@@ -575,7 +575,7 @@ base 库的函数挂在 **globals 表**(直接全局可见,无需 `base.` 前缀
 | `type(v)` | 返回 v 的类型名 | `(v)` → string | ✅ | `"nil"`/`"boolean"`/`"number"`/`"string"`/`"table"`/`"function"`/`"userdata"`/`"thread"`(01 §3.3);light+full ud 都 `"userdata"` |
 | `tostring(v)` | v 转字符串(查 `__tostring`) | `(v)` → string | ✅ | 机制 07 §11(`__tostring` + 默认格式);number 用 `%.14g`;table/function 地址格式差分豁免(§4.2) |
 | `tonumber(v [, base])` | v 转数字;带 base 时按进制解析整数 | `(v [,base])` → number or nil | ✅ | 无 base **与 `base == 10`** 都走 `parseLuaNumber`(07 §5.2,与算术共用);**只有非 10 的 base** 走逐字符进制解析(§4.3) |
-| `pairs(t)` | 返回遍历全表的迭代三元组 | `(t)` → (function, table, nil) | ✅ | 返回的迭代器与 `next` 行为相同，但**不是全局 `next` 那个函数对象**(§4.4);**不查 `__pairs`**(5.2+,07 §2.3 排除);遍历序见 §4.4 |
+| `pairs(t)` | 返回遍历全表的迭代三元组 | `(t)` → (function, table, nil) | ✅ | 返回的迭代器与 `next` 行为相同，但**不是全局 `next` 那个函数对象**（§4.4）；**不查 `__pairs`**（5.2+，07 §2.3 排除）；遍历序见 §4.4 |
 | `ipairs(t)` | 返回数组迭代三元组(从 1 连续到首个 nil) | `(t)` → (function, table, 0) | ✅ | 返回 ipairs 迭代器 host fn + t + 0;**不查 `__ipairs`**(5.2+ 引入 5.3 废,排除) |
 | `next(t [, k])` | 表的下一个键值对(`k=nil` 取第一个) | `(t [,k])` → (key, val) or nil | ✅ | 遍历序 = 内部 array 段后 node 段顺序(§4.4,呼应 06 §9.3/§11) |
 | `select(n, ...)` | `n` 是数字:返回从第 n 个起的可变参;`n=='#'`:返回参数个数 | `(n, ...)` → ... or number | ✅ | `select('#', ...)` 取个数;`select(2, a,b,c)` 返回 b,c;负 n 从尾数(5.1) |
@@ -725,8 +725,9 @@ func hostTonumber(vm *VM, th *Thread) int {
 - **`next(t, k)`** 是遍历的核心 host function:`k=nil` 返回第一个键值对;给 `k` 返回其后继。遍历顺序 = **先 array
   段(下标 1..asize 顺序)后 node 段(node 数组物理顺序)**(01 §5.2 布局)。`next` 在 node 段从「k 所在槽的下一个
   非空槽」继续。
-- **`pairs(t)`** 返回三元组 `(iter, t, nil)`,其中 `iter` 与 `next` 行为相同、但不是全局 `next` 那个函数对象(见下面
-  「私有持有迭代器」一条)。泛型 for(`for k,v in pairs(t)`)用它:每次 `TFORLOOP`(05 §10.2)调 `iter(t, ctrl)`，ctrl 从 nil 起步进。**不查 `__pairs`**（5.2+ 引入，07 §2.3 排除）。
+- **`pairs(t)`** 返回三元组 `(iter, t, nil)`，其中 `iter` 与 `next` 行为相同，但不是全局 `next` 那个函数对象（见下面
+  「私有持有迭代器」一条）。泛型 for（`for k,v in pairs(t)`）用它：每次 `TFORLOOP`（05 §10.2）调 `iter(t, ctrl)`，
+  ctrl 从 nil 起步进。**不查 `__pairs`**（5.2+ 引入，07 §2.3 排除）。
 - **`ipairs(t)`** 返回 `(ipairsIterator, t, 0)`:迭代器每次取 `t[i+1]`,遇 nil 停。**只遍历数组段连续部分**(从 1
   到首个 nil),不遍历 hash 部分。**不查 `__ipairs`**(5.2 引入 5.3 废,排除)。
 - **`pairs` 和 `ipairs` 各自私有持有迭代器，不经过全局表**（2026-11-25，#329）。官方 `lbaselib.c` 的 `auxopen`
@@ -885,6 +886,9 @@ STW §7.3)。本文只列 opt 字符串 → 行为映射(对齐 Lua 5.1):
 >
 > **记 §15.2 缺口**:实现期逐函数核对 gopher-lua 的 package/module 实际面,登记进裁剪表;
 > conformance 测试中超出 gopher 面的 require 用例标注为已知限制。
+>
+> **实际状态（2026-11-25 核对）**：上面是原始设计，没有实现。`require`、`module` 和 `package` 表都没有注册
+> （`TestDiff_StdlibNames` 的 `stdlibAbsent` 里有这三条），README 把模块系统列在「不提供」里。
 
 ---
 
@@ -1785,7 +1789,7 @@ os 库**纯 Go 实现**(roadmap §0 禁 cgo),用 Go `time`/`os` 包。跨平台�
 | `os.remove(filename)` | 删文件 | — | ❌ 未注册 | 同上（§9.5） |
 | `os.rename(old, new)` | 重命名 | — | ❌ 未注册 | 同上（§9.5） |
 | `os.tmpname()` | 临时文件名 | — | ❌ 未注册 | 同上（§9.5） |
-| `os.execute([cmd])` | 执行 shell 命令 | — | ❌ 未注册 | 任意命令执行，安全风险最高；按设计不提供 |
+| `os.execute([cmd])` | 执行 shell 命令 | — | ❌ 未注册 | 任意命令执行，安全风险最高；没有注册（§9.5） |
 | `os.setlocale([loc [, cat]])` | 设 locale | — | ❌ 未注册 | 纯 Go 没有 C locale（§9.4）；原计划只支持 `"C"`，实际没有注册（§9.5） |
 | `os.getenv`/`os.time` 等只读项 | — | — | ✅ | 无副作用,默认启用 |
 
@@ -1917,8 +1921,10 @@ os 库的部分函数有**进程级副作用或安全风险**,在嵌入式宿主
 （`execute`、`exit`、`remove`、`rename`、`tmpname`、`setlocale`）都**没有注册**，脚本调用它们得到的是
 `attempt to call field 'exit' (a nil value)` 这一类错误。§9.1 的表已经按这个现状改了。
 
-§9.3 和 §9.4 写的「做简化版」（`os.exit` 不真退出、`os.setlocale` 只支持 `"C"`、文件操作受沙箱限制）一直
-没有做，这两节保留作为原始设计。它与实现不一致这件事，是 #329 把望舒和官方的名字集合逐个比对时才确认的；
+§9.3 和 §9.4 写的做法（默认提供完整的 os 库、`os.exit` 不真退出、`os.setlocale` 只支持 `"C"`、由 §12.1 的开关收紧）
+一直没有做，这两节保留作为原始设计。其中「默认提供完整 os 库，含 `execute` / `exit`」是 2026-06-11 设计评审的决定
+（`llmdoc/memory/decisions/2026-06-11-design-review-decisions.md` 第 6 项），实现没有照此进行，而 README 一直把
+`os.execute` 列在「不提供」里。两者哪个算数需要维护者重新确认。它与实现不一致这件事，是 #329 把望舒和官方的名字集合逐个比对时才确认的；
 在那之前 README 也写着「os 全部提供」「`os.exit` 不真的退出进程」。
 
 现在由 `test/difftest/corners_test.go` 的 `TestDiff_StdlibNames` 逐个名字检查（§12.3）：这六个名字登记在
@@ -1976,7 +1982,7 @@ file-handle userdata**,共享一张 metatable 提供 `write`/`close`/`read`/`lin
 `io.lines`(无参形式)也在。**为什么必须是真 userdata 而不是一张表**:PUC 报的是 `userdata`,一张表会
 被 `type()` 露出来。
 
-**仍然缺的是需要真实文件的那一档**:`io.open` / `io.popen` / `io.tmpfile` / `f:seek`(按 §11 的 ❌ 列)。
+**仍然缺的是需要真实文件的那一档**:`io.open` / `io.popen` / `io.tmpfile` / `f:seek`(按 §14 的 ❌ 列)。
 所以 `io.lines(filename)` **抬错**而不是静默返回一个空迭代器——静默返回空迭代器会让「文件读不到」看起来
 像「文件是空的」。
 
@@ -2012,7 +2018,7 @@ collector 的 `LinkSweep`**,所以对象 header 里既没有颜色也没有 swee
 `*a`、字节数、EOF、默认、`io.stdin:read`、`io.lines`)全部与 `lua5.1` 一致。方法论见
 `llmdoc/guides/prove-the-path-under-test.md` §4.10。
 
-`debug` 库现在提供 `traceback` 与 `getinfo`(09 §13),其余仍不存在(§11 的 ❌ 列)。过程与判据见
+`debug` 库现在提供 `traceback` 与 `getinfo`(09 §13),其余仍不存在(§14 的 ❌ 列)。过程与判据见
 `llmdoc/memory/reflections/2026-07-29-issue205-206-208-io-userdata-debug.md`;上一轮的撤回决策见
 `llmdoc/memory/reflections/2026-07-28-issue201-203-unpack-skip-thresholds.md` 教训 4 与
 `llmdoc/guides/prove-the-path-under-test.md` §4.3b。
@@ -2121,6 +2127,7 @@ io 库的文件操作(`io.open`/`io.lines`/`io.popen`)与 os 库的文件操作�
 
 - **`io.open` 受文件系统访问控制**:嵌入式宿主可禁止脚本打开任意文件(沙箱)。禁用走 §12.1 三层机制:
   `Exclude: {"io.open","io.lines"}`(留 stdout/stdin/stderr 的最小 io)或整库 `^LibIO`。
+  （这是原始设计。现状是 `io.open` 没有注册，§12.1 的开关也没有实现，见 §10.1.1 与 §12.1 开头的说明。）
 - **`io.popen` 默认不做**(进程管道 = 命令执行,安全风险等同 `os.execute`,§9.3)。
 - **默认输出可重定向**:宿主可把 `io.stdout` 的底层从 `os.Stdout` 换成宿主提供的 writer(捕获脚本输出而非直接
   写终端)——这对「宿主收集脚本 print 输出」有用,P1 经 `Options` / `State` 配置默认输出 writer(记 §15.2 缺口)。
@@ -2161,9 +2168,10 @@ coroutine 库的**机制全在 [08-coroutines](./08-coroutines.md)** 定稿(Thre
 ### 12.1 `luaL_openlibs` 等价物:openlibs
 
 > **本节的三层开关（`Libs` 位掩码、`LibsSafe` 预设、`Exclude` 路径表）是原始设计，没有实现。** 现状是
-> `internal/stdlib` 的 `OpenAll` 无条件注册全部已实现的函数，`wangshu.Options` 里没有这三个字段；宿主能调的
-> 只有 `Options.AllowFileLoad`（打开 `loadfile` / `dofile`）。「缺省对齐 gopher-lua 的提供面」也不是现状：
-> package 库和一部分 os / io 函数没有注册（§9.5、§10.1.1）。要不要做这套开关记在
+> `internal/stdlib` 的 `OpenAll` 无条件注册全部已实现的函数，`wangshu.Options` 里没有这三个字段。宿主实际能用的
+> 开关是两个：`Options.AllowFileLoad`（打开 `loadfile` / `dofile` 读文件，默认关）和 `Options.HideFileLoaders`
+> （从全局表里去掉 `loadfile` / `dofile` / `loadstring` / `load`）。「缺省对齐 gopher-lua 的提供面」也不是现状：
+> package 库和一部分 os / io 函数没有注册（§4.7、§9.5、§10.1.1）。这套开关和缺少的函数要不要做，记在
 > [#330](https://github.com/Liam0205/wangshu/issues/330)。
 
 Lua 5.1 用 `luaL_openlibs(L)` 一次性打开所有标准库。望舒等价物在 `NewState`(11 §1.2 `Options.OpenLibs`)时
@@ -2278,7 +2286,7 @@ wangshu.NewState(wangshu.Options{Exclude: []string{"os.execute", "os.exit"}})
   写这个用例时还确认了一批「设计文档说有、实际没有」的名字：`os.exit` / `remove` / `rename` / `tmpname` /
   `setlocale` 和 `io.close` / `flush` / `input` / `output` / `type` 都没有注册（调用它们得到的是
   `attempt to call field 'exit' (a nil value)` 这一类错误）。`stdlibAbsent` 按实际情况把它们登记为缺少，本文
-  §9.1、§10.1 和 §11 总表也已按现状改过（§9.5、§10.1.1）；要不要补上记在
+  §9.1、§10.1 和 §14 总表也已按现状改过（§9.5、§10.1.1）；要不要补上记在
   [#330](https://github.com/Liam0205/wangshu/issues/330)。
 
 ---
@@ -2339,14 +2347,14 @@ stdlib 的 shadow stack 纪律(§3)漏 Pin 是**最难调的 bug 类**(06 §6.3:
 
 | 库 | ✅ 必做(conformance 所需) | △ 简化/部分 | ❌ 缺口(P1 不做) |
 |---|---|---|---|
-| **base** | print, type, tostring, tonumber, pairs, ipairs, next, select, rawget, rawset, rawequal, setmetatable, getmetatable, assert, error, pcall, xpcall, unpack, `_G`, `_VERSION`, collectgarbage(collect/count/stop/restart/setpause) | gcinfo, loadstring, load, loadfile, dofile, collectgarbage(step/setstepmul 近似) | **rawlen**(5.2), **require/module/package 系统**, **table.unpack/pack/move**(5.2+) |
+| **base** | print, type, tostring, tonumber, pairs, ipairs, next, select, rawget, rawset, rawequal, setmetatable, getmetatable, assert, error, pcall, xpcall, unpack, `_G`, `_VERSION`, collectgarbage(collect/count/stop/restart/setpause) | gcinfo, loadstring, load, loadfile, dofile, collectgarbage(step/setstepmul 近似) | **rawlen**(5.2), **require/module/package 系统**, **table.unpack/pack/move**(5.2+), getfenv/setfenv(与分层执行的形状分析冲突), newproxy(官方未写入手册的函数) |
 | **string** | len, sub, upper, lower, rep, reverse, byte, char, format, find, match, gmatch, gsub(**全 pattern 全集** §6) | — | string.dump(字节码序列化) |
 | **table** | insert, remove, concat, sort, maxn | getn, setn(=`#t`/空操作) | table.unpack/pack/move(5.2+) |
 | **math** | abs, ceil, floor, sqrt, sin, cos, tan, asin, acos, atan, atan2, exp, log, log10, pow, fmod, modf, max, min, random, randomseed, huge, pi, rad, deg, frexp, ldexp, sinh, cosh, tanh | — | math.tointeger/type/maxinteger/mininteger(5.3 整数) |
-| **os** | time, clock, date, difftime, getenv | — | os.execute(默认禁用,安全);exit, remove, rename, tmpname, setlocale(原计划做简化版,**实际未注册**,见 §9.5 与 #330) |
+| **os** | time, clock, date, difftime, getenv | — | execute, exit, remove, rename, tmpname, setlocale(**都没有注册**;原设计是提供并由宿主开关收紧,见 §9.5 与 #330) |
 | **io** | write, read, stdout, stdin, stderr(#205 已交付;标准流是真 file-handle userdata,见 §10.1.1 / §10.2.1)+ 标准流的 file:write/close/read/lines/flush | lines(无参已提供、带文件名抬错) | io.open, io.popen, io.tmpfile, file:seek(需要真实文件);close, flush, input, output, type(原计划做简化版,**实际未注册**,见 §10.1.1 与 #330) |
 | **coroutine** | create, resume, yield, status, wrap, running(**机制全在 08**) | — | — |
-| **debug**(09 §13) | traceback(#205 已交付,含「显式 nil 原样返回」) | getinfo(只填 P1 能诚实给出的字段:currentline / source / short_src / what / func;nups / activelines / namewhat **宁缺不假造**) | sethook, getlocal/setlocal, getupvalue/setupvalue, getregistry(需要解释器未暴露的内省钩子) |
+| **debug**(09 §13) | traceback(#205 已交付,含「显式 nil 原样返回」) | getinfo(只填 P1 能诚实给出的字段:currentline / source / short_src / what / func;nups / activelines / namewhat **宁缺不假造**) | sethook/gethook, getlocal/setlocal, getupvalue/setupvalue, getregistry, getmetatable/setmetatable, getfenv/setfenv, debug.debug(需要解释器未暴露的内省钩子) |
 
 **P1 必做的判定标准**:① 跑 Lua 5.1 conformance 测试套必需(base 核心 + string/table/math 全集 + io 最小输出);
 ② 首个宿主(规则引擎)脚本所需(标量/表/字符串/数学操作)。**可延后的判定标准**:① 嵌入式场景罕用(文件 IO
@@ -2402,8 +2410,8 @@ stdlib 的 shadow stack 纪律(§3)漏 Pin 是**最难调的 bug 类**(06 §6.3:
 
 ### 15.2 文档缺口 / 待决(记入 [memory/doc-gaps](../../../llmdoc/memory/doc-gaps.md))
 
-- **module/package 系统范围**(§4.7):`require`/`module`/完整 `package`(path/loaders/loaded/preload)P1 是极简
-  (preload+loaded,无文件搜索)还是缺口,待首个宿主需求确认。无 cgo → 无 C 加载器(`package.cpath` 不适用)。
+- **module/package 系统范围**(§4.7):`require`/`module`/`package` **目前都没有注册**。要做成极简
+  (preload+loaded,无文件搜索)还是维持不提供,待首个宿主需求确认。无 cgo → 无 C 加载器(`package.cpath` 不适用)。
   conformance 若含 require 用例,标 P1 已知限制。
 - **`collectgarbage` step/setstepmul 简化**(§4.6):P1 只 full GC(06 §8.3),`"step"` 近似为触发 full GC,
   `setstepmul` 存而不用。脚本依赖增量步进精确语义会微差,记口径。增量 GC 是 P3+。

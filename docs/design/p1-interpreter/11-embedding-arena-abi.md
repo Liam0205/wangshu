@@ -74,7 +74,15 @@ type Options struct {
     Libs              Lib      // 标准库位掩码(零值=LibsDefault 对齐 gopher-lua 面;LibsSafe=计算沙箱;见 10 §12.1)
     Exclude           []string // 函数级排除路径(注册后删除),如 {"os.execute","io.open"}(10 §12.1 三层粒度)
 }
+```
 
+> **`Libs` 和 `Exclude` 是原始设计，没有实现**（2026-11-25 核对）：`wangshu.Options` 里没有这两个字段，标准库是
+> 无条件注册的。实际存在、上面没有列出的开关是 `AllowFileLoad`（允许 `loadfile` / `dofile` 读文件，默认关）和
+> `HideFileLoaders`（从全局表里去掉 `loadfile` / `dofile` / `loadstring` / `load`）。默认提供面也没有对齐
+> gopher-lua：package 库和一部分 os / io 函数没有注册。详见 [10](./10-stdlib.md) §12.1 开头的说明和
+> [#330](https://github.com/Liam0205/wangshu/issues/330)。字段的准确清单以 `wangshu.go` 的 `Options` 为准。
+
+```go
 // NewState 创建一个独立 VM 实例。它持有:
 //   - globals 表(_ENV / R1 根,06 §5.1)
 //   - registry 表(host 引用锚点,06 §5.1 R2)
@@ -733,7 +741,7 @@ func (s *State) CallGlobal(name string, args ...Value) ([]Value, error)
 用法(对标 gopher-lua 的 `L.CallByParam` 风格):
 
 ```go
-state := wangshu.NewState(wangshu.Options{})  // 零值 Libs = LibsDefault(对齐 gopher-lua 面,10 §12.1)
+state := wangshu.NewState(wangshu.Options{})  // 零值:注册全部已实现的标准库函数(Libs 位掩码没有实现,见 §1.2)
 prog, _ := wangshu.Compile([]byte(`function score(x) return x*x+1 end`), "rules")
 prog.Call(state, nil)                       // 先跑顶层定义 score 全局函数
 // per-item 调用(每次跨界一次):

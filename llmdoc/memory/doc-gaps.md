@@ -5,9 +5,15 @@
 
 ## 当前缺口
 
-- **【未做，等维护者决定】os / io 库缺少十个官方函数，库开关没有实现** — `os.exit` / `remove` / `rename` / `tmpname` /
-  `setlocale` 和 `io.close` / `flush` / `input` / `output` / `type` 没有注册；设计文档 10 §12.1 的 `Libs` / `LibsSafe` /
-  `Exclude` 三层开关没有实现。README 和设计文档已按现状改过（2026-11-25，#329）。哪些要补、`os.exit` 取什么语义，见
+- **【未做，等维护者决定】标准库提供面没有达到「对齐 gopher-lua」的设计目标，三层开关没有实现** — 2026-06-11 评审决定
+  「默认面 = gopher-lua 的 OpenLibs 提供面（os 默认完整，含 execute / exit）+ LibsSafe / Libs / Exclude 三层开关」
+  （`decisions/2026-06-11-design-review-decisions.md` 第 6 项）。现状（2026-11-25 逐个名字核对，#329）：
+  `require` / `module` / `package`、`os.execute` / `exit` / `remove` / `rename` / `tmpname` / `setlocale`、
+  `io.open` / `popen` / `tmpfile` / `close` / `flush` / `input` / `output` / `type` 都没有注册；三层开关没有实现，
+  宿主能用的开关只有 `Options.AllowFileLoad` 和 `Options.HideFileLoaders`。README、设计文档 10 / 11 / 12 和
+  [[embedding-contract]] 已按现状改过。逐个名字的清单是 `test/difftest/corners_test.go` 的 `stdlibAbsent`
+  （`TestDiff_StdlibNames` 对着 lua5.1 检查，`TestStdlibAbsentIsInREADME` 检查 README）。本条合并了原来分开登记的
+  「stdlib 提供面逐函数核对待兑现」和「三层禁用机制未完整完成」两条。哪些要补、`os.exit` 取什么语义、开关要不要做，见
   [#330](https://github.com/Liam0205/wangshu/issues/330)。
 
 - **【未做，等维护者决定】主块之下的 C 帧在两处取了相反的答案** — 栈回溯和 `debug.getinfo` 按独立的 `lua5.1`（末尾有
@@ -73,13 +79,9 @@
 
 - **P1 各文档的开放缺口分散在各篇 §缺口节** — 13 篇 P1 文档各自带「风险与缺口」节,汇总入口是 `docs/design/p1-interpreter/00-overview.md` §6;12 中标「待差分核对」的措辞已在 M14 + 收尾轮兑现(语义偏差被 difftest 捕获修复,见 implementation-progress.md),余项随上面「设计文档回填待办」收敛。
 
-- **stdlib 提供面逐函数核对待兑现** — 评审轮已定「默认面 = gopher-lua 的 OpenLibs 提供面」(见 `decisions/2026-06-11-design-review-decisions.md` 第 6 项);收尾轮已补 table/os/io/math 全量与 string 完整面,baseenv 补全轮(`423d690`)再补 _G/_VERSION/collectgarbage/gcinfo/loadfile/dofile/load 等;豁免注册表 15 项显式登记(`test/difftest/corners_test.go` 的 `TestExemptions_Documented`,probe/exempt/approx 三类镜像 10 §11 三列)已提供部分审计面,但与 gopher 提供面的**逐函数核对清单**(`docs/design/p1-interpreter/10-stdlib.md` §4.7)仍待落实。
-
 - **P3 开工前置确认(待办)** — P3 开工前须向首个宿主确认「列内核是否跑在协程里」,决定协程不升层是否成立(决策第 7 项;`docs/design/p3-wasm-tier/07-coroutine-thread-rule.md` §3.2)。依赖宿主,设计期无法定下来。
 
 - **engineering.md 的脚本协议待定稿** — 测试加固轮已完成其中一项:nightly 长时间运行 + INFRA/DIVERGENCE 分流自动开 issue 已由 `.github/workflows/nightly-diff-fuzz.yml` 实现(triage 判据内联在 workflow 而非独立 `fuzz-triage.sh`);审查修复轮区间内的 `a8bdca3` 把分流判据改为**机器可读 DIVERGENCE 标记**——测试侧输出 `seed=`/`kind=` 三类标记,workflow 只 grep 该标记,不再靠 grep "byte-diff" 文本启发式;**该新判据仍未经真实失败检验**,首次真实告警时需验证。仍待定:非 Ubuntu runner 的 oracle 源码编译缓存、bench-gate 回退阈值、agentic workflows 接入时机(见 `docs/design/engineering.md` §7);engineering.md §3.2 文本与完成形式(内联 vs 独立脚本、标记协议)的差异待回填轮顺手对账(2026-07-10 部分回填:调度频率 + 小时级 epoch 种子已同步进 §3.2,伪码里的 fuzz-triage.sh / fuzztime 形式差异仍待对账)。nightly-benchmark 待办现已有现成基础:`benchmarks/realworld/` 五脚本 + `benchmarks/baseline/` 三档可直接作为夜跑基准面。
-
-- **三层禁用机制(LibsSafe/Libs/Exclude)未完整完成** — 评审轮定稿的 stdlib 三层收紧机制(`docs/design/p1-interpreter/10-stdlib.md` §12.1:LibsSafe 预设 / Libs 位掩码 / Exclude 函数级)当前只完成了单点门控 `Options.AllowFileLoad`(loadfile/dofile 默认禁用,显式开启;豁免注册表已登记);完整位掩码机制留待首个宿主接入前完成。[[embedding-contract]] 措辞已同步为「设计承诺三层、现状单点门控」。
 
 - **【v0.1.0 → v0.1.3 累积偏移审计】P2+ 工作时处理的四项负债** — 2026-06-12 累积偏移审计(详见 [[issue234-api-gap-round-2]] 与 issue #5/#6 round-3 反思)在三轮 pineapple 接入后扫出 4 处不算直接违反设计、但应在 P2+ 工作触达对应代码时顺手处理的负债:
 
