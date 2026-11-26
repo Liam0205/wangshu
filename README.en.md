@@ -174,7 +174,7 @@ Wangshu implements the Lua 5.1 core language, with the same syntax surface as Lu
 | Buffering | `f:setvbuf` | Wangshu writes to the standard streams without buffering and the buffering mode cannot be set; on the official implementation the call succeeds on a standard stream |
 | Default-stream management | `io.input` / `io.output` / `io.close` / `io.flush` / `io.type` | The default input and output are fixed to the process stdin / stdout; calling `f:close()` / `f:flush()` on a handle works |
 | Locale | `os.setlocale` | A pure Go implementation has no C locale; character classes and `os.date` always behave as in the C locale |
-| debug interface | Everything in `debug` other than `traceback` / `getinfo` (`sethook` / `gethook` / `getlocal` / `setlocal` / `getupvalue` / `setupvalue` / `getregistry` / `getmetatable` / `setmetatable` / `getfenv` / `setfenv` / `debug.debug`) | Needs interpreter-internal hooks |
+| debug interface | Everything in `debug` other than `traceback` / `getinfo` (`sethook` / `gethook` / `getlocal` / `setlocal` / `getupvalue` / `setupvalue` / `getregistry` / `getmetatable` / `setmetatable` / `getfenv` / `setfenv` / `debug.debug`) | None is registered; the reason for each is in [09-errors-pcall](docs/design/p1-interpreter/09-errors-pcall.md) §13.3 (Chinese) |
 | Module system | `require` / `module` / `package` | The host supplies scripts through `Compile`; modules are not loaded from the filesystem |
 | Bytecode serialisation | `string.dump` | Wangshu's bytecode format is not compatible with the official `.luc` |
 | Environment ops | `getfenv` / `setfenv` | Conflicts with the shape analysis that tiered execution relies on |

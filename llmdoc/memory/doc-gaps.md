@@ -5,6 +5,11 @@
 
 ## 当前缺口
 
+- **【未修，产品缺陷】遍历过程中把当前字段赋成 `nil` 会报 `invalid key to 'next'`** — `for k in pairs(t) do t[k] = nil end`
+  官方正常遍历完，望舒报错（数组部分的键除外）。`rawSet` 删除时把哈希节点的键也清掉了，`rawNext` 找不到它；官方保留键（dead key）。
+  差分 fuzz 的 prelude 用排序遍历，官方测试套件里测这件事的两段都在截断行之后，所以一直没被发现。见
+  [#338](https://github.com/Liam0205/wangshu/issues/338)。
+
 - **【未做，等维护者决定】标准库提供面没有达到「对齐 gopher-lua」的设计目标，三层开关没有实现** — 2026-06-11 评审决定
   「默认面 = gopher-lua 的 OpenLibs 提供面（os 默认完整，含 execute / exit）+ LibsSafe / Libs / Exclude 三层开关」
   （`decisions/2026-06-11-design-review-decisions.md` 第 6 项）。现状（2026-11-25 逐个名字核对，#329）：
@@ -25,7 +30,8 @@
 - **【未做】`p4Corpus` 有 12 个出错路径用例升了层却从未进入原生码** — 内核直接放在 `pcall` 下面，而被宿主函数调用的
   Lua 函数固定由解释器执行。2026-11-26 用 `State.GibbousEntries()` 扫出来的；把它们临时改写成经包装函数调用之后结果与
   解释器、与 lua5.1 一致，没有发现缺陷。语料的修改和给 `TestP4_Tiered` / `TestP3_Tiered` 加执行侧断言，见
-  [#333](https://github.com/Liam0205/wangshu/issues/333)。规则见 [[prove-the-path-under-test]] §2.2c。
+  [#333](https://github.com/Liam0205/wangshu/issues/333)。`test/fuzz` 的 `TestTieredOracleDiffActuallyPromotes` 是同一类：payload 里的
+  函数只调用一次，`GibbousEntries` 不增长，它证明的是编译而不是执行（记在同一个 issue 的评论里）。规则见 [[prove-the-path-under-test]] §2.2c。
 
 - **【未做】`TestIssue177_StringLimitContextCanceled` 依赖 5 毫秒定时器的时序** — 只在 P4 构建里编译。master `8d8253c` 上
   默认并行度 400 次失败 5 次，`GOMAXPROCS=1` 每次都失败；被测脚本不设 context 时 3.4 到 4.9 毫秒就跑完，比超时短。是测试
