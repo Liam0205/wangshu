@@ -26,6 +26,10 @@
   解释器、与 lua5.1 一致，没有发现缺陷。语料的修改和给 `TestP4_Tiered` / `TestP3_Tiered` 加执行侧断言，见
   [#333](https://github.com/Liam0205/wangshu/issues/333)。规则见 [[prove-the-path-under-test]] §2.2c。
 
+- **【未做】`TestIssue177_StringLimitContextCanceled` 依赖 5 毫秒定时器的时序** — 只在 P4 构建里编译。master `8d8253c` 上
+  默认并行度 400 次失败 5 次，`GOMAXPROCS=1` 每次都失败；被测脚本不设 context 时 3.4 到 4.9 毫秒就跑完，比超时短。是测试
+  的问题，不是 #177 的修复失效。见 [#334](https://github.com/Liam0205/wangshu/issues/334)。全量 P4 测试偶尔红一次时先看是不是它。
+
 - **【未做，等维护者决定】主块之下的 C 帧在两处取了相反的答案** — 栈回溯和 `debug.getinfo` 按独立的 `lua5.1`（末尾有
   `[C]: ?`，#279），C 调用深度按内嵌用法（下面 #281-#288 一条里登记的已知限制）。`FuzzOracleDiff` 的参照实现是内嵌用法，
   所以含 `debug.traceback` / `debug.getinfo(2)` 的脚本在那里两侧输出不同；现有语料里没有这两个名字，nightly 还没有报过。

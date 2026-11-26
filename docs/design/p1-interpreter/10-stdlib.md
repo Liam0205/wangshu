@@ -1962,7 +1962,7 @@ io 库涉及**文件句柄**(full userdata + `__gc`,01 §5.5 / 06 §10),是 stdl
 | `file:lines()` | 行迭代器 | ✅(标准流) | 迭代器是 host closure,EOF 产出 nil |
 | `file:seek([whence [, off]])` | 文件定位 | **❌ 缺口** | 依赖真实文件句柄;P1 不做 |
 | `file:flush()` | 刷新缓冲 | ✅(标准流) | 标准流无缓冲,返回成功标志 |
-| `file:setvbuf(mode [, size])` | 设置缓冲方式 | ❌ 未注册 | 标准流在望舒里不带缓冲，没有可以设置的东西。它不依赖真实文件：官方对标准流调用会成功（返回 `true`），望舒这里是「attempt to call method 'setvbuf' (a nil value)」（#330） |
+| `file:setvbuf(mode [, size])` | 设置缓冲方式 | ❌ 未注册 | 望舒对标准流的写入不经过缓冲（读 stdin 经过 State 自己的 `bufio.Reader`，大小固定），缓冲方式不可设置。它不依赖真实文件：官方对标准流调用会成功（返回 `true`），望舒这里是「attempt to call method 'setvbuf' (a nil value)」（#330） |
 | `io.popen`/`io.tmpfile` | 管道/临时文件 | **❌ 缺口** | popen 涉进程(安全,§9.3);P1 不做 |
 
 **P1 范围定稿**(任务点名):
@@ -2367,7 +2367,7 @@ stdlib 的 shadow stack 纪律(§3)漏 Pin 是**最难调的 bug 类**(06 §6.3:
 | **table** | insert, remove, concat, sort, maxn;5.0 兼容函数 getn(等于 `#t`)、setn(报 `'setn' is obsolete`)、foreach、foreachi,都与官方一致 | — | table.unpack/pack/move(5.2+) |
 | **math** | abs, ceil, floor, sqrt, sin, cos, tan, asin, acos, atan, atan2, exp, log, log10, pow, fmod, modf, max, min, random, randomseed, huge, pi, rad, deg, frexp, ldexp, sinh, cosh, tanh;mod(5.0 兼容名,与 fmod 是同一个函数对象) | — | math.tointeger/type/maxinteger/mininteger(5.3 整数) |
 | **os** | time, clock, date, difftime, getenv | — | execute, exit, remove, rename, tmpname, setlocale(**都没有注册**;原设计是提供并由宿主开关收紧,见 §9.5 与 #330) |
-| **io** | write, read, stdout, stdin, stderr(#205 已交付;标准流是真 file-handle userdata,见 §10.1.1 / §10.2.1)+ 标准流的 file:write/close/read/lines/flush | lines(无参已提供、带文件名抬错) | io.open, io.popen, io.tmpfile, file:seek(需要真实文件);file:setvbuf(标准流不带缓冲);close, flush, input, output, type(原计划做简化版,**实际未注册**,见 §10.1.1 与 #330) |
+| **io** | write, read, stdout, stdin, stderr(#205 已交付;标准流是真 file-handle userdata,见 §10.1.1 / §10.2.1)+ 标准流的 file:write/close/read/lines/flush | lines(无参已提供、带文件名抬错) | io.open, io.popen, io.tmpfile, file:seek(需要真实文件);file:setvbuf(缓冲方式不可设置);close, flush, input, output, type(原计划做简化版,**实际未注册**,见 §10.1.1 与 #330) |
 | **coroutine** | create, resume, yield, status, wrap, running(**机制全在 08**) | — | — |
 | **debug**(09 §13) | traceback(#205 已交付,含「显式 nil 原样返回」) | getinfo(只填 P1 能诚实给出的字段:currentline / source / short_src / what / func;nups / activelines / namewhat **宁缺不假造**) | sethook/gethook, getlocal/setlocal, getupvalue/setupvalue, getregistry, getmetatable/setmetatable, getfenv/setfenv, debug.debug(需要解释器未暴露的内省钩子) |
 

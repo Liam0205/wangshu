@@ -171,7 +171,7 @@ Wangshu implements the Lua 5.1 core language, with the same syntax surface as Lu
 | Lua 5.3+ features | `math.tointeger` / `type` / `maxinteger` / `mininteger` | The integer type is a 5.3 feature |
 | Embedding safety | `os.execute`, `os.exit`, `os.remove` / `os.rename` / `os.tmpname` and `io.popen` are not provided; `loadfile` / `dofile` are off by default | An embedded VM does not let scripts run a shell, end the host process or change the filesystem; `loadfile` / `dofile` can be turned on with `Options.AllowFileLoad` |
 | Real file IO | `io.open` / `io.tmpfile` / `f:seek` | Needs filesystem access control and a `__gc` that closes files; not done yet |
-| Buffering | `f:setvbuf` | The three standard streams are unbuffered in Wangshu, so there is nothing to set; on the official implementation the call succeeds on a standard stream |
+| Buffering | `f:setvbuf` | Wangshu writes to the standard streams without buffering and the buffering mode cannot be set; on the official implementation the call succeeds on a standard stream |
 | Default-stream management | `io.input` / `io.output` / `io.close` / `io.flush` / `io.type` | The default input and output are fixed to the process stdin / stdout; calling `f:close()` / `f:flush()` on a handle works |
 | Locale | `os.setlocale` | A pure Go implementation has no C locale; character classes and `os.date` always behave as in the C locale |
 | debug interface | Everything in `debug` other than `traceback` / `getinfo` (`sethook` / `gethook` / `getlocal` / `setlocal` / `getupvalue` / `setupvalue` / `getregistry` / `getmetatable` / `setmetatable` / `getfenv` / `setfenv` / `debug.debug`) | Needs interpreter-internal hooks |

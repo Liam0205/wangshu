@@ -23,9 +23,9 @@ import (
 // OpenAll registers the P1 minimal standard-library surface on the state
 // (a subset of what gopher-lua provides by default).
 //
-// The full "libsSafe / Libs / Exclude three-tier disable" mechanism (10 §12.1)
-// is deferred. For now every builtin function is unconditionally registered
-// into globals.
+// The "LibsSafe / Libs / Exclude" three-level disable mechanism of the design
+// (10 §12.1) is not implemented, and whether to build it is undecided. Every
+// builtin function that exists is unconditionally registered into globals.
 func OpenAll(st *crescent.State) {
 	for _, e := range baseFns {
 		id := st.RegisterHostFn(e.fn)

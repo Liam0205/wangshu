@@ -327,7 +327,7 @@ var stdlibAbsent = map[string]string{
 
 	"(file metatable).__gc : function":    "no real files to close on collection",
 	"(file metatable).seek : function":    "exemptions: io 库不提供 open/popen/tmpfile/seek",
-	"(file metatable).setvbuf : function": "standard streams are unbuffered; nothing to configure",
+	"(file metatable).setvbuf : function": "writes to the standard streams are unbuffered and the buffering mode is not configurable",
 
 	"debug.debug : function":        "exemptions: debug 库只提供 traceback/getinfo",
 	"debug.getfenv : function":      "exemptions: debug 库只提供 traceback/getinfo",
