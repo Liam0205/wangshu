@@ -743,7 +743,8 @@ nightly 的 go-fuzz（p1，`FuzzOracleDiff`）找到 `t={}table.unpack(t)`：官
   相应地，`pairs({}) == next` 现在是 `false`（`pairs` 返回的是它自己持有的迭代器）。
 - `ipairs` 的迭代器接受数字字符串作控制值，以前这种调用会报错。
 - `io.lines(nil)` 现在报 `FILE* expected, got nil`，以前返回默认输入的迭代器；不带参数的 `io.lines()` 不变。
-  传入布尔值、表等非字符串时，报错文字从 `io.lines with a filename is not supported` 变成 `string expected, got …`。
+  传入布尔值、表等既不是字符串也不是数字的值时，报错文字从 `io.lines with a filename is not supported` 变成
+  `string expected, got …`；传入数字和传入字符串一样，仍然报 `io.lines with a filename is not supported`。
 - `math.mod == math.fmod` 现在是 `true`，以前是 `false`（两个名字各有一个函数对象）。调用结果没有变化。
 
 ### 独立审查之后补的内容

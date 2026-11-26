@@ -628,8 +628,8 @@ end)(ipairs)
 -- passes io.lines a string or a number is a divergence, and the oracle side really opens host files
 -- (io.lines(".") succeeds on Linux) -- the same reason loadfile and dofile are stubbed above. Both
 -- engines therefore raise one fixed harness error for that shape. Everything else still reaches the
--- real function and is compared: no argument, an explicit nil, and non-string arguments, which is
--- where the argument checks are.
+-- real function and is compared: no argument, an explicit nil, and an argument that is neither a
+-- string nor a number, which is where the argument checks are.
 io.lines = (function(lines)
   return function(...)
     if __select("#", ...) >= 1 then
