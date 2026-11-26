@@ -1953,7 +1953,7 @@ io 库涉及**文件句柄**(full userdata + `__gc`,01 §5.5 / 06 §10),是 stdl
 | `io.open(filename [, mode])` | 打开文件,返回 file handle | **❌ 缺口** | 需要文件系统访问控制 + `__gc` 关文件(§10.2 / §9.3);P1 不做 |
 | `io.close([file])` | 关闭文件（默认关闭默认输出） | ❌ 未注册 | 标准流的 `file:close` 已提供（返回 `(nil, msg)`）；全局形式没有注册（§10.1.1，#330） |
 | `io.flush()` | 刷新默认输出 | ❌ 未注册 | 标准流的 `file:flush` 已提供；全局形式没有注册（§10.1.1，#330） |
-| `io.lines([filename])` | 行迭代器 | △ **部分** | 无参形式(默认输入)已提供;`io.lines(filename)` **抬错**而不是静默返回空迭代器(依赖 open) |
+| `io.lines([filename])` | 行迭代器 | △ **部分** | 无参形式（默认输入）已提供；`io.lines(filename)` **抬错**而不是静默返回空迭代器（依赖 open）。参数检查与官方 `io_lines` 一致：显式传 `nil` 不等于不传，报 `FILE* expected, got nil`；其他非字符串报 `string expected, got …`（2026-11-26） |
 | `io.input([file])`/`io.output([file])` | 取/设默认输入/输出 | ❌ 未注册 | 默认输入/输出固定为进程的 stdin/stdout（§10.1.1，#330） |
 | `io.type(obj)` | 判断是否 file handle(`"file"`/`"closed file"`/nil) | ❌ 未注册 | 没有注册（§10.1.1，#330） |
 | `file:read(...)` | 从 file 读(同 io.read 格式) | ✅(标准流) | 与 `io.read` 共用实现;读一个**只写**句柄返回 PUC 的 errno 三元组(§10.3) |
