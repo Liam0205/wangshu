@@ -738,8 +738,10 @@ nightly 的 go-fuzz（p1，`FuzzOracleDiff`）找到 `t={}table.unpack(t)`：官
 - 调用 `table.unpack(...)` 的脚本会开始报错，改成 `unpack(...)` 即可（Lua 5.1 本来就只有后者）。
 - 全局 `__ipairs_iter` 没有了。读过它的脚本或宿主代码改成 `ipairs({})` 的第一个返回值。
 - 改写或清空全局 `next` 不再影响 `pairs`。以前靠替换 `next` 来改变 `pairs` 行为的脚本不再生效，要改就替换 `pairs` 本身。
+  相应地，`pairs({}) == next` 现在是 `false`（`pairs` 返回的是它自己持有的迭代器）。
 - `ipairs` 的迭代器接受数字字符串作控制值，以前这种调用会报错。
 - `io.lines(nil)` 现在报 `FILE* expected, got nil`，以前返回默认输入的迭代器；不带参数的 `io.lines()` 不变。
+  传入布尔值、表等非字符串时，报错文字从 `io.lines with a filename is not supported` 变成 `string expected, got …`。
 - `math.mod == math.fmod` 现在是 `true`，以前是 `false`（两个名字各有一个函数对象）。调用结果没有变化。
 
 ### 独立审查之后补的内容
