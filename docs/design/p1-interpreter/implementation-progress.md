@@ -729,8 +729,8 @@ nightly 的 go-fuzz（p1，`FuzzOracleDiff`）找到 `t={}table.unpack(t)`：官
 | 删 `table.unpack` | `internal/stdlib/stdlib.go` `OpenAll` | 不再注册 |
 | 迭代器私有化 | 同文件 `registerIterFactory` | `pairs` / `ipairs` 各自在注册时建好迭代器的宿主闭包，由工厂函数的 Go 闭包捕获，同时挂在工厂函数的 upvalue 上让 GC 保活；不再有 `__ipairs_iter`，`pairs` 不再读全局 `next` |
 | fuzz 的 prelude | `internal/oracle/prelude.go` | 原来靠包装全局 `__ipairs_iter` 来拦 `luaL_checkint` 的未定义行为区间，改成包装 `ipairs`、发放同一个带检查的迭代器 |
-| 行为测试 | `test/language/stdlib_names_test.go`（新增） | 22 个用例，期望值逐个在 lua5.1 5.1.5 上实际执行核对过 |
-| 分层测试 | `test/difftest/tiered_stdlib_names_test.go`（新增） | 七段脚本在 P3 / P4 的升层代码里执行，与解释器、与 `lua5.1` 比对；断言 `GibbousEntries() > 0`（arm64 的 P4 上有一段例外，见 10 §12.3） |
+| 行为测试 | `test/language/stdlib_names_test.go`（新增） | 24 个用例，期望值逐个在 lua5.1 5.1.5 上实际执行核对过 |
+| 分层测试 | `test/difftest/tiered_stdlib_names_test.go`（新增） | 九段脚本在 P3 / P4 的升层代码里执行，与解释器、与 `lua5.1` 比对（带文件名的 `io.lines` 一段是已登记的差异，与记录的文本比对）；断言 `GibbousEntries() > 0`（arm64 的 P4 上有一段例外，见 10 §12.3） |
 | 白盒探针 | `State.GibbousEntries()`（新增，testing-only） | 执行进入升层代码的次数；`PromotionCount()` 只说明编译过 |
 | 名字集合比对 | `test/difftest/corners_test.go` `TestDiff_StdlibNames`（新增） | 对着真实的 `lua5.1` 双向比对；望舒多出的名字一律失败，缺少的逐个登记在 `stdlibAbsent`（合入时 37 条）；清单里还包含哪些名字是同一个函数对象 |
 | 语料 | `test/fuzz/testdata/fuzz/FuzzOracleDiff/` | 加入 #329 的输入和六条回归语料；原来写着 `__ipairs_iter` 的两条改成经 `ipairs({})` 取迭代器 |
@@ -922,9 +922,29 @@ reviewer 在跑 P4 全量测试时还撞到一次 `TestIssue177_StringLimitConte
 默认构建下失败。这一轮的 reviewer 还用 Ubuntu 24.04 打包的 `lua5.1`（CI 的 arm64 任务安装的版本）重跑了名字比对，
 结果与本机源码构建的相同。
 
+第十七轮独立审查（全范围，又一位 reviewer）有一条重要问题和一条小问题：
+
+| 审查意见 | 处理 |
+|---|---|
+| 重要：`io.lines` 带文件名的那个分支没有任何测试。把「数字也算文件名」的判断去掉，或者让带文件名的调用直接返回读标准输入的迭代器，全部测试照常通过。差分 fuzz 的 prelude 把这类调用在两侧都换成同一条 harness 错误，所以相关语料和 `TestIoLinesFilenameGuard` 验证的是 prelude，不是望舒的这个分支 | `test/api/io_handles_test.go` 加两个用例（字符串、数字）；`TestTiered_StdlibNames` 加一段 `io_lines_filename_error`，在升层的泛型 for 里走同一个分支。它的结果与官方不同（已登记的差异），所以不与 `lua5.1` 比对，改为三次执行互相比对并与记录的文本比对 |
+| `exemptions` 里两条整条新写的理由用了半角标点 | 改成全角 |
+
+这条重要问题说明前面各轮的变异都是按「想得到的错误」挑的，没有按分支逐个做。这一轮把分支对产品代码的全部改动列出来
+（`ioFnLines` 的五个分支、工厂函数的两个检查和保活、迭代器的四个检查、`math.mod` 的发布、两个计数点），逐个分支做变异，
+共 19 种，各在默认、P3、P4 三种构建下跑 `test/language`、`test/api`、`test/difftest`、`test/tiering`。除了审查指出的两种，
+还有两种没有任何测试失败：工厂函数不检查「没有参数」，和 P4 尾调用入口不计数。另有四种在 P3 / P4 构建下靠的是不分构建的
+测试，分层测试本身不失败。补的测试：
+
+- 行为测试加 `pcall(pairs)`、`pcall(ipairs)` 两个用例（官方报 `table expected, got no value`）。
+- `TestGibbousEntries` 的尾调用一格原来只记录、不断言，改成按构建断言（P3 不进入，P4 进入），常量 `tailCallEntersCompiled`。
+- `TestTiered_StdlibNames` 加一段 `factories_called_from_compiled_code`，在升层函数里调用两个工厂函数本身。
+
+补完之后 19 种变异在三种构建下都有测试失败，只有两处是按设计不失败的：没有升层的构建上计数恒为 0，P3 没有尾调用入口。
+
 验证：`make all` 与 `make fuzz-oracle` 通过。把 `internal/stdlib` 的 `stdlib.go` 和 `tablelib.go` 一起换回修复前的版本：
-行为测试 10 个用例失败，`test/api` 的 `io.lines` 用例 4 个失败，`TestTiered_StdlibNames` 在 P3、P4 两种构建下七段脚本里
-六段失败（剩下的一段测的是迭代器对坏参数的报错，修复前后相同，它的作用是在升层路径上执行那条报错），名字比对报出两个多余
+行为测试 10 个用例失败，`test/api` 的 `io.lines` 用例 4 个失败，`TestTiered_StdlibNames` 在 P3、P4 两种构建下九段脚本里
+六段失败（剩下的三段修复前后结果相同：迭代器对坏参数的报错、带文件名的 `io.lines`、从升层代码里调用工厂函数，它们的作用是
+在升层路径上执行这几条路径），名字比对报出两个多余
 名字和一组缺少的别名，#329 的输入和四条回归语料失败。名字比对测试另做了两种变异（删一条登记、加一条过期登记），都会
 失败。去掉 prelude 里的检查，`TestIpairsIteratorGuard` 报 8 处、`TestIoLinesFilenameGuard` 报 5 处；`exemptions` 改一个
 条目名，`TestStdlibAbsentReasonsResolve` 失败；README 的逐名字删除见上面第三轮的表。

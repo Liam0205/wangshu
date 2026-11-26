@@ -2283,15 +2283,19 @@ wangshu.NewState(wangshu.Options{Exclude: []string{"os.execute", "os.exit"}})
   都出现在两个语言版本 README 的「不提供」表里（`arg` 和文件句柄元表的 `__gc` 除外，它们不是脚本会调用的接口）。
   `ci.yml` 不对只改 Markdown 的提交执行，所以只改 README 的提交由 `readme-check.yml` 单独执行这个测试
   （`make check-readme`，不需要 `lua5.1`）。
-  三种构建是否一致由 `test/difftest/tiered_stdlib_names_test.go` 的 `TestTiered_StdlibNames` 检查：七段脚本各在
-  只用解释器、强制升层、自然升温三种方式下执行，彼此比对并与 `lua5.1` 比对。只用解释器的那一格断言
+  三种构建是否一致由 `test/difftest/tiered_stdlib_names_test.go` 的 `TestTiered_StdlibNames` 检查：九段脚本各在
+  只用解释器、强制升层、自然升温三种方式下执行，彼此比对并与 `lua5.1` 比对。其中 `io_lines_filename_error`
+  （带文件名的 `io.lines`，字符串和数字各一次）的结果是已登记的差异，官方会去打开文件，这一段不与 `lua5.1` 比对，
+  改为与测试里记录的文本比对。只用解释器的那一格断言
   `GibbousEntries()` 等于 0。强制升层那一格断言 `GibbousEntries() > 0`，即执行确实进入过升层代码，只有一处例外：
   `missing_table_unpack_error`（#329 的原始写法，先读一个不存在的字段再调用它）在 arm64 的 P4 上不升层，这一段在那里
   只比对结果，并断言进入次数等于 0。P4 的原生翻译只接受内联缓存已经命中的 `GETTABLE`，读不存在的字段不会命中；
   amd64 上原生翻译不接受的函数还能经 head-op replay 升层，arm64 没有这条路径。`missing_table_unpack_upvalue_error`
-  把同一个调用改成经 upvalue 取函数，P3 和两种架构的 P4 在强制升层下都进入升层代码。自然升温那一格只对其中四段断言：
+  把同一个调用改成经 upvalue 取函数，P3 和两种架构的 P4 在强制升层下都进入升层代码。
+  `factories_called_from_compiled_code` 在升层函数里调用 `pairs` / `ipairs` 这两个工厂函数本身：直接调用全局
+  `pairs` / `ipairs` 的函数不升层，所以这一段把它们放进表里按方法调用。自然升温那一格只对其中六段断言：
   `missing_table_unpack_error` 在自然升温下两层都不进入升层代码，`missing_table_unpack_upvalue_error` 和
-  `math_mod_is_fmod` 只有 P4 进入，这三段的升层路径由强制升层一格覆盖。出错的四段比对的是带行号的报错文本（只去掉
+  `math_mod_is_fmod` 只有 P4 进入，这三段的升层路径由强制升层一格覆盖。出错的五段比对的是带行号的报错文本（只去掉
   两侧不同的 chunk 名），内核都写成多行，升层代码从错误的指令取行号时会被发现。**只断言 `PromotionCount() > 0` 是不够的**：那个数是「被编译的 Proto 个数」，而被宿主函数
   调用的 Lua 函数（`pcall(f)` 里的 `f`）即使已经编译，那一帧也固定由解释器执行，内核直接放在 `pcall` 下面时
   升了层也不会在升层代码里执行。所以需要出错的内核都经一个 Lua 包装函数调用（不能是尾调用：P3 下尾调用同样
