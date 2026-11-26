@@ -792,7 +792,7 @@ nightly 的 go-fuzz（p1，`FuzzOracleDiff`）找到 `t={}table.unpack(t)`：官
 
 | 审查意见 | 处理 |
 |---|---|
-| `TestTiered_StdlibNames` 四段脚本里有两段升了层却从来没有进入升层代码：内核直接放在 `pcall` 下面，而被宿主函数调用的 Lua 函数固定由解释器执行。`PromotionCount() > 0` 数的是被编译的 Proto 个数，拦不住这种情况。只改升层路径 `TForLoop` 的出错分支，测试照常通过。`math.mod` 一项没有分层用例 | 新增白盒探针 `State.GibbousEntries()`（Go 把控制权交给升层代码的次数），规则由 `test/tiering/gibbous_entries_test.go` 固定。分层测试改成：需要出错的内核经一个 Lua 包装函数调用（不能是尾调用），断言强制升层一格 `GibbousEntries() > 0`（自然升温一格只对在自然升温下会升层的脚本断言）、只用解释器的一格等于 0。补了两段脚本（`ipairs` 迭代器自己的参数错误、`math.mod` 与 `fmod` 的身份），现在共六段。只改升层路径的 `TForLoop` 或 `CALL` 报错，测试在 P3、P4 下失败，而解释器上的测试照常通过 |
+| `TestTiered_StdlibNames` 四段脚本里有两段升了层却从来没有进入升层代码：内核直接放在 `pcall` 下面，而被宿主函数调用的 Lua 函数固定由解释器执行。`PromotionCount() > 0` 数的是被编译的 Proto 个数，拦不住这种情况。只改升层路径 `TForLoop` 的出错分支，测试照常通过。`math.mod` 一项没有分层用例 | 新增白盒探针 `State.GibbousEntries()`（Go 把控制权交给升层代码的次数），规则由 `test/tiering/gibbous_entries_test.go` 固定。分层测试改成：需要出错的内核经一个 Lua 包装函数调用（不能是尾调用），断言强制升层一格 `GibbousEntries() > 0`（自然升温一格只对 P3、P4 在自然升温下都会进入升层代码的脚本断言）、只用解释器的一格等于 0。补了两段脚本（`ipairs` 迭代器自己的参数错误、`math.mod` 与 `fmod` 的身份），现在共六段。只改升层路径的 `TForLoop` 或 `CALL` 报错，测试在 P3、P4 下失败，而解释器上的测试照常通过 |
 | 上一轮新加的语料 `r329f_io_lines_args` 离一处已知差异只有一步变异：把 `{}` 换成 `00`，`io.lines` 就收到一个文件名，官方去打开文件，望舒报「不支持」。官方一侧还会真的打开宿主文件 | 差分 fuzz 的 prelude 给 `io.lines` 加了一层：参数是字符串或数字时两侧报同一条 harness 错误；没有参数、显式 `nil`、其他类型照常比对。`internal/oracle/io_lines_guard_test.go` 固定两个方向，另加一条语料。reviewer 点名的几种一步变异输入现在两侧一致 |
 | 10 号文档还有两处写「危险函数受配置」「`os.getenv` 嵌入场景可禁用」 | 按现状改 |
 | `tablelib.go` 里 `table.setn` 的注释引用了设计文档里已经不存在的说法 | 改掉 |
