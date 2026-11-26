@@ -340,6 +340,7 @@ func (st *State) executeLoop(th *thread, entryDepth int) *LuaError {
 			if profileEnabled && next != nil && th == st.mainTh && !ci.Gibbous() &&
 				st.goDepth() < gibbousReentryCCallCap {
 				if gcode := st.bridge.GibbousCodeOf(proto); gcode != nil && isPJ10NativeCode(gcode) {
+					st.gibbousEntries++
 					ci.SetGibbous(true)
 					th.reMirrorTop()
 					baseByte := (th.stackBaseW + uint32(ci.base)) * 8

@@ -50,6 +50,7 @@ func (st *State) enterGibbous(th *thread, code bridge.GibbousCode, funcIdx, narg
 	if e := st.enterLuaFrame(th, funcIdx, nargs, nresults, false); e != nil {
 		return e
 	}
+	st.gibbousEntries++
 	ci := st.gibCI(th)
 	ci.SetGibbous(true) // bit50 callStatus_gibbous (04 §1.2): this frame takes the Wasm path
 	th.reMirrorTop()    // PW10 R2b-1: re-mirror the ci segment after a cold field (gibbous) change

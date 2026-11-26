@@ -258,6 +258,22 @@ func (st *State) PromotionCount() int { return st.core.PromotionCount() }
 // loop with no budget barely crosses tiers).
 func (st *State) SafepointCalls() int64 { return st.core.SafepointCalls() }
 
+// GibbousEntries returns how many times execution entered a promoted function's
+// compiled code (**testing-only** white-box probe).
+//
+// PromotionCount answers "was anything compiled"; this answers "did compiled
+// code run". The two differ more often than it seems: a promoted function that
+// is only ever invoked by a host function -- pcall(f), a table.sort comparator,
+// a metamethod -- has its frame executed by the interpreter every time, so a
+// test that wraps its kernel in pcall sees PromotionCount > 0 while exercising
+// no compiled code at all. Take this value before and after the code under test
+// and require the difference to be positive.
+//
+// Calls that stay inside compiled code (a compiled caller entering a compiled
+// callee on the fast path) are not counted. Non-decreasing; always 0 on builds
+// without a compiled tier.
+func (st *State) GibbousEntries() int64 { return st.core.GibbousEntries() }
+
 // GCCountKB returns the arena's currently-used KB (collectgarbage("count")):
 // the bump pointer minus the free blocks on the freelist awaiting reuse. For
 // long-run stability observation: in steady state the freelist recycles blocks
