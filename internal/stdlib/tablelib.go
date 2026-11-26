@@ -1952,7 +1952,8 @@ func debugFnGetInfo(st *crescent.State, args []value.Value) ([]value.Value, *cre
 	}
 	t := st.NewLibTable(8)
 	set := func(k string, v value.Value) { st.SetTableField(t, k, v) }
-	// "S" covers source/short_src/what/linedefined, "l" currentline, "f" func, "u" nups.
+	// "S" covers source/short_src/what/linedefined, "l" currentline, "f" func. "n" and "u" are
+	// accepted and fill nothing: name, namewhat and nups are omitted.
 	wants := func(c byte) bool { return strings.IndexByte(want, c) >= 0 }
 
 	if value.Tag(args[0]) == value.TagFunction {

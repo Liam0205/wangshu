@@ -2,8 +2,9 @@
 //
 // Design: docs/design/p1-interpreter/10-stdlib.md; section 14 there is the table of
 // what each library provides and what it leaves out. The base, string, table, math,
-// coroutine, os, io and debug libraries are registered by OpenAll; os, io and debug
-// are partial, and package is not provided.
+// coroutine, os, io and debug libraries are registered by OpenAll and package is not.
+// Every official 5.1.5 name that is missing, most of them in os, io and debug, is listed
+// with its reason in stdlibAbsent (test/difftest/corners_test.go).
 package stdlib
 
 import (

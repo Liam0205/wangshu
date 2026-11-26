@@ -832,6 +832,14 @@ reviewer 在跑 P4 全量测试时还撞到一次 `TestIssue177_StringLimitConte
 （[#336](https://github.com/Liam0205/wangshu/issues/336)），`ResetGlobalsToBaseline` 不恢复库表内部被脚本改过的字段
 （[#337](https://github.com/Liam0205/wangshu/issues/337)）。
 
+第七轮独立审查（全范围，又一位 reviewer）没有阻塞问题和重要问题，三条小问题都在代码注释上：
+
+| 审查意见 | 处理 |
+|---|---|
+| 分层测试里 `math.mod` 一段的注释说「P4 不升层按字段名调用 `math.mod` 和 `math.fmod` 的函数」，实测这样的函数在 P4 上会升层，不升层的只是其中一种带算术填充的写法 | 注释只留测试自己断言的事实：这种写法两层在强制升层下都升层；自然升温下 P4 在升层代码里执行，P3 不升层 |
+| `debugFnGetInfo` 函数体里一行注释还写「`"u"` nups」，与同一个函数的 godoc（`nups` 不返回）矛盾 | 改成「`n` 和 `u` 被接受但不产生字段」 |
+| `internal/stdlib` 的包注释说「os、io、debug 不完整」，漏了 base 和 string 里缺的名字 | 改成指向 `stdlibAbsent`，那里逐个列出缺少的名字 |
+
 验证：`make all` 与 `make fuzz-oracle` 通过。把 `internal/stdlib` 的 `stdlib.go` 和 `tablelib.go` 一起换回修复前的版本：
 行为测试 10 个用例失败，`test/api` 的 `io.lines` 用例 4 个失败，`TestTiered_StdlibNames` 在 P3、P4 两种构建下六段脚本里
 五段失败（第六段测的是迭代器对坏参数的报错，修复前后相同，它的作用是在升层路径上执行那条报错），名字比对报出两个多余
