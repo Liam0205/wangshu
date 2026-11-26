@@ -871,6 +871,11 @@ reviewer 在跑 P4 全量测试时还撞到一次 `TestIssue177_StringLimitConte
 实测时还发现两处 `debug.getinfo` 与官方不同、此前没有记录的行为（负的栈层级、第一个参数是协程），和「按栈层级查到 C 帧时没有
 `func`」一起补进了 [#335](https://github.com/Liam0205/wangshu/issues/335)。
 
+第十二轮独立审查（全范围，又一位 reviewer）没有阻塞问题和重要问题，只有一条小问题：上一轮在 09 §13.4 新写的一段和
+那张表用了半角标点。整段新写的中文改成全角；在旧行上原地改的仍然跟随所在行的写法。这一轮还指出
+`debug.getinfo(1, ">S")` 会让官方实现段错误，在差分 fuzz 里表现为整个测试进程崩溃，补进了
+[#335](https://github.com/Liam0205/wangshu/issues/335)。
+
 验证：`make all` 与 `make fuzz-oracle` 通过。把 `internal/stdlib` 的 `stdlib.go` 和 `tablelib.go` 一起换回修复前的版本：
 行为测试 10 个用例失败，`test/api` 的 `io.lines` 用例 4 个失败，`TestTiered_StdlibNames` 在 P3、P4 两种构建下六段脚本里
 五段失败（第六段测的是迭代器对坏参数的报错，修复前后相同，它的作用是在升层路径上执行那条报错），名字比对报出两个多余

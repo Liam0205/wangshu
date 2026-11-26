@@ -40,7 +40,8 @@
 - **【未做，等维护者决定】`debug.getinfo` 与官方的几处差异** — 接受 `>` 选项（官方在函数参数形式下、以及栈层级形式下 `>` 不在首位时报
   `invalid option`）；一部分查询形式下缺 `func` / `lastlinedefined` / `activelines`；负的栈层级返回 nil；第一个参数不能是协程。按查询形式
   列出的字段清单在 09 §13.4，那里写的是实际行为。`name` / `namewhat` / `nups` 是有意不返回的，但差分 fuzz 的 prelude 没有处理，
-  读这些字段的脚本在 `FuzzOracleDiff` 里两侧不同。见
+  读这些字段的脚本在 `FuzzOracleDiff` 里两侧不同。另外 `debug.getinfo(1, ">S")` 会让官方实现段错误，在差分 fuzz 里是整个测试进程
+  崩溃，nightly 撞到会报成一次崩溃而不是差异。见
   [#335](https://github.com/Liam0205/wangshu/issues/335)。
 
 - **【未做，等维护者决定】`table` 和 `math` 两个库表的 `pairs` 遍历顺序与官方不同** — 键集合相同，建表时的预留大小和写入顺序与
