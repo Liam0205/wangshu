@@ -893,6 +893,13 @@ reviewer 在跑 P4 全量测试时还撞到一次 `TestIssue177_StringLimitConte
 名字不对（`attempt to call upvalue 'u'` 变成 `attempt to call local 'a'`）。它是产品缺陷，单独记在
 [#339](https://github.com/Liam0205/wangshu/issues/339)。新加的那一段内核带算术填充，在 P4 上走原生翻译，不经过出问题的路径。
 
+第十四轮独立审查（全范围，又一位 reviewer，这一轮起 reviewer 也用 `qemu-aarch64` 执行 linux/arm64 的测试）没有阻塞问题和
+重要问题，只有一条小问题：分层测试比对报错文本时把整个位置前缀都去掉了，行号没有参与比对，而注释给的理由（两侧 chunk 名
+不同）只需要去掉 chunk 名。改成只去掉 chunk 名；出错的四段内核原来都写在一行里，行号恒为同一个值，一并拆成多行。
+只改升层路径的两种变异（`raiseGibbous` 取下一条指令的行号、`TForLoop` 的出错分支取前面指令的行号）现在各让两段失败，
+修改之前七段全部通过；解释器上的测试两种变异下都照常通过。这一轮还确认 #339 的报错行号也不对（`stdin:3:` 变成
+`stdin:5:`），补进了那个 issue。
+
 验证：`make all` 与 `make fuzz-oracle` 通过。把 `internal/stdlib` 的 `stdlib.go` 和 `tablelib.go` 一起换回修复前的版本：
 行为测试 10 个用例失败，`test/api` 的 `io.lines` 用例 4 个失败，`TestTiered_StdlibNames` 在 P3、P4 两种构建下七段脚本里
 六段失败（剩下的一段测的是迭代器对坏参数的报错，修复前后相同，它的作用是在升层路径上执行那条报错），名字比对报出两个多余
