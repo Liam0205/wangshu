@@ -924,6 +924,7 @@ string 库**操作字节**(Lua string 是字节串,01 §5.1),索引 1-based,负�
 | `string.find(s, pat [, init [, plain]])` | 查找模式(返回位置 + 捕获) | `(s, pat [,init,plain])` → (start, end, caps...) or nil | ✅ | **Lua pattern**(§6);plain=true 走纯文本查找 |
 | `string.match(s, pat [, init])` | 匹配模式,返回捕获(或整体匹配) | `(s, pat [,init])` → caps... or whole or nil | ✅ | **Lua pattern**(§6);捕获子串分配 |
 | `string.gmatch(s, pat)` | 返回迭代器,逐个产出匹配 | `(s, pat)` → function(迭代器) | ✅ | **Lua pattern**(§6);迭代器是 host closure 持状态;**前导 `^` 在 gmatch 里不锚定**(§6.3) |
+| `string.gfind(s, pattern)` | `string.gmatch` 的 5.0 兼容名 | 同上 | ✅ | 官方 5.1.5 默认带这个名字（`LUA_COMPAT_GFIND`），与 `string.gmatch` 是**同一个函数对象** |
 | `string.gsub(s, pat, repl [, n])` | 全局替换(repl 可为串/表/函数) | `(s, pat, repl [,n])` → (result, count) | ✅ | **Lua pattern**(§6);repl 函数重入 + Pin 捕获(§3.4) |
 | `string.dump(f)` | 序列化函数字节码 | `(f)` → string | **❌/△ 缺口** | P1 可缺(§5.6);依赖字节码序列化 |
 
@@ -1457,7 +1458,8 @@ else {
 | `table.concat(t [, sep [, i [, j]]])` | 拼接数组段(§3.2 范例) | `(t [,sep,i,j])` → string | ✅ | Go 缓冲累积(§3.2);元素须 string/number;**产出字节数记进 step budget,按字节不按元素个数**(§3.1a) |
 | `table.sort(t [, comp])` | 原地排序数组段(§7.3/§7.4) | `(t [,comp])` → 无 | ✅ | comp 比较器重入(§7.4);默认用 `<`(`__lt`) |
 | `table.maxn(t)` | 返回最大正数字键(可非连续) | `(t)` → number | ✅ | **5.1 有 `table.maxn`**(5.2+ 移除——记口径,§7.5) |
-| `table.getn(t)` / `table.setn(t, n)` | 取/设序列长度(5.0 遗留) | — | **❌ 5.1 已废** | 5.0 遗留;**5.1 已 deprecated**(`getn` = `#t`,`setn` 空操作)——P1 可缺(§7.5) |
+| `table.getn(t)` / `table.setn(t, n)` | 取/设序列长度（5.0 遗留） | `(t)` → number / 报错 | ✅ | 已提供，与官方 5.1.5 一致：`getn(t)` 等于 `#t`；`setn` 直接报 `'setn' is obsolete`（§7.5） |
+| `table.foreach(t, f)` / `table.foreachi(t, f)` | 对每个键值对（或每个数组元素）调用 `f`（5.0 遗留） | `(t, f)` → `f` 的第一个非 nil 返回值 | ✅ | 已提供。官方 5.1.5 默认带这两个兼容函数；`f` 返回非 nil 时停止遍历并返回该值 |
 
 > **5.2+ 排除项**:`table.unpack`(5.1 是全局 `unpack`,§4.5)、`table.pack`(5.2 引入)、`table.move`(5.3)。
 > P1 不提供它们(提供会与 5.1 多函数,差分时它们应是 nil)。
@@ -1615,9 +1617,10 @@ func (vm *VM) sortLess(th *Thread, a, b value.Value, comp value.Value) (bool, *L
 - **`table.maxn(t)`**:返回 t 中**最大的正数字键**(可非连续,不同于 `#t`)。`{[1]=1,[100]=1}` 的 `maxn` = 100,
   `#t` 可能是 1。**5.1 有 `table.maxn`**(任务点名),遍历表找最大正数字键。**5.2+ 移除**(记口径:差分基准 5.1
   有 maxn,5.2+ 无)。P1 提供。
-- **`table.getn(t)` / `table.setn(t, n)`**:Lua **5.0 遗留**,5.1 已 **deprecated**:`getn(t)` 等价 `#t`,`setn`
-  是空操作(5.1 表无显式长度字段,01 §5.2)。**P1 可缺**(若提供:`getn` = `#t`,`setn` 空操作)。这两个 5.1
-  程序极少用(已废),**记 §15.2 缺口**:P1 默认不提供,若 conformance 需要再补为 `#t`/空操作。
+- **`table.getn(t)` / `table.setn(t, n)`**：Lua 5.0 遗留，官方 5.1.5 仍然带着。**两个都已提供，行为与官方一致**：
+  `getn(t)` 等于 `#t`；`setn` 不是空操作，而是直接报 `'setn' is obsolete`（官方 `ltablib.c` 的 `setn` 就是一句
+  `luaL_error`）。本条原先写「P1 默认不提供，若提供则 `setn` 为空操作」，两点都与实现不符，2026-11-26 按现状改了。
+  同样来自 5.0 的 `table.foreach` / `table.foreachi` 也已提供。
 
 ### 7.6 table.sort 稳定性的差分(指向 12)
 
@@ -1652,6 +1655,7 @@ floor 返回 double、random seed/范围、fmod vs Lua `%`):
 | `math.log10(x)` | 常用对数 | `math.Log10` | ✅ | **5.1 有 `log10`**(5.2+ deprecated——记口径) |
 | `math.pow(x, y)` | x^y | `math.Pow` | ✅ | **5.1 有 `math.pow`**(5.2 deprecated,用 `^`;5.1 保留) |
 | `math.fmod(x, y)` | C fmod(截断取余) | `math.Mod` | ✅ | **≠ Lua `%`**(§8.3):fmod 截断,`%` 是 floor 取模 |
+| `math.mod(x, y)` | `math.fmod` 的 5.0 兼容名 | 同上 | ✅ | 官方 5.1.5 默认带这个名字（`LUA_COMPAT_MOD`），与 `math.fmod` 是**同一个函数对象**，`math.mod == math.fmod` 为 `true` |
 | `math.modf(x)` | 拆整数/小数部分 | `math.Modf` + 无穷特判 | ✅ | 返回两值(整数部分 double + 小数部分);**无穷的小数部分是带符号的 0**(C `modf` 语义),Go 的 `math.Modf` 在那里返回 NaN,须特判(§8.5) |
 | `math.max(...)` | 最大值 | 遍历 `>` | ✅ | 至少一参;用数值比较 |
 | `math.min(...)` | 最小值 | 遍历 `<` | ✅ | |
@@ -1766,7 +1770,8 @@ x86-64 上从右往左、在 arm64 上从左往右,于是**两个官方构建对
 
 **判据**:豁免的正确边界是「具备被豁免那条性质的**全部入口**」,不是「我记得的那几个名字」;加豁免前
 先查有没有别名或 `LUA_COMPAT_*` 兼容名(本仓已有的同族:`string.gfind` 与 `gmatch` 是同一个函数对象,见
-`internal/stdlib/stdlib.go` 里 `LUA_COMPAT_GFIND` 那处注释;`table.getn`/`setn` 见 §7.5)。方法论
+`internal/stdlib/stdlib.go` 里 `LUA_COMPAT_GFIND` 那处注释;`math.mod` 与 `fmod` 也是同一个函数对象,2026-11-26
+之前它被注册成了第二个闭包,`math.mod == math.fmod` 是 `false`;`table.getn`/`setn` 见 §7.5)。方法论
 见 `llmdoc/guides/cross-backend-semantic-fix-sweep.md`「对齐 PUC 之前先分清有定义还是 UB」的**执行体
 纪律**段。
 
@@ -1957,6 +1962,7 @@ io 库涉及**文件句柄**(full userdata + `__gc`,01 §5.5 / 06 §10),是 stdl
 | `file:lines()` | 行迭代器 | ✅(标准流) | 迭代器是 host closure,EOF 产出 nil |
 | `file:seek([whence [, off]])` | 文件定位 | **❌ 缺口** | 依赖真实文件句柄;P1 不做 |
 | `file:flush()` | 刷新缓冲 | ✅(标准流) | 标准流无缓冲,返回成功标志 |
+| `file:setvbuf(mode [, size])` | 设置缓冲方式 | ❌ 未注册 | 标准流在望舒里不带缓冲，没有可以设置的东西。它不依赖真实文件：官方对标准流调用会成功（返回 `true`），望舒这里是「attempt to call method 'setvbuf' (a nil value)」（#330） |
 | `io.popen`/`io.tmpfile` | 管道/临时文件 | **❌ 缺口** | popen 涉进程(安全,§9.3);P1 不做 |
 
 **P1 范围定稿**(任务点名):
@@ -2283,6 +2289,11 @@ wangshu.NewState(wangshu.Options{Exclude: []string{"os.execute", "os.exit"}})
   都出现在两个语言版本 README 的「不提供」表里（`arg` 和文件句柄元表的 `__gc` 除外，它们不是脚本会调用的接口）。
   三种构建是否一致由 `test/difftest/tiered_stdlib_names_test.go` 的 `TestTiered_StdlibNames` 检查，它断言
   `PromotionCount() > 0`，保证比较的确实是升层之后的执行路径。
+  名字清单里还包含「哪些名字是同一个函数对象」（每组一行「a == b : alias」）。官方 5.1.5 有两组，都是 5.0 的兼容名：
+  `math.mod` 就是 `math.fmod`，`string.gfind` 就是 `string.gmatch`，脚本用 `==` 能看出区别。只比名字和类型时看不到
+  这一点，`math.mod` 因此一直被注册成另一个闭包，2026-11-26 改成同一个对象。
+  **本文各节的逐函数表格和 §14 总表不在这些测试的范围里**，它们是同一个事实的手工副本，#329 的三轮审查每一轮都在
+  里面找到了与代码不一致的地方。要不要给它们也加检查，记在 [#332](https://github.com/Liam0205/wangshu/issues/332)。
   写这个用例时还确认了一批「设计文档说有、实际没有」的名字：`os.exit` / `remove` / `rename` / `tmpname` /
   `setlocale` 和 `io.close` / `flush` / `input` / `output` / `type` 都没有注册（调用它们得到的是
   `attempt to call field 'exit' (a nil value)` 这一类错误）。`stdlibAbsent` 按实际情况把它们登记为缺少，本文
@@ -2348,11 +2359,11 @@ stdlib 的 shadow stack 纪律(§3)漏 Pin 是**最难调的 bug 类**(06 §6.3:
 | 库 | ✅ 必做(conformance 所需) | △ 简化/部分 | ❌ 缺口(P1 不做) |
 |---|---|---|---|
 | **base** | print, type, tostring, tonumber, pairs, ipairs, next, select, rawget, rawset, rawequal, setmetatable, getmetatable, assert, error, pcall, xpcall, unpack, `_G`, `_VERSION`, collectgarbage(collect/count/stop/restart/setpause) | gcinfo, loadstring, load, loadfile, dofile, collectgarbage(step/setstepmul 近似) | **rawlen**(5.2), **require/module/package 系统**, **table.unpack/pack/move**(5.2+), getfenv/setfenv(与分层执行的形状分析冲突), newproxy(官方未写入手册的函数) |
-| **string** | len, sub, upper, lower, rep, reverse, byte, char, format, find, match, gmatch, gsub(**全 pattern 全集** §6) | — | string.dump(字节码序列化) |
-| **table** | insert, remove, concat, sort, maxn | getn, setn(=`#t`/空操作) | table.unpack/pack/move(5.2+) |
-| **math** | abs, ceil, floor, sqrt, sin, cos, tan, asin, acos, atan, atan2, exp, log, log10, pow, fmod, modf, max, min, random, randomseed, huge, pi, rad, deg, frexp, ldexp, sinh, cosh, tanh | — | math.tointeger/type/maxinteger/mininteger(5.3 整数) |
+| **string** | len, sub, upper, lower, rep, reverse, byte, char, format, find, match, gmatch, gsub(**全 pattern 全集** §6);gfind(5.0 兼容名,与 gmatch 是同一个函数对象) | — | string.dump(字节码序列化) |
+| **table** | insert, remove, concat, sort, maxn;5.0 兼容函数 getn(等于 `#t`)、setn(报 `'setn' is obsolete`)、foreach、foreachi,都与官方一致 | — | table.unpack/pack/move(5.2+) |
+| **math** | abs, ceil, floor, sqrt, sin, cos, tan, asin, acos, atan, atan2, exp, log, log10, pow, fmod, modf, max, min, random, randomseed, huge, pi, rad, deg, frexp, ldexp, sinh, cosh, tanh;mod(5.0 兼容名,与 fmod 是同一个函数对象) | — | math.tointeger/type/maxinteger/mininteger(5.3 整数) |
 | **os** | time, clock, date, difftime, getenv | — | execute, exit, remove, rename, tmpname, setlocale(**都没有注册**;原设计是提供并由宿主开关收紧,见 §9.5 与 #330) |
-| **io** | write, read, stdout, stdin, stderr(#205 已交付;标准流是真 file-handle userdata,见 §10.1.1 / §10.2.1)+ 标准流的 file:write/close/read/lines/flush | lines(无参已提供、带文件名抬错) | io.open, io.popen, io.tmpfile, file:seek(需要真实文件);close, flush, input, output, type(原计划做简化版,**实际未注册**,见 §10.1.1 与 #330) |
+| **io** | write, read, stdout, stdin, stderr(#205 已交付;标准流是真 file-handle userdata,见 §10.1.1 / §10.2.1)+ 标准流的 file:write/close/read/lines/flush | lines(无参已提供、带文件名抬错) | io.open, io.popen, io.tmpfile, file:seek(需要真实文件);file:setvbuf(标准流不带缓冲);close, flush, input, output, type(原计划做简化版,**实际未注册**,见 §10.1.1 与 #330) |
 | **coroutine** | create, resume, yield, status, wrap, running(**机制全在 08**) | — | — |
 | **debug**(09 §13) | traceback(#205 已交付,含「显式 nil 原样返回」) | getinfo(只填 P1 能诚实给出的字段:currentline / source / short_src / what / func;nups / activelines / namewhat **宁缺不假造**) | sethook/gethook, getlocal/setlocal, getupvalue/setupvalue, getregistry, getmetatable/setmetatable, getfenv/setfenv, debug.debug(需要解释器未暴露的内省钩子) |
 
@@ -2435,7 +2446,7 @@ stdlib 的 shadow stack 纪律(§3)漏 Pin 是**最难调的 bug 类**(06 §6.3:
   超 int64 范围行为待 12 核对。
 - **`CheckFunction` 严格度 / pcall 的 f 放宽**(§2.6):`CheckFunction` 严格要 function tag;`pcall`/`xpcall` 的 f
   是否接受有 `__call` 的对象由 09 定,记口径。
-- **`table.getn`/`setn` 是否提供**(§7.5):P1 默认不提供(5.1 已废);若 conformance 需要补为 `#t`/空操作。
+- ~~**`table.getn`/`setn` 是否提供**(§7.5)~~：已提供，与官方一致（`getn` 等于 `#t`，`setn` 报 `'setn' is obsolete`）。
 - ~~**`unpack` 大表上限措辞**(§4.5)~~:**已定稿(#201,2026-07-28)**——措辞是
   `"too many results to unpack"`,上限是 `LUAI_MAXCSTACK`(8000)**减去参数个数**,84 种写法与 oracle 逐字节
   一致,详见 §4.5。
