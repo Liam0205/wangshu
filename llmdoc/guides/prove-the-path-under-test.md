@@ -205,7 +205,7 @@ TAILCALL 分支的「尾调用 gibbous 分发」看见 `GibbousCodeOf(proto)` �
 
 被**宿主函数**调用的 Lua 函数，那一帧固定由解释器执行，即使它的 Proto 已经升层。`pcall(f)` 里的 `f`、`table.sort`
 的比较函数、`__index` 和算术这类由宿主代码回调的元方法处理函数都属于这种情况：宿主回调走 `callLuaFromHost` 的
-`enterLuaFrame` + `execute`，不经过 `enterGibbous`。只有解释器的 `CALL` / `TAILCALL`、宿主的顶层调用、升层代码里调用的
+`enterLuaFrame` + `execute`，不经过 `enterGibbous`。只有解释器的 `CALL`（P4 下还有 `TAILCALL`）、宿主的顶层调用、升层代码里调用的
 慢路径才会进入升层代码。`__call` 的处理函数是例外：它经 `CALL` 指令调用，会进入升层代码。
 
 测出错路径最顺手的写法恰好是 `pcall(kernel, 坏参数)`。这样写时 `kernel` 会被编译，`PromotionCount() > 0` 成立，
