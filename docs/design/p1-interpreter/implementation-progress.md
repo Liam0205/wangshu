@@ -840,6 +840,12 @@ reviewer 在跑 P4 全量测试时还撞到一次 `TestIssue177_StringLimitConte
 | `debugFnGetInfo` 函数体里一行注释还写「`"u"` nups」，与同一个函数的 godoc（`nups` 不返回）矛盾 | 改成「`n` 和 `u` 被接受但不产生字段」 |
 | `internal/stdlib` 的包注释说「os、io、debug 不完整」，漏了 base 和 string 里缺的名字 | 改成指向 `stdlibAbsent`，那里逐个列出缺少的名字 |
 
+第八轮独立审查（全范围，又一位 reviewer）没有阻塞问题和重要问题，只有一条小问题：`GibbousEntries` 的三处说明列举了
+哪些调用不进入升层代码，读起来像完整的清单，却没有提协程（进入升层代码的入口都要求在主线程上）。三处都补上了主线程和
+重入深度两个条件，并写明列出的情况只是例子，写测试时直接断言 `GibbousEntries()`。同一轮还指出 README 的「不提供」表
+没有列「带文件名的 `io.lines`」（修改前就没有列），两个语言版本都补在「真实文件 IO」一行里；补完重做了 README 的
+逐名字删除检查，35 个名字删掉任何一个测试都会失败。
+
 验证：`make all` 与 `make fuzz-oracle` 通过。把 `internal/stdlib` 的 `stdlib.go` 和 `tablelib.go` 一起换回修复前的版本：
 行为测试 10 个用例失败，`test/api` 的 `io.lines` 用例 4 个失败，`TestTiered_StdlibNames` 在 P3、P4 两种构建下六段脚本里
 五段失败（第六段测的是迭代器对坏参数的报错，修复前后相同，它的作用是在升层路径上执行那条报错），名字比对报出两个多余

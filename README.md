@@ -169,7 +169,7 @@ for i := 0; i < 1000; i++ {
 | Lua 5.2+ 特性 | `rawlen`、`table.unpack` / `table.pack` / `table.move` | 不属于 Lua 5.1；`unpack` 是全局函数 |
 | Lua 5.3+ 特性 | `math.tointeger` / `type` / `maxinteger` / `mininteger` | 整数类型是 5.3 的特性 |
 | 嵌入安全 | `os.execute`、`os.exit`、`os.remove` / `os.rename` / `os.tmpname`、`io.popen` 不提供；`loadfile` / `dofile` 默认关闭 | 嵌入式 VM 不让脚本执行 shell、结束宿主进程或改动文件系统；`loadfile` / `dofile` 可以用 `Options.AllowFileLoad` 打开 |
-| 真实文件 IO | `io.open` / `io.tmpfile` / `f:seek` | 需要文件系统访问控制和关闭文件的 `__gc`，目前不做 |
+| 真实文件 IO | `io.open` / `io.tmpfile` / `f:seek`，以及带文件名的 `io.lines` | 需要文件系统访问控制和关闭文件的 `__gc`，目前不做；`io.lines(文件名)` 会报错，不带参数的 `io.lines()` 可以用 |
 | 缓冲设置 | `f:setvbuf` | 望舒对标准流的写入不经过缓冲，缓冲方式不可设置；官方对标准流调用它会成功 |
 | 默认流管理 | `io.input` / `io.output` / `io.close` / `io.flush` / `io.type` | 默认输入输出固定为进程的 stdin / stdout；对句柄调用 `f:close()` / `f:flush()` 是可以的 |
 | locale | `os.setlocale` | 纯 Go 实现没有 C locale，字符分类和 `os.date` 固定为 C locale 的行为 |
