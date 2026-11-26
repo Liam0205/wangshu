@@ -98,9 +98,8 @@ end
 return table.concat(order, " | ")`, true},
 	// math.mod is fmod's 5.0 name and the same function object. A promoted function sees the two equal
 	// and gets the same results from either. The kernel reaches them as upvalues and is padded with
-	// arithmetic: that is a form both tiers accept under force-all (P4 does not promote a function
-	// that calls math.mod and math.fmod by field name). P3 declines it under natural heat as not
-	// worth compiling, hence auto = false.
+	// arithmetic, a form both tiers promote under force-all. Under natural heat P4 runs it compiled
+	// and P3 does not, hence auto = false.
 	{"math_mod_is_fmod", `
 local mod, fmod = math.mod, math.fmod
 local function kernel(x, y)
