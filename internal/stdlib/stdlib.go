@@ -44,7 +44,13 @@ func OpenAll(st *crescent.State) {
 	// pairs and left an extra name in _G that official 5.1 does not have (#329).
 	registerIterFactory(st, "pairs", baseFnNext, value.Nil)
 	registerIterFactory(st, "ipairs", ipairsIter, value.NumberValue(0))
-	registerNamespaced(st, "math", append(mathFns, mathExtraFns...), mathIntrinsics)
+	mathTbl := registerNamespaced(st, "math", append(mathFns, mathExtraFns...), mathIntrinsics)
+	// LUA_COMPAT_MOD: official 5.1.5 ships math.mod as the 5.0 name of fmod, and it is the same C
+	// function, so math.mod == math.fmod. Registering the Go function twice made two closures.
+	{
+		fm, _ := st.RawGet(mathTbl, intern(st, "fmod"))
+		st.SetTableField(mathTbl, "mod", fm)
+	}
 	strTbl := registerNamespaced(st, "string", stringFns, nil)
 	st.SetStringLib(strTbl) // per-type __index for string values (`("x"):upper()`)
 	// PUC parity: the shared string metatable is a REAL table {__index =
