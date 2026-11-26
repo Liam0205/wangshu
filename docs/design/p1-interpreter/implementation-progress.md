@@ -941,6 +941,16 @@ reviewer 在跑 P4 全量测试时还撞到一次 `TestIssue177_StringLimitConte
 
 补完之后 19 种变异在三种构建下都有测试失败，只有两处是按设计不失败的：没有升层的构建上计数恒为 0，P3 没有尾调用入口。
 
+第十八轮独立审查（全范围，又一位 reviewer）没有阻塞问题和重要问题，两条小问题都在 README 检查的覆盖范围上：
+
+| 审查意见 | 处理 |
+|---|---|
+| `make check-readme` 只在 README 变化时执行。一个只改代码的提交把那个测试改名、或者改了这个目标，要到下一个只改 README 的提交才失败，而且算在与原因无关的提交头上；`readme-check.yml` 自己以后的修改也没有一次执行来验证 | 这个目标另外挂到 `make all` 和 `ci.yml` 的 `test-scripts` 任务上；`readme-check.yml` 的触发路径加上它自己 |
+| README 的检查只有一个方向：以后补上一个现在缺少的函数，登记表里的条目会被要求删掉，README 里「不提供」的说法却没有测试约束 | 新增 `TestReadmeListsOnlyAbsentNames`：「不提供」表里列出的名字，望舒必须确实没有。因为行为不同而列出的七个已提供名字登记在 `readmeListsProvided`，登记过期也失败。在工作区的副本里做了八种变异（给 io 库加上 `type` 而 README 不改、README 多列一个已提供的函数、README 去掉登记过的名字、去掉一个缺少的名字、两个测试各自改名、包编译不过），`make check-readme` 每次都以非零退出 |
+
+这一轮还发现一项与 #329 无关、此前没有登记的存量问题：`make test-trace`（trace 构建的全仓测试）在 master 上不能通过，
+两个包共 16 个测试失败。CI 和 `make all` 都不执行这个目标。记在 [#341](https://github.com/Liam0205/wangshu/issues/341)。
+
 验证：`make all` 与 `make fuzz-oracle` 通过。把 `internal/stdlib` 的 `stdlib.go` 和 `tablelib.go` 一起换回修复前的版本：
 行为测试 10 个用例失败，`test/api` 的 `io.lines` 用例 4 个失败，`TestTiered_StdlibNames` 在 P3、P4 两种构建下九段脚本里
 六段失败（剩下的三段修复前后结果相同：迭代器对坏参数的报错、带文件名的 `io.lines`、从升层代码里调用工厂函数，它们的作用是
