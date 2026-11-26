@@ -622,6 +622,27 @@ _G.ipairs = (function(ipairs)
   end
 end)(ipairs)
 
+-- io.lines with a filename.
+--
+-- lua5.1 opens the named file and iterates its lines; wangshu has no file opening and raises "io.lines
+-- with a filename is not supported" (a registered design exemption). Left alone, every script that
+-- passes io.lines a string or a number is a divergence, and the oracle side really opens host files
+-- (io.lines(".") succeeds on Linux) -- the same reason loadfile and dofile are stubbed above. Both
+-- engines therefore raise one fixed harness error for that shape. Everything else still reaches the
+-- real function and is compared: no argument, an explicit nil, and non-string arguments, which is
+-- where the argument checks are.
+io.lines = (function(lines)
+  return function(...)
+    if __select("#", ...) >= 1 then
+      local ty = __type((...))
+      if ty == "string" or ty == "number" then
+        __error("oracle-harness: io.lines with a filename disabled", 0)
+      end
+    end
+    return lines(...)
+  end
+end)(io.lines)
+
 -- table.insert shift-span guard.
 --
 -- 5.1's tinsert shifts [pos, #t] up one with NO bound on the distance, so a

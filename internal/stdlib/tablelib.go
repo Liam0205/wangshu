@@ -90,9 +90,9 @@ func tableFnForeachi(st *crescent.State, args []value.Value) ([]value.Value, *cr
 	return nil, nil
 }
 
-// tableFnSetn: table.setn -- 5.1.5 empirically raises "'setn' is obsolete"
-// directly (the 10 §14 △ column says "no-op", but oracle behavior takes
-// priority: match the error wording to preserve the diff).
+// tableFnSetn: table.setn -- 5.1.5 raises "'setn' is obsolete" directly
+// (ltablib.c's setn is a single luaL_error under the default build), so this
+// does too. It is not a no-op.
 func tableFnSetn(_ *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
 	// PUC's setn runs luaL_checktype(L, 1, LUA_TTABLE) BEFORE reaching the
 	// obsolete error, so a non-table first argument reports the type error
