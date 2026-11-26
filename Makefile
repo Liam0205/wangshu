@@ -18,7 +18,7 @@
 #  stay on the native `go test` path -- the fuzz corpus depends on the source
 #  tree, difftest depends on the external lua5.1 oracle, and conformance is
 #  small and stable enough that binary mode is not worth it)
-.PHONY: all fmt lint test-scripts \
+.PHONY: all fmt lint test-scripts check-readme \
         build build-all build-p1 build-p3 build-p4 build-clean \
         test test-all test-p1 test-p3 test-p4 test-trace \
         bench bench-all bench-p1 bench-p3 bench-p4 bench-test bench-pineapple bench-pineapple-fetch \
@@ -41,6 +41,13 @@ test-scripts:                                       ## Self-tests for tooling sc
 	bash scripts/test-fetch-lua-tarball.sh
 	bash scripts/test-check-oracle.sh
 	bash scripts/test-cover.sh
+
+check-readme:                                       ## The READMEs' "not provided" tables against the stdlib registry (no lua5.1 needed); the readme-check workflow runs it for README-only changes, which ci.yml's paths-ignore skips. Fails when the test fails and also when it did not run
+	@out=$$(go test ./test/difftest/ -run '^(TestStdlibAbsentIsInREADME|TestReadmeListsMatcher)$$' -count=1 -v 2>&1); status=$$?; \
+	echo "$$out"; \
+	if [ $$status -ne 0 ] || ! echo "$$out" | grep -q '^--- PASS: TestStdlibAbsentIsInREADME'; then \
+		echo "check-readme: TestStdlibAbsentIsInREADME failed or did not run"; exit 1; \
+	fi
 
 # --- build ------------------------------------------------------------------
 build: build-all                                    ## Alias: make build = build-all

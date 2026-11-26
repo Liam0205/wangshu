@@ -1,0 +1,33 @@
+name: readme-check
+
+# ci.yml ignores '**.md', so a change that touches nothing but the READMEs runs none of its jobs.
+# The "not provided" tables of README.md and README.en.md are held to the stdlib registry by tests
+# in test/difftest (TestStdlibAbsentIsInREADME); this workflow runs them for the changes ci.yml
+# skips. A change that also touches code runs them twice, here and in ci.yml's test job, which
+# costs a few seconds.
+
+on:
+  push:
+    branches: [master]
+    paths: ['README.md', 'README.en.md']
+  pull_request:
+    paths: ['README.md', 'README.en.md']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: readme-check-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
+
+jobs:
+  readme-check:
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: README tables match the stdlib registry
+        run: make check-readme
