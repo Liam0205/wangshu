@@ -729,7 +729,7 @@ nightly 的 go-fuzz（p1，`FuzzOracleDiff`）找到 `t={}table.unpack(t)`：官
 | 删 `table.unpack` | `internal/stdlib/stdlib.go` `OpenAll` | 不再注册 |
 | 迭代器私有化 | 同文件 `registerIterFactory` | `pairs` / `ipairs` 各自在注册时建好迭代器的宿主闭包，由工厂函数的 Go 闭包捕获，同时挂在工厂函数的 upvalue 上让 GC 保活；不再有 `__ipairs_iter`，`pairs` 不再读全局 `next` |
 | fuzz 的 prelude | `internal/oracle/prelude.go` | 原来靠包装全局 `__ipairs_iter` 来拦 `luaL_checkint` 的未定义行为区间，改成包装 `ipairs`、发放同一个带检查的迭代器 |
-| 行为测试 | `test/language/stdlib_names_test.go`（新增） | 21 个用例，期望值逐个在 lua5.1 5.1.5 上实际执行核对过 |
+| 行为测试 | `test/language/stdlib_names_test.go`（新增） | 22 个用例，期望值逐个在 lua5.1 5.1.5 上实际执行核对过 |
 | 分层测试 | `test/difftest/tiered_stdlib_names_test.go`（新增） | 七段脚本在 P3 / P4 的升层代码里执行，与解释器、与 `lua5.1` 比对；断言 `GibbousEntries() > 0`（arm64 的 P4 上有一段例外，见 10 §12.3） |
 | 白盒探针 | `State.GibbousEntries()`（新增，testing-only） | 执行进入升层代码的次数；`PromotionCount()` 只说明编译过 |
 | 名字集合比对 | `test/difftest/corners_test.go` `TestDiff_StdlibNames`（新增） | 对着真实的 `lua5.1` 双向比对；望舒多出的名字一律失败，缺少的逐个登记在 `stdlibAbsent`（合入时 37 条）；清单里还包含哪些名字是同一个函数对象 |
@@ -914,6 +914,13 @@ reviewer 在跑 P4 全量测试时还撞到一次 `TestIssue177_StringLimitConte
 | `TestStdlibAbsentIsInREADME` 读的两个 README 正好在 CI 的忽略路径里（`ci.yml` 的 `paths-ignore` 含 `**.md`），只改 README 的提交不会触发任何检查，不一致要到下一个改代码的提交才暴露 | 新增 `readme-check.yml`，只在两个 README 变化时触发，执行 `make check-readme`（不需要 `lua5.1`，几秒）。这个目标在测试失败时失败，在测试没有执行时也失败。把 README 里的一个名字改掉、把目标里的测试名改成不存在的名字，两种情况目标都失败 |
 | #340 在仓库文档里没有登记，其余十个 issue 在 doc-gaps 里各有一条 | doc-gaps 补上 #340 |
 | 10 号文档 `io.type(obj)` 一行全角、半角标点混用 | 这一行的后两格是整格新写的，相邻三行整行是全角，这一行第二格的半角括号改成全角。同一张表和 §12.3 里另有三处把报错文本、登记理由的字面写法放在「」里，其中的半角符号是字面内容，改成用反引号标出 |
+
+第十六轮独立审查（全范围，又一位 reviewer）没有阻塞问题和重要问题，只有一条小问题：上一轮在 `engineering.md` 新加的
+「`check-readme` 目标」一条是整条新写的，却跟着相邻条目用了半角标点，改成全角。这一轮的变异结果里有一处值得补：把
+`ipairs` 迭代器改成先检查表、再检查控制值，默认构建下没有测试失败，只有 P3 / P4 构建的分层测试能发现。行为测试原有的
+两条用例各只有一个参数不对，分不出检查的先后。补了一条两个参数都不对的用例（官方报第 2 个参数），同样的变异现在在
+默认构建下失败。这一轮的 reviewer 还用 Ubuntu 24.04 打包的 `lua5.1`（CI 的 arm64 任务安装的版本）重跑了名字比对，
+结果与本机源码构建的相同。
 
 验证：`make all` 与 `make fuzz-oracle` 通过。把 `internal/stdlib` 的 `stdlib.go` 和 `tablelib.go` 一起换回修复前的版本：
 行为测试 10 个用例失败，`test/api` 的 `io.lines` 用例 4 个失败，`TestTiered_StdlibNames` 在 P3、P4 两种构建下七段脚本里
