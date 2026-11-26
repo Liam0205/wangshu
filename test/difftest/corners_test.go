@@ -161,7 +161,7 @@ var exemptions = []struct {
 	{"math.tointeger/type/maxinteger/mininteger", "5.3 整数特性,10 §14 math ❌ 列"},
 	{"os.execute", "10 §14 os ❌ 列(安全:嵌入式 VM 不让脚本跑 shell)"},
 	{"io.popen/io.tmpfile", "10 §14 io ❌ 列"},
-	{"debug 库只提供 traceback/getinfo", "10 §14 把 debug.traceback/getinfo 列为要做的、其余列在 ❌ 列。现在这两个已提供并与 lua5.1 一致;sethook / getlocal / setlocal / getupvalue / setupvalue / getregistry 仍然不存在——它们需要解释器没有暴露的内省钩子。getinfo 只填 P1 能诚实给出的字段(currentline / source / short_src / what / linedefined / func;参数是 Lua 函数时另有 lastlinedefined,带选项 L 时有 activelines),name / namewhat / nups 宁缺不假造"},
+	{"debug 库只提供 traceback/getinfo", "10 §14 把 debug.traceback/getinfo 列为要做的、其余列在 ❌ 列。现在这两个已提供;其余 12 个(sethook / gethook / getlocal / setlocal / getupvalue / setupvalue / getregistry / getmetatable / setmetatable / getfenv / setfenv / debug)不存在——它们需要解释器没有暴露的内省钩子。getinfo 只填 P1 能诚实给出的字段(currentline / source / short_src / what / linedefined / func;第一个参数是 Lua 函数时另有 lastlinedefined,再带选项 L 时有 activelines),name / namewhat / nups 宁缺不假造"},
 	{"os.time{isdst=} 采用 glibc 的 mktime 搜索规则(跨平台统一)", "该字段的解析需要在 tzdata transition 表里搜索,而各家 libc 的搜索步长与顺序不同。wangshu 在所有平台上都用 glibc 的规则(601200 秒步长、每步先后再前、上限 381 步、找不到邻居按默认 1 小时、邻居偏移相同则 delta 取 0),因此**同一脚本在各平台答案一致**;而 PUC 的答案随宿主 libc 变化,所以在非 glibc 宿主(macOS/BSD)上,少数贴着 transition 的输入会与本地编译的 PUC 不同。产品是纯 Go(cgo 只在 internal/oracle 的 build tag 后面),调不到宿主 mktime;逐平台重写各家 libc 的搜索会把一个可验证的答案换成几个无法验证的答案。glibc 上实测零差异:598 个时区 × 1850-2199 九个年份共 21528 例"},
 	{"io 库不提供 open/popen/tmpfile/seek", "三个标准流与 io.read / io.lines / :write / :close / :flush / :read / :lines 现已提供(file-handle userdata,type() 报 userdata,与 lua5.1 一致);仍缺的是需要真实文件的部分——io.open / io.popen / io.tmpfile / f:seek,按 10 §14 的 ❌ 列。io.lines(filename) 因此会抬错而不是静默返回空迭代器"},
 	{"getfenv/setfenv", "10 §14 base ❌ 列;设计出处是 P2 不升层形状 F4(p2-bridge §358):改写函数环境与分层执行的形状分析冲突——按设计豁免"},
@@ -291,11 +291,9 @@ return table.concat(out, "\n")`
 // when a name listed here has no row there. Two entries are excused because they are not library API
 // a script would call: arg, and the file metatable's __gc.
 //
-// There is deliberately no matching table for the other direction. wangshu must define nothing that
-// 5.1 lacks; an extra name is how #329 happened (table.unpack is 5.2's, and the ipairs iterator was
-// published as a global), and nothing noticed for five months because the only executor of "the name
-// sets must match" was the hand-written exemptions list, which records what is missing and cannot see
-// what is extra.
+// There is deliberately no matching table for the other direction: wangshu must define nothing that
+// 5.1 lacks (#329), so an extra name always fails. The hand-written exemptions list cannot enforce
+// that; it records what is missing and cannot see what is extra.
 var stdlibAbsent = map[string]string{
 	"getfenv : function":  "exemptions: getfenv/setfenv",
 	"setfenv : function":  "exemptions: getfenv/setfenv",
@@ -522,8 +520,9 @@ next:
 	return false
 }
 
-// TestReadmeListsMatcher pins the three ways readmeLists was too generous, each of which left a name
-// unchecked while TestStdlibAbsentIsInREADME stayed green.
+// TestReadmeListsMatcher pins the rules of readmeLists that keep a name from counting as listed when
+// the README does not actually list it; relaxing any of them lets TestStdlibAbsentIsInREADME pass with
+// that name missing.
 func TestReadmeListsMatcher(t *testing.T) {
 	debugRow := "| debug | everything in `debug` except `traceback` (`sethook` / `getfenv` / `setfenv` / `debug.debug`) | hooks |"
 	envRow := "| Environment ops | `getfenv` / `setfenv` | shape analysis |"

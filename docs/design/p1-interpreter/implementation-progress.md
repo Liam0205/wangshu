@@ -819,6 +819,19 @@ reviewer 在跑 P4 全量测试时还撞到一次 `TestIssue177_StringLimitConte
 | `file:flush()` 一行和 `fileFnFlush` 的注释还写「标准流无缓冲」，与上一轮改过的 `setvbuf` 一行不一致（读 stdin 是经过缓冲的）；`internal/stdlib` 的包注释还写 io / os / coroutine 留到以后做 | 都改成现状 |
 | 差分 fuzz 的 prelude 只裁剪全局名字和库表字段，不裁剪文件句柄的元表，所以 `io.stdout:setvbuf(...)`、`io.stdout.seek`、句柄元表的 `__gc` 在两侧不同（修改前后都是这样，现有语料里没有 `io.stdout`） | 在 #330 补了一条评论，与 #331 属于同一类「nightly 撞到会报成缺陷」的存量差异 |
 
+第六轮独立审查（全范围，又一位 reviewer）同样没有阻塞问题和重要问题，提出四条小问题，都在文字上：
+
+| 审查意见 | 处理 |
+|---|---|
+| `GibbousEntries` 的说明把元方法一概说成由解释器执行，而 `__call` 的处理函数经 `CALL` 指令调用，会进入升层代码 | godoc 两处和指南 §2.2c 改成「`__index`、算术这类由宿主代码回调的元方法」，并写明 `__call` 是例外 |
+| 上一轮改的 `debug.getinfo` 字段说明还不准：`lastlinedefined` 和 `activelines` 只在第一个参数是 Lua 函数时返回，按栈层级查询时没有；「像官方一样逐个字母校验」也不对，望舒接受 `>` 而官方报错 | 七处文档按实测结果改；行为上的差异（接受 `>`、按栈层级查询缺两个字段）修改前就有，记在 [#335](https://github.com/Liam0205/wangshu/issues/335) |
+| 09 §13.3 的 debug 范围表把 `debug.setmetatable` / `getmetatable` 标成「必做」、`getupvalue` / `setupvalue` 标成「可选」，实际都没有注册；三处缺少函数的清单只列了 12 个里的 6 个 | 表改成「未注册」并补上 `getfenv` / `setfenv` / `debug.debug` 一行，三处清单补全。07 号文档里把 `debug.setmetatable` 当成入口的说法没有动，在 #332 补了评论 |
+| 注释里还有五处在讲「以前是怎么错的」 | 删掉，另把本范围新增的注释和文档行逐行读了一遍 |
+
+这一轮还指出两处修改前就有、与 #329 无关的行为：`table` 和 `math` 两个库表的 `pairs` 遍历顺序与官方不同
+（[#336](https://github.com/Liam0205/wangshu/issues/336)），`ResetGlobalsToBaseline` 不恢复库表内部被脚本改过的字段
+（[#337](https://github.com/Liam0205/wangshu/issues/337)）。
+
 验证：`make all` 与 `make fuzz-oracle` 通过。把 `internal/stdlib` 的 `stdlib.go` 和 `tablelib.go` 一起换回修复前的版本：
 行为测试 10 个用例失败，`test/api` 的 `io.lines` 用例 4 个失败，`TestTiered_StdlibNames` 在 P3、P4 两种构建下六段脚本里
 五段失败（第六段测的是迭代器对坏参数的报错，修复前后相同，它的作用是在升层路径上执行那条报错），名字比对报出两个多余

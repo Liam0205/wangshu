@@ -601,12 +601,12 @@ _G.tonumber = (function(orig)
 end)(tonumber)
 -- The ipairs iterator narrows its control value with luaL_checkint, so it needs the same guard.
 -- It has no global name on either engine: a script reaches it only as ipairs' first result, so
--- ipairs is wrapped to hand out a guarded iterator instead. ONE guarded function, created here, so ipairs(a) == ipairs(b) still compares
--- the way it does unwrapped. The arguments are forwarded as received, so a missing control value
--- still reads "got no value" and not "got nil". What the wrapping does change, identically on both
--- engines, is where an argument error is attributed: it names the forwarding local below and
--- carries a prelude position, like every other wrapper in this file. The upvalue is NAMED ipairs so
--- that the factory's own argument error still says 'ipairs'.
+-- ipairs is wrapped to hand out a guarded iterator instead. ONE guarded function, created here, so
+-- ipairs(a) == ipairs(b) still compares the way it does unwrapped. The arguments are forwarded as
+-- received, so a missing control value still reads "got no value" and not "got nil". What the
+-- wrapping does change, identically on both engines, is where an argument error is attributed: it
+-- names the forwarding local below and carries a prelude position, like every other wrapper in
+-- this file. The upvalue is NAMED ipairs so that the factory's own argument error still says 'ipairs'.
 _G.ipairs = (function(ipairs)
   local raw = ipairs({})
   local guarded = function(...)
