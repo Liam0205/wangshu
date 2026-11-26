@@ -2282,8 +2282,10 @@ wangshu.NewState(wangshu.Options{Exclude: []string{"os.execute", "os.exit"}})
   「exemptions: X」确实对应 `exemptions` 里名为 X 的条目；`TestStdlibAbsentIsInREADME` 要求登记表里的每个库名字
   都出现在两个语言版本 README 的「不提供」表里（`arg` 和文件句柄元表的 `__gc` 除外，它们不是脚本会调用的接口）。
   三种构建是否一致由 `test/difftest/tiered_stdlib_names_test.go` 的 `TestTiered_StdlibNames` 检查：六段脚本各在
-  只用解释器、强制升层、自然升温三种方式下执行，彼此比对并与 `lua5.1` 比对。它断言的是 `GibbousEntries() > 0`，
-  即执行确实进入过升层代码。**只断言 `PromotionCount() > 0` 是不够的**：那个数是「被编译的 Proto 个数」，而被宿主函数
+  只用解释器、强制升层、自然升温三种方式下执行，彼此比对并与 `lua5.1` 比对。强制升层那一格，六段都断言
+  `GibbousEntries() > 0`，即执行确实进入过升层代码；只用解释器的那一格断言等于 0。自然升温那一格只对其中四段断言：
+  `missing_table_unpack_error` 在自然升温下两层都不进入升层代码，`math_mod_is_fmod` 只有 P4 进入，这两段的升层路径由
+  强制升层一格覆盖。**只断言 `PromotionCount() > 0` 是不够的**：那个数是「被编译的 Proto 个数」，而被宿主函数
   调用的 Lua 函数（`pcall(f)` 里的 `f`）即使已经编译，那一帧也固定由解释器执行，内核直接放在 `pcall` 下面时
   升了层也不会在升层代码里执行。所以需要出错的内核都经一个 Lua 包装函数调用（不能是尾调用：P3 下尾调用同样
   不进入升层代码），细节见 `llmdoc/guides/prove-the-path-under-test.md` §2.2c。
