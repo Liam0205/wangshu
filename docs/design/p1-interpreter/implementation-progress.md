@@ -907,6 +907,14 @@ reviewer 在跑 P4 全量测试时还撞到一次 `TestIssue177_StringLimitConte
 它还指出带 P4 标签跑 lint 得到的 72 条是 golangci-lint 默认上限截断后的数，关掉上限是 105 条，linux/arm64 上另有 74 条，
 [#340](https://github.com/Liam0205/wangshu/issues/340) 的正文已更正。
 
+第十五轮独立审查（全范围，又一位 reviewer）没有阻塞问题和重要问题，有三条小问题：
+
+| 审查意见 | 处理 |
+|---|---|
+| `TestStdlibAbsentIsInREADME` 读的两个 README 正好在 CI 的忽略路径里（`ci.yml` 的 `paths-ignore` 含 `**.md`），只改 README 的提交不会触发任何检查，不一致要到下一个改代码的提交才暴露 | 新增 `readme-check.yml`，只在两个 README 变化时触发，执行 `make check-readme`（不需要 `lua5.1`，几秒）。这个目标在测试失败时失败，在测试没有执行时也失败。把 README 里的一个名字改掉、把目标里的测试名改成不存在的名字，两种情况目标都失败 |
+| #340 在仓库文档里没有登记，其余十个 issue 在 doc-gaps 里各有一条 | doc-gaps 补上 #340 |
+| 10 号文档 `io.type(obj)` 一行全角、半角标点混用 | 这一行的后两格是整格新写的，相邻三行整行是全角，这一行第二格的半角括号改成全角。同一张表和 §12.3 里另有三处把报错文本、登记理由的字面写法放在「」里，其中的半角符号是字面内容，改成用反引号标出 |
+
 验证：`make all` 与 `make fuzz-oracle` 通过。把 `internal/stdlib` 的 `stdlib.go` 和 `tablelib.go` 一起换回修复前的版本：
 行为测试 10 个用例失败，`test/api` 的 `io.lines` 用例 4 个失败，`TestTiered_StdlibNames` 在 P3、P4 两种构建下七段脚本里
 六段失败（剩下的一段测的是迭代器对坏参数的报错，修复前后相同，它的作用是在升层路径上执行那条报错），名字比对报出两个多余
