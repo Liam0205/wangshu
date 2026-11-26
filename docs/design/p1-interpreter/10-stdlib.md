@@ -2289,7 +2289,8 @@ wangshu.NewState(wangshu.Options{Exclude: []string{"os.execute", "os.exit"}})
   amd64 上原生翻译不接受的函数还能经 head-op replay 升层，arm64 没有这条路径。`missing_table_unpack_upvalue_error`
   把同一个调用改成经 upvalue 取函数，P3 和两种架构的 P4 在强制升层下都进入升层代码。自然升温那一格只对其中四段断言：
   `missing_table_unpack_error` 在自然升温下两层都不进入升层代码，`missing_table_unpack_upvalue_error` 和
-  `math_mod_is_fmod` 只有 P4 进入，这三段的升层路径由强制升层一格覆盖。**只断言 `PromotionCount() > 0` 是不够的**：那个数是「被编译的 Proto 个数」，而被宿主函数
+  `math_mod_is_fmod` 只有 P4 进入，这三段的升层路径由强制升层一格覆盖。出错的四段比对的是带行号的报错文本（只去掉
+  两侧不同的 chunk 名），内核都写成多行，升层代码从错误的指令取行号时会被发现。**只断言 `PromotionCount() > 0` 是不够的**：那个数是「被编译的 Proto 个数」，而被宿主函数
   调用的 Lua 函数（`pcall(f)` 里的 `f`）即使已经编译，那一帧也固定由解释器执行，内核直接放在 `pcall` 下面时
   升了层也不会在升层代码里执行。所以需要出错的内核都经一个 Lua 包装函数调用（不能是尾调用：P3 下尾调用同样
   不进入升层代码），细节见 `llmdoc/guides/prove-the-path-under-test.md` §2.2c。
