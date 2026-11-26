@@ -16,6 +16,11 @@
   amd64 上另有一种情况：索引值为 nil 的 upvalue 时名字丢失，原因没有查。见
   [#339](https://github.com/Liam0205/wangshu/issues/339)。
 
+- **【未做，等维护者决定】lint 只在默认构建标签下执行** — `make lint` 和 CI 的 lint 任务不带构建标签，带 `wangshu_p3` /
+  `wangshu_p4` 约束的文件没有被检查过；只在 arm64 下编译的文件在 amd64 上带标签也检查不到。带标签、关掉条数上限各跑一遍
+  的结果（golangci-lint 默认每个 linter 只报 50 条，不关上限看到的数偏小）和需要决定的事，见
+  [#340](https://github.com/Liam0205/wangshu/issues/340)。
+
 - **【未做，等维护者决定】标准库提供面没有达到「对齐 gopher-lua」的设计目标，三层开关没有实现** — 2026-06-11 评审决定
   「默认面 = gopher-lua 的 OpenLibs 提供面（os 默认完整，含 execute / exit）+ LibsSafe / Libs / Exclude 三层开关」
   （`decisions/2026-06-11-design-review-decisions.md` 第 6 项）。现状（2026-11-25 逐个名字核对，#329）：

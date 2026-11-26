@@ -1951,14 +1951,14 @@ io 库涉及**文件句柄**(full userdata + `__gc`,01 §5.5 / 06 §10),是 stdl
 | `io.flush()` | 刷新默认输出 | ❌ 未注册 | 标准流的 `file:flush` 已提供；全局形式没有注册（§10.1.1，#330） |
 | `io.lines([filename])` | 行迭代器 | △ **部分** | 无参形式（默认输入）已提供；`io.lines(filename)` **抬错**而不是静默返回空迭代器（依赖 open）。参数检查与官方 `io_lines` 一致：显式传 `nil` 不等于不传，报 `FILE* expected, got nil`；既不是字符串也不是数字的参数报 `string expected, got …`，数字和字符串一样当作文件名（2026-11-26） |
 | `io.input([file])`/`io.output([file])` | 取/设默认输入/输出 | ❌ 未注册 | 默认输入/输出固定为进程的 stdin/stdout（§10.1.1，#330） |
-| `io.type(obj)` | 判断是否 file handle(`"file"`/`"closed file"`/nil) | ❌ 未注册 | 没有注册（§10.1.1，#330） |
+| `io.type(obj)` | 判断是否 file handle（`"file"`/`"closed file"`/nil） | ❌ 未注册 | 没有注册（§10.1.1，#330） |
 | `file:read(...)` | 从 file 读(同 io.read 格式) | ✅(标准流) | 与 `io.read` 共用实现;读一个**只写**句柄返回 PUC 的 errno 三元组(§10.3) |
 | `file:write(...)` | 写 file | ✅(标准流) | 返回**布尔**成功标志(与 `io.write` 同,5.1 口径);非句柄 receiver 报 `FILE* expected, got X` |
 | `file:close()` | 关闭 file | ✅(标准流) | 标准流**返回** `(nil, "cannot close standard file")` 而不是抬错 |
 | `file:lines()` | 行迭代器 | ✅(标准流) | 迭代器是 host closure,EOF 产出 nil |
 | `file:seek([whence [, off]])` | 文件定位 | **❌ 缺口** | 依赖真实文件句柄;P1 不做 |
 | `file:flush()` | 刷新缓冲 | ✅(标准流) | 标准流的写入不经过缓冲,没有要刷新的内容,返回成功标志 |
-| `file:setvbuf(mode [, size])` | 设置缓冲方式 | ❌ 未注册 | 望舒对标准流的写入不经过缓冲（读 stdin 经过进程内共享的 `bufio.Reader`，大小固定），缓冲方式不可设置。它不依赖真实文件：官方对标准流调用会成功（返回 `true`），望舒这里是「attempt to call method 'setvbuf' (a nil value)」（#330） |
+| `file:setvbuf(mode [, size])` | 设置缓冲方式 | ❌ 未注册 | 望舒对标准流的写入不经过缓冲（读 stdin 经过进程内共享的 `bufio.Reader`，大小固定），缓冲方式不可设置。它不依赖真实文件：官方对标准流调用会成功（返回 `true`），望舒这里报 `attempt to call method 'setvbuf' (a nil value)`（#330） |
 | `io.popen`/`io.tmpfile` | 管道/临时文件 | **❌ 缺口** | popen 涉进程(安全,§9.3);P1 不做 |
 
 **P1 范围定稿**(任务点名):
@@ -2279,8 +2279,10 @@ wangshu.NewState(wangshu.Options{Exclude: []string{"os.execute", "os.exit"}})
   `exemptions` 那份手工清单只记「缺什么」，看不到「多了什么」，所以它当不了存在性差分的执行体。它仍然保留，
   面向读者解释每一类为什么不提供；`stdlibAbsent` 是逐个名字的、会失败的那一份。
   另有两个测试把这份登记表和别处的说法连起来：`TestStdlibAbsentReasonsResolve` 要求登记理由里写的
-  「exemptions: X」确实对应 `exemptions` 里名为 X 的条目；`TestStdlibAbsentIsInREADME` 要求登记表里的每个库名字
+  `exemptions: X` 确实对应 `exemptions` 里名为 X 的条目；`TestStdlibAbsentIsInREADME` 要求登记表里的每个库名字
   都出现在两个语言版本 README 的「不提供」表里（`arg` 和文件句柄元表的 `__gc` 除外，它们不是脚本会调用的接口）。
+  `ci.yml` 不对只改 Markdown 的提交执行，所以只改 README 的提交由 `readme-check.yml` 单独执行这个测试
+  （`make check-readme`，不需要 `lua5.1`）。
   三种构建是否一致由 `test/difftest/tiered_stdlib_names_test.go` 的 `TestTiered_StdlibNames` 检查：七段脚本各在
   只用解释器、强制升层、自然升温三种方式下执行，彼此比对并与 `lua5.1` 比对。只用解释器的那一格断言
   `GibbousEntries()` 等于 0。强制升层那一格断言 `GibbousEntries() > 0`，即执行确实进入过升层代码，只有一处例外：
@@ -2294,7 +2296,7 @@ wangshu.NewState(wangshu.Options{Exclude: []string{"os.execute", "os.exit"}})
   调用的 Lua 函数（`pcall(f)` 里的 `f`）即使已经编译，那一帧也固定由解释器执行，内核直接放在 `pcall` 下面时
   升了层也不会在升层代码里执行。所以需要出错的内核都经一个 Lua 包装函数调用（不能是尾调用：P3 下尾调用同样
   不进入升层代码），细节见 `llmdoc/guides/prove-the-path-under-test.md` §2.2c。
-  名字清单里还包含「哪些名字是同一个函数对象」（每组一行「a == b : alias」）。官方 5.1.5 有两组，都是 5.0 的兼容名：
+  名字清单里还包含「哪些名字是同一个函数对象」（每组一行 `a == b : alias`）。官方 5.1.5 有两组，都是 5.0 的兼容名：
   `math.mod` 就是 `math.fmod`，`string.gfind` 就是 `string.gmatch`，脚本用 `==` 能看出区别。只比名字和类型时看不到
   这一点，所以别名行是清单的一部分。
   **本文各节的逐函数表格和 §14 总表不在这些测试的范围里**，它们是同一个事实的手工副本，没有测试约束。
