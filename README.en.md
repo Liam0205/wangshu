@@ -161,7 +161,7 @@ Wangshu implements the Lua 5.1 core language, with the same syntax surface as Lu
 - **Standard library**: base, string, table, math and coroutine are provided in full, apart from what the table below lists.
 - **os**: `os.time` / `os.clock` / `os.date` / `os.difftime` / `os.getenv`. The rest is not provided; see the table below.
 - **io**: `io.write` / `io.read` / `io.lines` and the three standard streams `io.stdout` / `io.stdin` / `io.stderr`. The streams are real file-handle userdata supporting `:write` / `:read` / `:lines` / `:flush` / `:close`. The parts that need to open real files, and the functions that manage the default streams, are not provided; see the table below.
-- **debug**: `debug.traceback` and `debug.getinfo`. `getinfo` fills only the fields it can answer truthfully: `currentline` / `source` / `short_src` / `what` / `linedefined` / `func`. When the first argument is a Lua function (not a stack level) it adds `lastlinedefined`, and `activelines` if the `L` option is given. `name` / `namewhat` / `nups` are left out.
+- **debug**: `debug.traceback` and `debug.getinfo`. `getinfo` fills only the fields it can answer truthfully, a subset of the official ones: `name` / `namewhat` / `nups` are never returned, `func` / `lastlinedefined` / `activelines` are returned for some query forms only, and the first argument cannot be a coroutine. The field list by query form is in [09-errors-pcall](docs/design/p1-interpreter/09-errors-pcall.md) §13.4 (Chinese).
 
 ### Not provided, or different from the official implementation
 
@@ -174,7 +174,7 @@ Wangshu implements the Lua 5.1 core language, with the same syntax surface as Lu
 | Buffering | `f:setvbuf` | Wangshu writes to the standard streams without buffering and the buffering mode cannot be set; on the official implementation the call succeeds on a standard stream |
 | Default-stream management | `io.input` / `io.output` / `io.close` / `io.flush` / `io.type` | The default input and output are fixed to the process stdin / stdout; calling `f:close()` / `f:flush()` on a handle works |
 | Locale | `os.setlocale` | A pure Go implementation has no C locale; character classes and `os.date` always behave as in the C locale |
-| debug interface | Everything in `debug` other than `traceback` / `getinfo` (`sethook` / `gethook` / `getlocal` / `setlocal` / `getupvalue` / `setupvalue` / `getregistry` / `getmetatable` / `setmetatable` / `getfenv` / `setfenv` / `debug.debug`) | None is registered; the reason for each is in [09-errors-pcall](docs/design/p1-interpreter/09-errors-pcall.md) §13.3 (Chinese) |
+| debug interface | Everything in `debug` other than `traceback` / `getinfo` (`sethook` / `gethook` / `getlocal` / `setlocal` / `getupvalue` / `setupvalue` / `getregistry` / `getmetatable` / `setmetatable` / `getfenv` / `setfenv` / `debug.debug`) | None is registered; the notes on each are in [09-errors-pcall](docs/design/p1-interpreter/09-errors-pcall.md) §13.3 (Chinese) |
 | Module system | `require` / `module` / `package` | The host supplies scripts through `Compile`; modules are not loaded from the filesystem |
 | Bytecode serialisation | `string.dump` | Wangshu's bytecode format is not compatible with the official `.luc` |
 | Environment ops | `getfenv` / `setfenv` | Conflicts with the shape analysis that tiered execution relies on |

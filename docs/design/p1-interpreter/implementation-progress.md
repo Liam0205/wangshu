@@ -861,6 +861,16 @@ reviewer 在跑 P4 全量测试时还撞到一次 `TestIssue177_StringLimitConte
 望舒报 `invalid key to 'next'`，官方正常遍历完。原因是删除时把哈希节点的键也清掉了。这是产品缺陷，单独记在
 [#338](https://github.com/Liam0205/wangshu/issues/338)，不在这个分支里改。
 
+第十一轮独立审查（全范围，又一位 reviewer）没有阻塞问题和重要问题，两条小问题都出在 `debug` 库的文档上：
+
+| 审查意见 | 处理 |
+|---|---|
+| 文档把 `func` 写成 `debug.getinfo` 总会返回的字段，按栈层级查到 C 帧（层级 0、`pcall` 这类宿主函数的帧、主块之下的 C 帧）时实际不返回 | `debug.getinfo` 的字段说明原来在七处各写一遍，每处都只写了一部分，连续三轮被指出不准。这次把各种查询形式逐个实测，做成一张按查询形式分的表放在 09 §13.4，其余六处只留不随形式变化的部分并指向这张表 |
+| 六处说「各个函数的原因见 09 §13.3」，而那张表对 `getupvalue` / `setupvalue`、`getmetatable` / `setmetatable` 没有给出原因 | 这四个函数没有实现，也没有记录过「不做」的决定，表里照实写；六处的说法改成「说明见 09 §13.3」 |
+
+实测时还发现两处 `debug.getinfo` 与官方不同、此前没有记录的行为（负的栈层级、第一个参数是协程），和「按栈层级查到 C 帧时没有
+`func`」一起补进了 [#335](https://github.com/Liam0205/wangshu/issues/335)。
+
 验证：`make all` 与 `make fuzz-oracle` 通过。把 `internal/stdlib` 的 `stdlib.go` 和 `tablelib.go` 一起换回修复前的版本：
 行为测试 10 个用例失败，`test/api` 的 `io.lines` 用例 4 个失败，`TestTiered_StdlibNames` 在 P3、P4 两种构建下六段脚本里
 五段失败（第六段测的是迭代器对坏参数的报错，修复前后相同，它的作用是在升层路径上执行那条报错），名字比对报出两个多余

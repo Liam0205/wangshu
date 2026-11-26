@@ -160,7 +160,7 @@ for i := 0; i < 1000; i++ {
 - **标准库**：base、string、table、math、coroutine 除下表列出的以外全部提供。
 - **os**：提供 `os.time` / `os.clock` / `os.date` / `os.difftime` / `os.getenv`。其余没有提供，见下表。
 - **io**：提供 `io.write` / `io.read` / `io.lines` 和三个标准流 `io.stdout` / `io.stdin` / `io.stderr`。标准流是真正的文件句柄 userdata，支持 `:write` / `:read` / `:lines` / `:flush` / `:close`。需要打开真实文件的部分和管理默认流的函数没有提供，见下表。
-- **debug**：提供 `debug.traceback` 和 `debug.getinfo`。`getinfo` 只返回能如实给出的字段：`currentline` / `source` / `short_src` / `what` / `linedefined` / `func`；第一个参数是 Lua 函数（不是栈层级）时另有 `lastlinedefined`，再带选项 `L` 时有 `activelines`。`name` / `namewhat` / `nups` 不返回。
+- **debug**：提供 `debug.traceback` 和 `debug.getinfo`。`getinfo` 只返回能如实给出的字段，是官方的一部分：`name` / `namewhat` / `nups` 不返回，`func` / `lastlinedefined` / `activelines` 只在一部分查询形式下返回，第一个参数不能是协程。按查询形式列出的字段清单见 [09-errors-pcall](docs/design/p1-interpreter/09-errors-pcall.md) §13.4。
 
 ### 不提供或与官方不同的部分
 
@@ -173,7 +173,7 @@ for i := 0; i < 1000; i++ {
 | 缓冲设置 | `f:setvbuf` | 望舒对标准流的写入不经过缓冲，缓冲方式不可设置；官方对标准流调用它会成功 |
 | 默认流管理 | `io.input` / `io.output` / `io.close` / `io.flush` / `io.type` | 默认输入输出固定为进程的 stdin / stdout；对句柄调用 `f:close()` / `f:flush()` 是可以的 |
 | locale | `os.setlocale` | 纯 Go 实现没有 C locale，字符分类和 `os.date` 固定为 C locale 的行为 |
-| debug 接口 | `debug` 库里除 `traceback` / `getinfo` 以外的函数（`sethook` / `gethook` / `getlocal` / `setlocal` / `getupvalue` / `setupvalue` / `getregistry` / `getmetatable` / `setmetatable` / `getfenv` / `setfenv` / `debug.debug`） | 都没有注册；各个函数的原因见 [09-errors-pcall](docs/design/p1-interpreter/09-errors-pcall.md) §13.3 |
+| debug 接口 | `debug` 库里除 `traceback` / `getinfo` 以外的函数（`sethook` / `gethook` / `getlocal` / `setlocal` / `getupvalue` / `setupvalue` / `getregistry` / `getmetatable` / `setmetatable` / `getfenv` / `setfenv` / `debug.debug`） | 都没有注册；各个函数的说明见 [09-errors-pcall](docs/design/p1-interpreter/09-errors-pcall.md) §13.3 |
 | 模块系统 | `require` / `module` / `package` | 宿主通过 `Compile` 提供脚本，不从文件系统加载模块 |
 | 字节码序列化 | `string.dump` | 望舒的字节码格式与官方 `.luc` 不兼容 |
 | 环境操作 | `getfenv` / `setfenv` | 与分层执行的形状分析冲突 |
