@@ -1306,14 +1306,14 @@ debug.traceback(message, level):
 | `short_src` | 短名(`chunkID` 后,§3.4) | 同上经 chunkID | ✅ |
 | `currentline` | 当前行(栈帧时) | pc→line(§3.5,含 -1) | ✅ |
 | `what` | `"Lua"`/`"C"`/`"main"` | 帧类型(host 哨兵 protoID / 主 chunk) | ✅ |
-| `name` | 推断的函数名 | `getfuncname`(§8) | △(依赖 §8 简化) |
-| `namewhat` | 名字种类(`"global"`/`"local"`/`"method"`/...) | `getobjname` kind(§8) | △ |
-| `linedefined` / `lastlinedefined` | 函数定义起止行 | Proto 调试信息(需回填?) | △ |
-| `nups` | upvalue 数 | `Closure.nupvals`([01] §5.3) | ✅ |
+| `name` | 推断的函数名 | `getfuncname`(§8) | ❌ 不返回(§13.4) |
+| `namewhat` | 名字种类(`"global"`/`"local"`/`"method"`/...) | `getobjname` kind(§8) | ❌ 不返回(§13.4) |
+| `linedefined` / `lastlinedefined` | 函数定义起止行 | Proto 调试信息 | ✅ `linedefined`;`lastlinedefined` 只在参数是 Lua 函数时返回(§13.4) |
+| `nups` | upvalue 数 | `Closure.nupvals`([01] §5.3) | ❌ 不返回(§13.4) |
 | `func` | 函数值本身 | 栈/参数 | ✅ |
 
 - **`what` 参数**:Lua 5.1 用字符串选要哪些字段(`"n"`=name,`"S"`=source,`"l"`=line,`"u"`=ups,`"f"`=func)。
-  P1 可全填(忽略 `what` 选择,返回全部),或按 `what` 裁剪。
+  望舒按 `what` 裁剪,并像官方一样逐个字母校验(未知字母报 `invalid option`);另支持 `"L"`(activelines)。
 - **给 traceback 提供数据**:`debug.traceback` 内部对每帧调 `getinfo`(等价)取 `short_src`/`currentline`/`name`。
   P1 的 `traceback`(§7.2)直接遍历 CallInfo 不必经脚本可见的 `getinfo`,但 `getinfo` 暴露同样的信息给脚本。
 
