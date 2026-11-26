@@ -24,8 +24,8 @@ import (
 // The test asserts GibbousEntries, the number of times execution entered compiled code, instead of
 // assuming any of this.
 //
-// auto says whether the kernel is also expected to run compiled when promotion comes from natural
-// heat under the lowered thresholds; some kernels are only promoted under force-all.
+// auto says whether the kernel is also expected to run compiled, on both tiers, when promotion comes
+// from natural heat under the lowered thresholds; some kernels only run compiled under force-all.
 var tieredStdlibNameCases = []struct {
 	name, src string
 	auto      bool
