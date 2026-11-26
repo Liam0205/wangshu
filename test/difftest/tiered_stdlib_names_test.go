@@ -8,16 +8,24 @@ import (
 	"github.com/Liam0205/wangshu"
 )
 
-// tieredStdlibNameCases are the #329 behaviours in a form the P3 / P4 tiers really promote.
+// tieredStdlibNameCases are the behaviours fixed for #329 in a form that really executes in the
+// P3 / P4 compiled tiers. Two things make the obvious way of writing such a test prove nothing:
 //
-// A function that calls the global pairs / ipairs itself is not promoted (the bridge classifies the
-// call as unknown), so a "hot loop over ipairs" written the obvious way runs in the interpreter on
-// every build and proves nothing about the tiers. The kernels below therefore take the iterator
-// triple as arguments, or reach the missing name through a field call, and the test asserts
-// PromotionCount > 0 instead of assuming it.
+//   - A function that calls the global pairs / ipairs itself is not promoted (the bridge classifies
+//     the call as unknown). The kernels therefore take the iterator triple, or the function under
+//     test, as arguments.
+//   - A promoted function that is invoked BY A HOST FUNCTION still has its frame run by the
+//     interpreter. pcall(kernel, ...) is such an invocation, so a kernel whose every call sits
+//     directly under pcall is compiled (PromotionCount > 0) and never executed compiled. Each kernel
+//     that has to raise is therefore called through a small Lua wrapper, and the wrapper is what
+//     pcall gets. The wrapper must not tail-call the kernel: a tail call does not enter compiled
+//     code either.
 //
-// auto says whether the kernel is also expected to promote from natural heat under the lowered
-// thresholds; the error-path kernel only promotes under force-all.
+// The test asserts GibbousEntries, the number of times execution entered compiled code, instead of
+// assuming any of this.
+//
+// auto says whether the kernel is also expected to run compiled when promotion comes from natural
+// heat under the lowered thresholds; some kernels are only promoted under force-all.
 var tieredStdlibNameCases = []struct {
 	name, src string
 	auto      bool
@@ -41,10 +49,11 @@ return total`, true},
 	// Calling the name 5.1 does not have, from inside a promoted function, raises the same error.
 	// The position prefix is cut off because the chunk name differs between the two engines.
 	{"missing_table_unpack_error", `
-local function f(t) return table.unpack(t) end
+local function kernel(t) local a, b = table.unpack(t) return a, b end
+local function call(t) local a, b = kernel(t) return a, b end
 local seen = {}
 for i = 1, 40 do
-  local ok, msg = pcall(f, {1, 2})
+  local ok, msg = pcall(call, {1, 2})
   seen[tostring(ok) .. " " .. tostring(msg):gsub("^.-:%d+: ", "")] = true
 end
 local out = {}
@@ -53,28 +62,74 @@ return table.concat(out, "|"), type(__ipairs_iter)`, false},
 	// io.lines as the generator of a promoted generic-for: an explicit nil is rejected as a file handle
 	// and a non-string fails the string check, both attributed to the for generator as on 5.1. Nothing
 	// is read from stdin. The loop is bounded because a generator that wrongly accepts its argument
-	// (io.lines(nil) used to return an iterator) would otherwise be called forever. The position prefix
-	// is cut off because the chunk name differs between the two engines.
+	// (io.lines(nil) used to return an iterator) would otherwise be called forever.
 	{"io_lines_argument_errors", `
 local function loop(f, s, c) local n = 0 for _ in f, s, c do n = n + 1 if n >= 3 then break end end return n end
+local function call(f, s, c) local n = loop(f, s, c) return n end
 local seen, order = {}, {}
 for i = 1, 40 do
   for _, arg in ipairs({"nil", "table", "boolean"}) do
     local ok, msg
-    if arg == "nil" then ok, msg = pcall(loop, io.lines, nil, nil)
-    elseif arg == "table" then ok, msg = pcall(loop, io.lines, {})
-    else ok, msg = pcall(loop, io.lines, false) end
+    if arg == "nil" then ok, msg = pcall(call, io.lines, nil, nil)
+    elseif arg == "table" then ok, msg = pcall(call, io.lines, {})
+    else ok, msg = pcall(call, io.lines, false) end
     local line = arg .. ": " .. tostring(ok) .. " " .. tostring(msg):gsub("^.-:%d+: ", "")
     if not seen[line] then seen[line] = true order[#order + 1] = line end
   end
 end
 return table.concat(order, " | ")`, true},
+	// The ipairs iterator's own argument checks, reached from a promoted generic-for: the control
+	// value is checked before the table, and a non-numeric string is not a number.
+	{"ipairs_iterator_argument_errors", `
+local function loop(f, s, c) local n = 0 for _, v in f, s, c do n = n + v if n > 100 then break end end return n end
+local function call(f, s, c) local n = loop(f, s, c) return n end
+local it = ipairs({})
+local seen, order = {}, {}
+for i = 1, 40 do
+  for _, arg in ipairs({"no table", "bad control", "bad both"}) do
+    local ok, msg
+    if arg == "no table" then ok, msg = pcall(call, it, 5, 0)
+    elseif arg == "bad control" then ok, msg = pcall(call, it, {1, 2}, "x")
+    else ok, msg = pcall(call, it, 5, {}) end
+    local line = arg .. ": " .. tostring(ok) .. " " .. tostring(msg):gsub("^.-:%d+: ", "")
+    if not seen[line] then seen[line] = true order[#order + 1] = line end
+  end
+end
+return table.concat(order, " | ")`, true},
+	// math.mod is fmod's 5.0 name and the same function object. A promoted function sees the two equal
+	// and gets the same results from either. The kernel reaches them as upvalues and is padded with
+	// arithmetic: that is a form both tiers accept under force-all (P4 does not promote a function
+	// that calls math.mod and math.fmod by field name, on master either). P3 declines it under natural
+	// heat as not worth compiling, hence auto = false.
+	{"math_mod_is_fmod", `
+local mod, fmod = math.mod, math.fmod
+local function kernel(x, y)
+  local a = mod(x, y)
+  local b = fmod(x, y)
+  local c = a * 2 + b
+  local d = c - a - b
+  local e = d + x - y
+  local f = e * 3 - d
+  local g = f + c - a
+  return a + b + g, mod == fmod
+end
+local total, agree = 0, 0
+for i = 1, 60 do
+  local v, same = kernel(i + 7, 5)
+  total = total + v
+  if same then agree = agree + 1 end
+end
+return total, agree`, false},
 }
 
 // TestTiered_StdlibNames runs each kernel three ways on this build -- interpreter only, force-all
 // promoted, and promoted from natural heat -- and requires all three to agree with each other and
-// with lua5.1. It fails if a kernel that is supposed to promote did not, so the comparison cannot
-// silently turn into interpreter against interpreter.
+// with lua5.1.
+//
+// It then requires that execution actually entered compiled code in the promoted runs, and that it
+// did not in the interpreter-only run. Without that, the comparison can silently become interpreter
+// against interpreter: an earlier version asserted PromotionCount > 0, and two of its kernels were
+// compiled but never executed compiled because every call to them sat directly under pcall.
 func TestTiered_StdlibNames(t *testing.T) {
 	oracle := findOracle()
 	for _, c := range tieredStdlibNameCases {
@@ -83,7 +138,11 @@ func TestTiered_StdlibNames(t *testing.T) {
 			if err != nil {
 				t.Fatalf("wangshu compile: %v", err)
 			}
-			baseline := runAutoOnce(t, prog, newInterpBaselineState(), "baseline")
+			interp := newInterpBaselineState()
+			baseline := runAutoOnce(t, prog, interp, "baseline")
+			if n := interp.GibbousEntries(); n != 0 {
+				t.Errorf("the interpreter-only baseline entered compiled code %d times", n)
+			}
 			if oracle != "" {
 				if want := runOracle(t, oracle, wrapForOracle(c.src)); baseline != want {
 					t.Errorf("interpreter vs oracle:\n  wangshu: %q\n  oracle:  %q", baseline, want)
@@ -95,17 +154,20 @@ func TestTiered_StdlibNames(t *testing.T) {
 			if got := runAutoOnce(t, prog, forced, "force-all"); got != baseline {
 				t.Errorf("force-all diverged from the interpreter:\n  force-all:   %q\n  interpreter: %q", got, baseline)
 			}
-			if forced.PromotionCount() == 0 {
-				t.Error("nothing was promoted under force-all: this kernel no longer exercises the tier")
+			if forced.GibbousEntries() == 0 {
+				t.Errorf("force-all never entered compiled code (%d protos promoted): this kernel does not exercise the tier",
+					forced.PromotionCount())
 			}
 
 			auto := newAutoState()
 			if got := runAutoOnce(t, prog, auto, "auto"); got != baseline {
 				t.Errorf("auto diverged from the interpreter:\n  auto:        %q\n  interpreter: %q", got, baseline)
 			}
-			if c.auto && auto.PromotionCount() == 0 {
-				t.Error("nothing was promoted from natural heat: this kernel no longer exercises the tier")
+			if c.auto && auto.GibbousEntries() == 0 {
+				t.Errorf("natural heat never entered compiled code (%d protos promoted): this kernel does not exercise the tier",
+					auto.PromotionCount())
 			}
+			t.Logf("entries into compiled code: force-all %d, auto %d", forced.GibbousEntries(), auto.GibbousEntries())
 		})
 	}
 }
