@@ -27,7 +27,7 @@
         conformance conformance-all conformance-p1 conformance-p3 conformance-p4 \
         cover hooks check-pr-ci tidy release
 
-all: fmt lint test-scripts build-all test-all fuzz-all conformance difftest-all      ## Default: full local pre-commit check (main module + benchmarks submodule); build-all compiles the .test binaries for all variants once and later test/bench reuse them; the benchmarks submodule functional tests (realworld oracle parity) are already covered by test-all via precompiled binaries, so bench-test is not duplicated in all
+all: fmt lint test-scripts check-readme build-all test-all fuzz-all conformance difftest-all      ## Default: full local pre-commit check (main module + benchmarks submodule); build-all compiles the .test binaries for all variants once and later test/bench reuse them; the benchmarks submodule functional tests (realworld oracle parity) are already covered by test-all via precompiled binaries, so bench-test is not duplicated in all
 
 fmt:                                                ## Format (writes back)
 	@files=$$(git ls-files '*.go'); [ -z "$$files" ] || gofmt -w $$files
@@ -42,12 +42,13 @@ test-scripts:                                       ## Self-tests for tooling sc
 	bash scripts/test-check-oracle.sh
 	bash scripts/test-cover.sh
 
-check-readme:                                       ## The READMEs' "not provided" tables against the stdlib registry (no lua5.1 needed); the readme-check workflow runs it for README-only changes, which ci.yml's paths-ignore skips. Fails when the test fails and also when it did not run
-	@out=$$(go test ./test/difftest/ -run '^(TestStdlibAbsentIsInREADME|TestReadmeListsMatcher)$$' -count=1 -v 2>&1); status=$$?; \
+check-readme:                                       ## The READMEs' "not provided" tables against the stdlib registry, both directions (no lua5.1 needed). ci.yml runs it in the test-scripts job; the readme-check workflow runs it for README-only changes, which ci.yml's paths-ignore skips. Fails when a test fails and also when one of them did not run
+	@out=$$(go test ./test/difftest/ -run '^(TestStdlibAbsentIsInREADME|TestReadmeListsOnlyAbsentNames|TestReadmeListsMatcher)$$' -count=1 -v 2>&1); status=$$?; \
 	echo "$$out"; \
-	if [ $$status -ne 0 ] || ! echo "$$out" | grep -q '^--- PASS: TestStdlibAbsentIsInREADME'; then \
-		echo "check-readme: TestStdlibAbsentIsInREADME failed or did not run"; exit 1; \
-	fi
+	if [ $$status -ne 0 ]; then echo "check-readme: a test failed"; exit 1; fi; \
+	for t in TestStdlibAbsentIsInREADME TestReadmeListsOnlyAbsentNames TestReadmeListsMatcher; do \
+		echo "$$out" | grep -q "^--- PASS: $$t " || { echo "check-readme: $$t did not run"; exit 1; }; \
+	done
 
 # --- build ------------------------------------------------------------------
 build: build-all                                    ## Alias: make build = build-all
