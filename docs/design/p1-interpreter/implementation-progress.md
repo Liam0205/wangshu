@@ -798,6 +798,10 @@ nightly 的 go-fuzz（p1，`FuzzOracleDiff`）找到 `t={}table.unpack(t)`：官
 | README 说完整清单在 `exemptions`，实际逐个名字的清单是 `stdlibAbsent` | 两个语言版本都改了 |
 | 文档把 `f:setvbuf` 和 `io.lines(文件名)` 的报错文本指到 #330，而 #330 里没有提到它们 | 在 #330 补了一条评论 |
 
+reviewer 在跑 P4 全量测试时还撞到一次 `TestIssue177_StringLimitContextCanceled` 失败，重跑通过。在 master 的基线提交上
+对比过：这个测试依赖一个 5 毫秒的定时器，默认并行度下 400 次里失败 5 次，`GOMAXPROCS=1` 时每次都失败，分支上的表现相同。
+与这次改动无关，记在 [#334](https://github.com/Liam0205/wangshu/issues/334)，测试本身没有动。
+
 用新探针扫了一遍现有的分层语料：`p4Corpus` 里有 12 个出错路径用例是同一种情况（升了层、从未进入原生码），`p3Corpus`
 没有。把这 12 个临时改写成经包装函数、循环调用之后，内核确实在原生码里出错，结果与解释器、与 `lua5.1` 一致，所以没有
 发现缺陷；语料本身的修改不在这一轮的范围里，记在 [#333](https://github.com/Liam0205/wangshu/issues/333)。
