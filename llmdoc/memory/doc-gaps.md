@@ -10,6 +10,12 @@
   差分 fuzz 的 prelude 用排序遍历，官方测试套件里测这件事的两段都在截断行之后，所以一直没被发现。见
   [#338](https://github.com/Liam0205/wangshu/issues/338)。
 
+- **【未修，产品缺陷】P4 升层后的报错里变量名不对** — 调用结果赋给两个以上局部变量的函数（`local a, b = u(t) return a, b`）
+  升层之后，被调用者的名字取自 CALL 后面的 MOVE：`attempt to call upvalue 'u'` 变成 `attempt to call local 'a'`，宿主函数的
+  参数错误也一样。原因是 `internal/gibbous/jit/code.go` 用 `retPC - 1` 当作 CALL 的位置，多结果的形式在两者之间隔着 MOVE。
+  amd64 上另有一种情况：索引值为 nil 的 upvalue 时名字丢失，原因没有查。见
+  [#339](https://github.com/Liam0205/wangshu/issues/339)。
+
 - **【未做，等维护者决定】标准库提供面没有达到「对齐 gopher-lua」的设计目标，三层开关没有实现** — 2026-06-11 评审决定
   「默认面 = gopher-lua 的 OpenLibs 提供面（os 默认完整，含 execute / exit）+ LibsSafe / Libs / Exclude 三层开关」
   （`decisions/2026-06-11-design-review-decisions.md` 第 6 项）。现状（2026-11-25 逐个名字核对，#329）：
