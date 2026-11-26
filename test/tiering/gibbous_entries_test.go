@@ -21,8 +21,7 @@ import (
 //     case only records which it is and checks nothing about the count.
 //
 // A test that wraps its kernel directly in pcall therefore sees PromotionCount > 0 while exercising
-// no compiled code -- two kernels of test/difftest's TestTiered_StdlibNames were in that state, and
-// a mutation of the compiled tier's error path left them green.
+// no compiled code, and a mutation of the compiled tier's error path leaves it green.
 func TestGibbousEntries(t *testing.T) {
 	const kernel = `local function kernel(x) local y = x * 2 + 1 return y - x end
 `

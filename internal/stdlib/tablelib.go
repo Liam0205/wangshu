@@ -1860,10 +1860,10 @@ func makeLineIterator(st *crescent.State, readable bool) value.Value {
 
 // ----- debug sub-library -----
 
-// debugFns is the P1 subset: traceback and getinfo (09 §13). The rest of 5.1's debug
-// library (sethook, getlocal, setlocal, getupvalue, setupvalue, getregistry) stays out --
-// 10 §14 lists those in the ❌ column, and they need introspection hooks the interpreter
-// does not expose.
+// debugFns is the P1 subset: traceback and getinfo (09 §13). The other twelve functions of
+// 5.1's debug library (sethook, gethook, getlocal, setlocal, getupvalue, setupvalue,
+// getregistry, getmetatable, setmetatable, getfenv, setfenv, debug) stay out -- 10 §14 lists
+// them in the ❌ column, and they need introspection hooks the interpreter does not expose.
 var debugFns = []entry{
 	{"traceback", debugFnTraceback},
 	{"getinfo", debugFnGetInfo},

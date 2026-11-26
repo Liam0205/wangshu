@@ -11,9 +11,8 @@ import (
 //
 // The iterator narrows its control value with luaL_checkint, whose result for a NaN, an infinity or
 // anything beyond int64 is undefined behaviour in C and differs between amd64 and arm64. Such a call
-// must be excluded from comparison. Nothing else reaches this code: the guard lives in the prelude, so
-// only a real Exec runs it, and before this test no corpus entry passed the iterator a non-finite
-// control value -- deleting the check left every test green.
+// must be excluded from comparison. The guard lives in the prelude, so only a real Exec runs it; this
+// test is what fails when the check is deleted.
 //
 // Too wide matters as much as too narrow: a finite control value that both engines handle the same way
 // must still be compared, or the guard silently removes coverage.

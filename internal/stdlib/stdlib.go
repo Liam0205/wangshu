@@ -421,12 +421,11 @@ func ipairsIter(st *crescent.State, args []value.Value) ([]value.Value, *crescen
 	}
 	// PUC's ipairsaux reads the control value with luaL_checkint, so it narrows
 	// to int32 and truncates a fraction: called with (t, 2^32+2) it continues
-	// from 2, and with (t, 1.5) from 1. Taking the raw double skipped straight to
-	// nil for both. This site sat outside the earlier sweep, which enumerated
-	// public stdlib functions -- the iterator has no public name.
+	// from 2, and with (t, 1.5) from 1; the raw double would index nothing in
+	// either case.
 	// The increment happens in int32 too, so it WRAPS like PUC's C int does:
 	// from 2147483647 the next index is -2147483648, not 2147483648. Adding 1 to
-	// the narrowed value as a float64 never wraps and missed that key.
+	// the narrowed value as a float64 would never wrap and would miss that key.
 	i32 := cCharCastInt32(ctl) + 1
 	i := float64(i32)
 	v, e := st.RawGet(value.GCRefOf(args[0]), value.NumberValue(i))

@@ -29,6 +29,18 @@
   默认并行度 400 次失败 5 次，`GOMAXPROCS=1` 每次都失败；被测脚本不设 context 时 3.4 到 4.9 毫秒就跑完，比超时短。是测试
   的问题，不是 #177 的修复失效。见 [#334](https://github.com/Liam0205/wangshu/issues/334)。全量 P4 测试偶尔红一次时先看是不是它。
 
+- **【未做，等维护者决定】`debug.getinfo` 接受 `>` 选项；按栈层级查询时缺 `lastlinedefined` / `activelines`** — 官方对脚本传入的
+  `>` 报 `invalid option`；这两个字段望舒只在第一个参数是 Lua 函数时返回。README 和 09 §13 写的是实际行为。`name` /
+  `namewhat` / `nups` 是有意不返回的，但差分 fuzz 的 prelude 没有处理，读这些字段的脚本在 `FuzzOracleDiff` 里两侧不同。见
+  [#335](https://github.com/Liam0205/wangshu/issues/335)。
+
+- **【未做，等维护者决定】`table` 和 `math` 两个库表的 `pairs` 遍历顺序与官方不同** — 键集合相同，建表时的预留大小和写入顺序与
+  `luaL_register` 不同。名字比对测试先排序再比，差分 fuzz 用排序遍历，都看不到。见
+  [#336](https://github.com/Liam0205/wangshu/issues/336)。
+
+- **【未做，等维护者决定】`ResetGlobalsToBaseline` 只恢复 `_G` 这一层** — 脚本改过的库表字段（`math.floor = nil`）重置后仍是改过的
+  值，godoc 和 [[embedding-contract]] 没有写明。见 [#337](https://github.com/Liam0205/wangshu/issues/337)。
+
 - **【未做，等维护者决定】主块之下的 C 帧在两处取了相反的答案** — 栈回溯和 `debug.getinfo` 按独立的 `lua5.1`（末尾有
   `[C]: ?`，#279），C 调用深度按内嵌用法（下面 #281-#288 一条里登记的已知限制）。`FuzzOracleDiff` 的参照实现是内嵌用法，
   所以含 `debug.traceback` / `debug.getinfo(2)` 的脚本在那里两侧输出不同；现有语料里没有这两个名字，nightly 还没有报过。

@@ -160,7 +160,7 @@ for i := 0; i < 1000; i++ {
 - **标准库**：base、string、table、math、coroutine 除下表列出的以外全部提供。
 - **os**：提供 `os.time` / `os.clock` / `os.date` / `os.difftime` / `os.getenv`。其余没有提供，见下表。
 - **io**：提供 `io.write` / `io.read` / `io.lines` 和三个标准流 `io.stdout` / `io.stdin` / `io.stderr`。标准流是真正的文件句柄 userdata，支持 `:write` / `:read` / `:lines` / `:flush` / `:close`。需要打开真实文件的部分和管理默认流的函数没有提供，见下表。
-- **debug**：提供 `debug.traceback` 和 `debug.getinfo`。`getinfo` 只返回能如实给出的字段：`currentline` / `source` / `short_src` / `what` / `linedefined` / `func`，参数是 Lua 函数时另有 `lastlinedefined`，带选项 `L` 时有 `activelines`；`name` / `namewhat` / `nups` 不返回。
+- **debug**：提供 `debug.traceback` 和 `debug.getinfo`。`getinfo` 只返回能如实给出的字段：`currentline` / `source` / `short_src` / `what` / `linedefined` / `func`；第一个参数是 Lua 函数（不是栈层级）时另有 `lastlinedefined`，再带选项 `L` 时有 `activelines`。`name` / `namewhat` / `nups` 不返回。
 
 ### 不提供或与官方不同的部分
 

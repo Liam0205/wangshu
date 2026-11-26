@@ -161,7 +161,7 @@ Wangshu implements the Lua 5.1 core language, with the same syntax surface as Lu
 - **Standard library**: base, string, table, math and coroutine are provided in full, apart from what the table below lists.
 - **os**: `os.time` / `os.clock` / `os.date` / `os.difftime` / `os.getenv`. The rest is not provided; see the table below.
 - **io**: `io.write` / `io.read` / `io.lines` and the three standard streams `io.stdout` / `io.stdin` / `io.stderr`. The streams are real file-handle userdata supporting `:write` / `:read` / `:lines` / `:flush` / `:close`. The parts that need to open real files, and the functions that manage the default streams, are not provided; see the table below.
-- **debug**: `debug.traceback` and `debug.getinfo`. `getinfo` fills only the fields it can answer truthfully: `currentline` / `source` / `short_src` / `what` / `linedefined` / `func`, plus `lastlinedefined` when the argument is a Lua function and `activelines` under the `L` option; `name` / `namewhat` / `nups` are left out.
+- **debug**: `debug.traceback` and `debug.getinfo`. `getinfo` fills only the fields it can answer truthfully: `currentline` / `source` / `short_src` / `what` / `linedefined` / `func`. When the first argument is a Lua function (not a stack level) it adds `lastlinedefined`, and `activelines` if the `L` option is given. `name` / `namewhat` / `nups` are left out.
 
 ### Not provided, or different from the official implementation
 
