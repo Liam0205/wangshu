@@ -210,6 +210,12 @@ type State struct {
 	// loopFuel refill keeps a hot loop from crossing tiers almost entirely). Read only by tests.
 	safepointCalls int64
 
+	// gibbousEntries counts how many times Go handed control to a promoted function's compiled code:
+	// every GibbousCode.Run, i.e. enterGibbous and the interpreter's tail-call entry (white-box
+	// probe). PromotionCount says a Proto was compiled; only this says compiled code ran. Read only
+	// by tests.
+	gibbousEntries int64
+
 	// ctx is the cancellation signal injected by SetContext (issue #4): the same
 	// preempt points (back edge / frame entry / CALL) do a ctx.Err() check. The
 	// atomic wrapper is because of the common cross-goroutine cancellation
@@ -808,6 +814,14 @@ func (st *State) PromotionCount() int {
 // crosses tiers into host.Safepoint (white-box probe, for tests: proving that
 // with no budget the unlimited loopFuel refill keeps a hot loop from crossing tiers almost entirely).
 func (st *State) SafepointCalls() int64 { return st.safepointCalls }
+
+// GibbousEntries returns the cumulative number of times Go handed control to a promoted function's
+// compiled code: from the interpreter's CALL or TAILCALL, from the host's top-level call, or from a
+// compiled caller's slow call path (white-box probe, for tests). It is what proves a promoted function
+// RAN compiled: PromotionCount only counts Protos that were compiled, and a promoted function invoked
+// by a host function (pcall(f), a sort comparator, a metamethod) still runs its frame in the
+// interpreter. Calls that never leave compiled code are not counted.
+func (st *State) GibbousEntries() int64 { return st.gibbousEntries }
 
 // SetStepBudget sets the execution work budget (<=0 disables). On overrun
 // the script terminates with a recoverable "instruction budget exceeded"
