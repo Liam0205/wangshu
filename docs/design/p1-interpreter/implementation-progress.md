@@ -730,8 +730,10 @@ nightly 的 go-fuzz（p1，`FuzzOracleDiff`）找到 `t={}table.unpack(t)`：官
 | 迭代器私有化 | 同文件 `registerIterFactory` | `pairs` / `ipairs` 各自在注册时建好迭代器的宿主闭包，由工厂函数的 Go 闭包捕获，同时挂在工厂函数的 upvalue 上让 GC 保活；不再有 `__ipairs_iter`，`pairs` 不再读全局 `next` |
 | fuzz 的 prelude | `internal/oracle/prelude.go` | 原来靠包装全局 `__ipairs_iter` 来拦 `luaL_checkint` 的未定义行为区间，改成包装 `ipairs`、发放同一个带检查的迭代器 |
 | 行为测试 | `test/language/stdlib_names_test.go`（新增） | 21 个用例，期望值逐个在 lua5.1 5.1.5 上实际执行核对过 |
+| 分层测试 | `test/difftest/tiered_stdlib_names_test.go`（新增） | 六段脚本在 P3 / P4 的升层代码里执行，与解释器、与 `lua5.1` 比对；断言 `GibbousEntries() > 0` |
+| 白盒探针 | `State.GibbousEntries()`（新增，testing-only） | 执行进入升层代码的次数；`PromotionCount()` 只说明编译过 |
 | 名字集合比对 | `test/difftest/corners_test.go` `TestDiff_StdlibNames`（新增） | 对着真实的 `lua5.1` 双向比对；望舒多出的名字一律失败，缺少的逐个登记在 `stdlibAbsent`（合入时 37 条）；清单里还包含哪些名字是同一个函数对象 |
-| 语料 | `test/fuzz/testdata/fuzz/FuzzOracleDiff/` | 加入 #329 的输入和五条回归语料；原来写着 `__ipairs_iter` 的两条改成经 `ipairs({})` 取迭代器 |
+| 语料 | `test/fuzz/testdata/fuzz/FuzzOracleDiff/` | 加入 #329 的输入和六条回归语料；原来写着 `__ipairs_iter` 的两条改成经 `ipairs({})` 取迭代器 |
 
 **对使用者的影响**（六项都是改成与官方 5.1 一致）：
 
@@ -750,7 +752,7 @@ nightly 的 go-fuzz（p1，`FuzzOracleDiff`）找到 `t={}table.unpack(t)`：官
 
 | 审查意见 | 处理 |
 |---|---|
-| 行为测试里标着「热函数」的用例其实没有升层：直接调用全局 `ipairs` / `pairs` 的函数不会升到 P3 / P4，所以「三种构建一致」没有任何测试在执行 | 新增 `test/difftest/tiered_stdlib_names_test.go` 的 `TestTiered_StdlibNames`：三段确实会升层的脚本，分别在只用解释器、强制升层、自然升温三种方式下执行，要求彼此一致并与 `lua5.1` 一致，并断言 `PromotionCount() > 0`。原用例改了写法和注释，不再声称覆盖升层路径 |
+| 行为测试里标着「热函数」的用例其实没有升层：直接调用全局 `ipairs` / `pairs` 的函数不会升到 P3 / P4，所以「三种构建一致」没有任何测试在执行 | 新增 `test/difftest/tiered_stdlib_names_test.go` 的 `TestTiered_StdlibNames`：三段确实会升层的脚本，分别在只用解释器、强制升层、自然升温三种方式下执行，要求彼此一致并与 `lua5.1` 一致，并断言 `PromotionCount() > 0`。原用例改了写法和注释，不再声称覆盖升层路径。（这个断言后来被第四轮审查指出不够：升了层不等于执行过，见下面第四轮的表） |
 | 文档对 os / io 缺少的函数前后矛盾：`stdlibAbsent` 登记它们没有注册，而 README 写「os 全部提供」「`os.exit` 不真的退出进程」，设计文档多处写「做简化版」 | README 两个语言版本、[10](./10-stdlib.md) 的 §9.1 / §9.3 / §9.4 / §10.1 / §12.1 / §14 都按现状改了，新增 §9.5 说明 os 库只注册了五个函数；`exemptions` 里与 `stdlibAbsent` 矛盾的条目改掉。新增 `TestStdlibAbsentIsInREADME` 和 `TestStdlibAbsentReasonsResolve`，以后 README 或登记理由与实际不符会失败。这些函数要不要补记在 [#330](https://github.com/Liam0205/wangshu/issues/330) |
 | 设计文档还有两处写 `pairs` 返回 `next` | 改成「返回的迭代器与 `next` 行为相同，但不是同一个函数对象」 |
 | 一条新语料里有两个表达式在 fuzz 的 prelude 之下恒成立；prelude 里拦截 `ipairs` 迭代器非有限控制值的检查没有任何测试 | 语料删掉那两个表达式；新增 `internal/oracle/ipairs_guard_test.go` 的 `TestIpairsIteratorGuard` 和两条语料。写测试时还发现这个检查用固定形参接收参数，会把「没有传控制值」变成「传了 nil」，改成原样转发 |
@@ -784,11 +786,28 @@ nightly 的 go-fuzz（p1，`FuzzOracleDiff`）找到 `t={}table.unpack(t)`：官
 | 存量差异：10 号文档对 `table.getn` / `setn` 有三种说法，都与代码不符（文档说没有，实际有）；总表没有列 `table.foreach` / `foreachi`、`math.mod`、`string.gfind` | 都按现状改了。用一段临时脚本把 10 号文档的逐函数表格与实际注册的名字机械核对了一遍，改完之后不一致为 0。这些表格本身没有常驻检查，记在 [#332](https://github.com/Liam0205/wangshu/issues/332) |
 | 存量差异：#331（主块之下的 C 帧）、`io.lines(文件名)` 的报错文本（属于 #330） | 不在这一轮修。reviewer 认为可以接受，并提醒 #331 的触发输入只有二十几个字节，nightly 随时可能撞到 |
 
+第四轮独立审查（全范围，又一位 reviewer）仍然没有找到产品行为上的问题，提出两条重要问题和四条小问题，都与测试是否
+有效有关：
+
+| 审查意见 | 处理 |
+|---|---|
+| `TestTiered_StdlibNames` 四段脚本里有两段升了层却从来没有进入升层代码：内核直接放在 `pcall` 下面，而被宿主函数调用的 Lua 函数固定由解释器执行。`PromotionCount() > 0` 数的是被编译的 Proto 个数，拦不住这种情况。只改升层路径 `TForLoop` 的出错分支，测试照常通过。`math.mod` 一项没有分层用例 | 新增白盒探针 `State.GibbousEntries()`（Go 把控制权交给升层代码的次数），规则由 `test/tiering/gibbous_entries_test.go` 固定。分层测试改成：需要出错的内核经一个 Lua 包装函数调用（不能是尾调用），断言升层的两格 `GibbousEntries() > 0`、只用解释器的一格等于 0。补了两段脚本（`ipairs` 迭代器自己的参数错误、`math.mod` 与 `fmod` 的身份），现在共六段。只改升层路径的 `TForLoop` 或 `CALL` 报错，测试在 P3、P4 下失败，而解释器上的测试照常通过 |
+| 上一轮新加的语料 `r329f_io_lines_args` 离一处已知差异只有一步变异：把 `{}` 换成 `00`，`io.lines` 就收到一个文件名，官方去打开文件，望舒报「不支持」。官方一侧还会真的打开宿主文件 | 差分 fuzz 的 prelude 给 `io.lines` 加了一层：参数是字符串或数字时两侧报同一条 harness 错误；没有参数、显式 `nil`、其他类型照常比对。`internal/oracle/io_lines_guard_test.go` 固定两个方向，另加一条语料。reviewer 点名的几种一步变异输入现在两侧一致 |
+| 10 号文档还有两处写「危险函数受配置」「`os.getenv` 嵌入场景可禁用」 | 按现状改 |
+| `tablelib.go` 里 `table.setn` 的注释引用了设计文档里已经不存在的说法 | 改掉 |
+| README 说完整清单在 `exemptions`，实际逐个名字的清单是 `stdlibAbsent` | 两个语言版本都改了 |
+| 文档把 `f:setvbuf` 和 `io.lines(文件名)` 的报错文本指到 #330，而 #330 里没有提到它们 | 在 #330 补了一条评论 |
+
+用新探针扫了一遍现有的分层语料：`p4Corpus` 里有 12 个出错路径用例是同一种情况（升了层、从未进入原生码），`p3Corpus`
+没有。把这 12 个临时改写成经包装函数、循环调用之后，内核确实在原生码里出错，结果与解释器、与 `lua5.1` 一致，所以没有
+发现缺陷；语料本身的修改不在这一轮的范围里，记在 [#333](https://github.com/Liam0205/wangshu/issues/333)。
+
 验证：`make all` 与 `make fuzz-oracle` 通过。把 `internal/stdlib` 的 `stdlib.go` 和 `tablelib.go` 一起换回修复前的版本：
-行为测试 10 个用例失败，`test/api` 的 `io.lines` 用例 4 个失败，`TestTiered_StdlibNames` 在 P3、P4 两种构建下四段脚本
-全部失败，名字比对报出两个多余名字和一组缺少的别名，#329 的输入和三条回归语料失败。名字比对测试另做了两种变异
-（删一条登记、加一条过期登记），都会失败。去掉 prelude 里的检查，`TestIpairsIteratorGuard` 报 8 处；`exemptions` 改一个
-条目名，`TestStdlibAbsentReasonsResolve` 失败；README 的逐名字删除见上表。
+行为测试 10 个用例失败，`test/api` 的 `io.lines` 用例 4 个失败，`TestTiered_StdlibNames` 在 P3、P4 两种构建下六段脚本里
+五段失败（第六段测的是迭代器对坏参数的报错，修复前后相同，它的作用是在升层路径上执行那条报错），名字比对报出两个多余
+名字和一组缺少的别名，#329 的输入和四条回归语料失败。名字比对测试另做了两种变异（删一条登记、加一条过期登记），都会
+失败。去掉 prelude 里的检查，`TestIpairsIteratorGuard` 报 8 处、`TestIoLinesFilenameGuard` 报 5 处；`exemptions` 改一个
+条目名，`TestStdlibAbsentReasonsResolve` 失败；README 的逐名字删除见上面第三轮的表。
 
 机制见 [10 §4.4 / §4.5 / §9.5 / §12.3](./10-stdlib.md)，过程记录见
 [#329 复盘](../../../llmdoc/memory/reflections/2026-11-25-issue329-stdlib-extra-names.md)。
