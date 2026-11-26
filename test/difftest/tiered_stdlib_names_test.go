@@ -24,11 +24,14 @@ import (
 // The test asserts GibbousEntries, the number of times execution entered compiled code, instead of
 // assuming any of this.
 //
+// forced says whether force-all runs the kernel compiled on this build. Every kernel does on every
+// build, except the one that reads a missing table field: see missingFieldCallRunsCompiled.
+//
 // auto says whether the kernel is also expected to run compiled, on both tiers, when promotion comes
 // from natural heat under the lowered thresholds; some kernels only run compiled under force-all.
 var tieredStdlibNameCases = []struct {
-	name, src string
-	auto      bool
+	name, src    string
+	forced, auto bool
 }{
 	// A promoted generic-for drives the iterators that pairs / ipairs hand out, after the global next
 	// is gone: pairs must not look it up again.
@@ -38,16 +41,19 @@ local function loop(f, s, c) local n = 0 for _, v in f, s, c do n = n + v end re
 local t = {1, 2, 3}
 local total = 0
 for i = 1, 60 do total = total + loop(ipairs(t)) + loop(pairs(t)) end
-return total`, true},
+return total`, true, true},
 	// The ipairs iterator narrows its control value like luaL_checkint, numeric strings included.
 	{"ipairs_iterator_string_control", `
 local function loop(f, s, c) local n = 0 for _, v in f, s, c do n = n + v end return n end
 local t = {7, 8, 9}
 local total = 0
 for i = 1, 60 do total = total + loop(ipairs({}), t, "1") end
-return total`, true},
+return total`, true, true},
 	// Calling the name 5.1 does not have, from inside a promoted function, raises the same error.
-	// The position prefix is cut off because the chunk name differs between the two engines.
+	// The position prefix is cut off because the chunk name differs between the two engines. This is
+	// the input of #329 as written, a read of a missing field followed by a call; P4 on arm64 does not
+	// compile that form, so there the three runs only compare results and the next case is the one
+	// that raises from compiled code.
 	{"missing_table_unpack_error", `
 local function kernel(t) local a, b = table.unpack(t) return a, b end
 local function call(t) local a, b = kernel(t) return a, b end
@@ -58,9 +64,33 @@ for i = 1, 40 do
 end
 local out = {}
 for k in pairs(seen) do out[#out + 1] = k end
-return table.concat(out, "|"), type(__ipairs_iter)`, false},
+return table.concat(out, "|"), type(__ipairs_iter)`, missingFieldCallRunsCompiled, false},
+	// The same call with the missing function reached as an upvalue and the kernel padded with
+	// arithmetic, a form P3 and both P4 native translators run compiled under force-all. Under
+	// natural heat P4 runs it compiled and P3 does not, hence auto = false.
+	{"missing_table_unpack_upvalue_error", `
+local unpack52 = table.unpack
+local function kernel(t, x)
+  local a = x * 2 + 1
+  local b = a - x
+  local c = b * 3 - a
+  local d = c + b - x
+  local e = d * 2 + c
+  local f = e - d + a
+  local p, q = unpack52(t)
+  return p, q, f
+end
+local function call(t, x) local p, q, f = kernel(t, x) return p, q, f end
+local seen = {}
+for i = 1, 40 do
+  local ok, msg = pcall(call, {1, 2}, i)
+  seen[tostring(ok) .. " " .. tostring(msg):gsub("^.-:%d+: ", "")] = true
+end
+local out = {}
+for k in pairs(seen) do out[#out + 1] = k end
+return table.concat(out, "|")`, true, false},
 	// io.lines as the generator of a promoted generic-for: an explicit nil is rejected as a file handle
-	// and a non-string fails the string check, both attributed to the for generator as on 5.1. Nothing
+	// and a table or a boolean fails the string check, both attributed to the for generator as on 5.1. Nothing
 	// is read from stdin. The loop is bounded because a generator that wrongly accepts its argument
 	// would otherwise be called forever.
 	{"io_lines_argument_errors", `
@@ -77,7 +107,7 @@ for i = 1, 40 do
     if not seen[line] then seen[line] = true order[#order + 1] = line end
   end
 end
-return table.concat(order, " | ")`, true},
+return table.concat(order, " | ")`, true, true},
 	// The ipairs iterator's own argument checks, reached from a promoted generic-for: the control
 	// value is checked before the table, and a non-numeric string is not a number.
 	{"ipairs_iterator_argument_errors", `
@@ -95,7 +125,7 @@ for i = 1, 40 do
     if not seen[line] then seen[line] = true order[#order + 1] = line end
   end
 end
-return table.concat(order, " | ")`, true},
+return table.concat(order, " | ")`, true, true},
 	// math.mod is fmod's 5.0 name and the same function object. A promoted function sees the two equal
 	// and gets the same results from either. The kernel reaches them as upvalues and is padded with
 	// arithmetic, a form both tiers promote under force-all. Under natural heat P4 runs it compiled
@@ -118,15 +148,15 @@ for i = 1, 60 do
   total = total + v
   if same then agree = agree + 1 end
 end
-return total, agree`, false},
+return total, agree`, true, false},
 }
 
 // TestTiered_StdlibNames runs each kernel three ways on this build -- interpreter only, force-all
 // promoted, and promoted from natural heat -- and requires all three to agree with each other and
 // with lua5.1.
 //
-// It then requires that execution actually entered compiled code in the promoted runs, and that it
-// did not in the interpreter-only run. Without that, the comparison can silently become interpreter
+// It then requires that execution actually entered compiled code in the promoted runs where the case
+// says so, and that it did not in the interpreter-only run. Without that, the comparison can silently become interpreter
 // against interpreter: PromotionCount > 0 only says that a Proto was compiled, and a kernel whose
 // every call sits directly under pcall is compiled without ever executing compiled.
 func TestTiered_StdlibNames(t *testing.T) {
@@ -153,9 +183,13 @@ func TestTiered_StdlibNames(t *testing.T) {
 			if got := runAutoOnce(t, prog, forced, "force-all"); got != baseline {
 				t.Errorf("force-all diverged from the interpreter:\n  force-all:   %q\n  interpreter: %q", got, baseline)
 			}
-			if forced.GibbousEntries() == 0 {
+			switch n := forced.GibbousEntries(); {
+			case c.forced && n == 0:
 				t.Errorf("force-all never entered compiled code (%d protos promoted): this kernel does not exercise the tier",
 					forced.PromotionCount())
+			case !c.forced && n != 0:
+				t.Errorf("force-all entered compiled code %d times on a build recorded as not compiling this kernel: "+
+					"missingFieldCallRunsCompiled is out of date", n)
 			}
 
 			auto := newAutoState()
