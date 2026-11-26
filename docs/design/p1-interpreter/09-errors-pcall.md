@@ -1322,7 +1322,7 @@ debug.traceback(message, level):
 | 接口 | P1 | 说明 |
 |---|---|---|
 | `debug.traceback` | **✅ 已提供**(#205,2026-07-29) | xpcall 标准 handler;§13.1,含「显式 nil 原样返回」 |
-| `debug.getinfo` | **△ 部分,已提供**(#205) | 只填 P1 能诚实回答的字段(`currentline`/`source`/`short_src`/`what`/`func`);`nups`/`activelines`/`namewhat` **宁缺不假造**(见下) |
+| `debug.getinfo` | **△ 部分,已提供**(#205) | 只填 P1 能诚实回答的字段(`currentline`/`source`/`short_src`/`what`/`linedefined`/`func`,参数是 Lua 函数时另有 `lastlinedefined`,带选项 `L` 时有 `activelines`);`name`/`namewhat`/`nups` **宁缺不假造**(见下) |
 | `debug.sethook`/`gethook` | **❌ 不做** | 调试钩子(行/调用 hook),P1 不实现(roadmap §5 原则 4:debug 形状走 fallback) |
 | `debug.getlocal`/`setlocal` | **❌ 不做** | 读写栈帧局部变量,依赖 LocVars 回填 + 完整符号执行 |
 | `debug.getupvalue`/`setupvalue` | **△ 可选** | 读写 upvalue,依赖 UpvalNames |
@@ -1340,8 +1340,9 @@ debug.traceback(message, level):
 `OpenAll` 里建起来。`sethook`/`getlocal`/`setlocal`/`getupvalue`/`setupvalue`/`getregistry` 仍然**不存在**
 ——它们需要解释器没有暴露的内省钩子。
 
-**`getinfo` 只填能诚实回答的字段**:`currentline` / `source` / `short_src` / `what` / `func`。
-`nups` / `activelines` / `namewhat` **宁缺不假造**——对一个会去测这些字段的调用方来说,错的字段比没有更糟
+**`getinfo` 只填能诚实回答的字段**:`currentline` / `source` / `short_src` / `what` / `linedefined` / `func`;
+参数是 Lua 函数时另有 `lastlinedefined`,带选项 `L` 时有 `activelines`(两者都从 Proto 推导,不需要 hook)。
+`name` / `namewhat` / `nups` **宁缺不假造**——对一个会去测这些字段的调用方来说,错的字段比没有更糟
 (它会当成真值用,而缺失至少能被 `if info.nups then` 挡住)。
 
 **level 的 off-by-one 值得记**:`getinfo` 自己是 host 函数,而 host 帧**不进 `cis`**,所以 level 1 是

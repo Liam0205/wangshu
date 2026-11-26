@@ -1556,7 +1556,8 @@ func fileFnClose(st *crescent.State, args []value.Value) ([]value.Value, *cresce
 	return []value.Value{value.Nil, intern(st, "cannot close standard file")}, nil
 }
 
-// fileFnFlush is a no-op that returns the success flag: the streams are unbuffered here.
+// fileFnFlush is a no-op that returns the success flag: writes to the standard streams are
+// not buffered here, so there is nothing to flush.
 func fileFnFlush(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
 	if _, ok := streamKind(st, args); !ok {
 		return nil, crescent.NewArgError(1, "FILE* expected, got "+argTypeName(args, 0))
@@ -1595,10 +1596,10 @@ func fileFnLines(st *crescent.State, args []value.Value) ([]value.Value, *cresce
 
 // readFormats implements the read-format list shared by io.read and file:read.
 //
-// The reader comes from the State, not a package global: a package-level bufio.Reader is
-// shared by every State, which both races when States run in parallel goroutines (the
-// documented usage) and leaks the input position between them, since one State's buffered
-// lookahead swallows bytes the next one should see.
+// The reader is the process-wide one behind State.StdinReader, held under StdinLock for the
+// whole format list. os.Stdin has a single offset, so every State shares one buffered reader
+// (a reader per State would lose the bytes another State's lookahead had already buffered),
+// and the lock keeps States running in parallel goroutines from interleaving their reads.
 //
 // Rules taken from PUC's g_read/read_chars/read_number/read_line rather than guessed:
 //   - the "*" is REQUIRED; without it the error is "invalid option", not "invalid format"
@@ -1926,8 +1927,9 @@ func debugFnTraceback(st *crescent.State, args []value.Value) ([]value.Value, *c
 // debugFnGetInfo: debug.getinfo(level | func [, what]) -> table | nil.
 //
 // The fields P1 can fill honestly are source/short_src/currentline/what/linedefined and
-// func. The hook-dependent ones (nups, activelines, namewhat) are omitted rather than
-// faked -- a wrong field is worse than an absent one for a caller that tests it.
+// func; the function-argument form adds lastlinedefined for a Lua function and activelines
+// under the "L" option, both derived from the proto. name, namewhat and nups are omitted
+// rather than faked -- a wrong field is worse than an absent one for a caller that tests it.
 func debugFnGetInfo(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
 	if len(args) == 0 {
 		return nil, crescent.NewArgError(1, "function or level expected")
