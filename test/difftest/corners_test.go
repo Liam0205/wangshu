@@ -420,25 +420,8 @@ func TestStdlibAbsentReasonsResolve(t *testing.T) {
 // contains ordinary words such as "input" and "output". See readmeLists for what counts as listed.
 func TestStdlibAbsentIsInREADME(t *testing.T) {
 	excused := map[string]bool{"arg : table": true, "(file metatable).__gc : function": true}
-	for _, readme := range []struct{ path, heading string }{
-		{"../../README.md", "### 不提供或与官方不同的部分"},
-		{"../../README.en.md", "### Not provided, or different from the official implementation"},
-	} {
-		raw, err := os.ReadFile(readme.path)
-		if err != nil {
-			t.Fatalf("read %s: %v", readme.path, err)
-		}
-		_, section, ok := strings.Cut(string(raw), readme.heading)
-		if !ok {
-			t.Fatalf("%s: heading %q not found", readme.path, readme.heading)
-		}
-		if i := strings.Index(section, "\n## "); i >= 0 {
-			section = section[:i]
-		}
-		items := readmeItemCells(section)
-		if len(items) < 8 {
-			t.Fatalf("%s: only %d table rows under %q; the section moved or changed format", readme.path, len(items), readme.heading)
-		}
+	for _, readme := range readmeAbsentSections {
+		items := readmeAbsentItems(t, readme.path, readme.heading)
 		for entry := range stdlibAbsent {
 			if excused[entry] {
 				continue
@@ -447,6 +430,58 @@ func TestStdlibAbsentIsInREADME(t *testing.T) {
 			listed := readmeLists(items, name)
 			if !listed {
 				t.Errorf("%s: %q is in stdlibAbsent but no row of the \"not provided\" section lists it", readme.path, name)
+			}
+		}
+	}
+}
+
+// readmeListsProvided is every name wangshu provides that the READMEs' "not provided, or different"
+// section nevertheless names in its items column, and why it is there. The section lists differences
+// as well as absences, so a few provided names belong in it.
+var readmeListsProvided = map[string]string{
+	"debug.traceback": "named on the debug row as one of the two functions that are provided",
+	"debug.getinfo":   "named on the debug row as one of the two functions that are provided",
+	"loadfile":        "provided, off by default",
+	"dofile":          "provided, off by default",
+	"io.lines":        "provided; the filename form raises",
+	"string.char":     "provided; the row is about arguments outside the int range",
+	"type":            "not listed itself: the abbreviation of math.type on the 5.3 row reads as the global",
+}
+
+// TestReadmeListsOnlyAbsentNames is the other direction of TestStdlibAbsentIsInREADME: a name the
+// "not provided" section lists must really be absent. When a missing function is added later,
+// TestDiff_StdlibNames makes its stdlibAbsent entry go away, and this test then fails until the
+// README stops saying the function is not provided. Names listed for a behavioural difference are
+// recorded in readmeListsProvided, which must not go stale either.
+//
+// It needs no lua5.1: it compares the READMEs with what wangshu itself defines.
+func TestReadmeListsOnlyAbsentNames(t *testing.T) {
+	var provided []string
+	for _, l := range strings.Split(strings.TrimSpace(runWangshu(t, stdlibNamesSrc)), "\n") {
+		if name, _, ok := strings.Cut(l, " : "); ok && !strings.Contains(name, " == ") {
+			provided = append(provided, name)
+		}
+	}
+	if len(provided) < 60 {
+		t.Fatalf("name dump looks truncated: %d names", len(provided))
+	}
+	for _, readme := range readmeAbsentSections {
+		items := readmeAbsentItems(t, readme.path, readme.heading)
+		listed := map[string]bool{}
+		for _, name := range provided {
+			if !readmeLists(items, name) {
+				continue
+			}
+			listed[name] = true
+			if readmeListsProvided[name] == "" {
+				t.Errorf("%s: the \"not provided\" section lists %q, which wangshu provides; "+
+					"drop it from the README, or record why it is listed in readmeListsProvided", readme.path, name)
+			}
+		}
+		for name := range readmeListsProvided {
+			if !listed[name] {
+				t.Errorf("%s: readmeListsProvided has %q, which the section no longer lists or wangshu no longer provides",
+					readme.path, name)
 			}
 		}
 	}
@@ -467,7 +502,35 @@ func readmeItemCells(section string) []string {
 	return cells
 }
 
-// readmeLists reports whether name, a stdlibAbsent name, is listed in one of the item cells.
+// readmeAbsentSections are the "not provided" sections of the two READMEs.
+var readmeAbsentSections = []struct{ path, heading string }{
+	{"../../README.md", "### 不提供或与官方不同的部分"},
+	{"../../README.en.md", "### Not provided, or different from the official implementation"},
+}
+
+// readmeAbsentItems returns the items column of the table under heading in the README at path.
+func readmeAbsentItems(t *testing.T, path, heading string) []string {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	_, section, ok := strings.Cut(string(raw), heading)
+	if !ok {
+		t.Fatalf("%s: heading %q not found", path, heading)
+	}
+	if i := strings.Index(section, "\n## "); i >= 0 {
+		section = section[:i]
+	}
+	items := readmeItemCells(section)
+	if len(items) < 8 {
+		t.Fatalf("%s: only %d table rows under %q; the section moved or changed format", path, len(items), heading)
+	}
+	return items
+}
+
+// readmeLists reports whether name, a name in the form stdlibNamesSrc prints, is listed in one of
+// the item cells.
 //
 //   - A library function lib.fn is listed by `lib.fn` spelled out, or by `fn` in a cell that names its
 //     library (`lib.other` or `lib`): rows abbreviate, as in "`debug.sethook` / `getlocal`". The
