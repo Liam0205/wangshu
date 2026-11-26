@@ -268,13 +268,13 @@ func (st *State) SafepointCalls() int64 { return st.core.SafepointCalls() }
 // interpreter every time, so a test that wraps its kernel in pcall sees
 // PromotionCount > 0 while exercising no compiled code at all. (A __call
 // handler is different: it is reached through the CALL instruction and does
-// enter compiled code. A Lua function used as a generic-for iterator is called
-// by the interpreter's TFORLOOP and is not.) Compiled code is also entered on
-// the main thread only, so nothing called inside a coroutine counts, and a call
-// from Lua code does not enter it once Go-level re-entry is nested past an
-// internal limit. These cases are examples, not a complete list: do not reason
-// about which path a call takes, take this value before and after the code
-// under test and require the difference to be positive.
+// enter compiled code. A Lua function used as a generic-for iterator does not,
+// whether the loop itself runs interpreted or compiled.) Compiled code is also
+// entered on the main thread only, so nothing called inside a coroutine counts,
+// and a call from Lua code does not enter it once Go-level re-entry is nested
+// past an internal limit. These cases are examples, not a complete list: do not
+// reason about which path a call takes, take this value before and after the
+// code under test and require the difference to be positive.
 //
 // Calls that stay inside compiled code (a compiled caller entering a compiled
 // callee on the fast path) are not counted. Non-decreasing; always 0 on builds

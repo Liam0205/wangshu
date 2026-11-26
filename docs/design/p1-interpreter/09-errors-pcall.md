@@ -1341,8 +1341,8 @@ debug.traceback(message, level):
 
 `internal/stdlib/tablelib.go` 的 `debugFns` 注册 `traceback` 与 `getinfo` 两个函数,`debug` 表本身在
 `OpenAll` 里建起来。官方 `debug` 库的另外 12 个函数(`sethook`/`gethook`/`getlocal`/`setlocal`/`getupvalue`/
-`setupvalue`/`getregistry`/`getmetatable`/`setmetatable`/`getfenv`/`setfenv`/`debug`)都**不存在**
-——它们需要解释器没有暴露的内省钩子。
+`setupvalue`/`getregistry`/`getmetatable`/`setmetatable`/`getfenv`/`setfenv`/`debug`)都**不存在**,
+各自的原因见 §13.3 的表。
 
 **`getinfo` 只填能诚实回答的字段**:`currentline` / `source` / `short_src` / `what` / `linedefined` / `func`;
 第一个参数是 Lua 函数(不是栈层级)时另有 `lastlinedefined`,再带选项 `L` 时有 `activelines`(两者都从 Proto

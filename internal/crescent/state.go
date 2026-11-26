@@ -824,8 +824,8 @@ func (st *State) SafepointCalls() int64 { return st.safepointCalls }
 // The last two also require the Go re-entry depth (goDepth) to be under gibbousReentryCCallCap. Any
 // other invocation of a promoted function runs its frame in the interpreter: one made by a host
 // function (pcall(f), a sort comparator, an __index or arithmetic metamethod handler), a generic-for
-// iterator called by the interpreter's TFORLOOP, everything inside a coroutine, a Lua call made once
-// goDepth has reached the cap. A __call handler goes through the CALL instruction and is entered
+// iterator (TFORLOOP calls it through the host-callback path, in the interpreter and in compiled code
+// alike), everything inside a coroutine, a Lua call made once goDepth has reached the cap. A __call handler goes through the CALL instruction and is entered
 // like any other callee. Calls that never leave compiled code are not counted.
 func (st *State) GibbousEntries() int64 { return st.gibbousEntries }
 

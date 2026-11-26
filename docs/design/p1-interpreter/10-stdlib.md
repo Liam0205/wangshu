@@ -2364,11 +2364,11 @@ stdlib 的 shadow stack 纪律(§3)漏 Pin 是**最难调的 bug 类**(06 §6.3:
 | **os** | time, clock, date, difftime, getenv | — | execute, exit, remove, rename, tmpname, setlocale(**都没有注册**;原设计是提供并由宿主开关收紧,见 §9.5 与 #330) |
 | **io** | write, read, stdout, stdin, stderr(#205 已交付;标准流是真 file-handle userdata,见 §10.1.1 / §10.2.1)+ 标准流的 file:write/close/read/lines/flush | lines(无参已提供、带文件名抬错) | io.open, io.popen, io.tmpfile, file:seek(需要真实文件);file:setvbuf(缓冲方式不可设置);close, flush, input, output, type(原计划做简化版,**实际未注册**,见 §10.1.1 与 #330) |
 | **coroutine** | create, resume, yield, status, wrap, running(**机制全在 08**) | — | — |
-| **debug**(09 §13) | traceback(#205 已交付,含「显式 nil 原样返回」) | getinfo(只填 P1 能诚实给出的字段:currentline / source / short_src / what / linedefined / func;第一个参数是 Lua 函数时另有 lastlinedefined,再带选项 `L` 时有 activelines;name / namewhat / nups **宁缺不假造**) | sethook/gethook, getlocal/setlocal, getupvalue/setupvalue, getregistry, getmetatable/setmetatable, getfenv/setfenv, debug.debug(需要解释器未暴露的内省钩子) |
+| **debug**(09 §13) | traceback(#205 已交付,含「显式 nil 原样返回」) | getinfo(只填 P1 能诚实给出的字段:currentline / source / short_src / what / linedefined / func;第一个参数是 Lua 函数时另有 lastlinedefined,再带选项 `L` 时有 activelines;name / namewhat / nups **宁缺不假造**) | sethook/gethook, getlocal/setlocal, getupvalue/setupvalue, getregistry, getmetatable/setmetatable, getfenv/setfenv, debug.debug(都没有注册,各自的原因见 09 §13.3) |
 
 **P1 必做的判定标准**:① 跑 Lua 5.1 conformance 测试套必需(base 核心 + string/table/math 全集 + io 最小输出);
 ② 首个宿主(规则引擎)脚本所需(标量/表/字符串/数学操作)。**可延后的判定标准**:① 嵌入式场景罕用(文件 IO
-完整、module 系统、debug 高级);② 安全敏感默认关(os.execute);③ 5.2+ 特性(必须不做以保差分)。
+完整、module 系统、debug 高级);② 安全敏感(os.execute,现状是没有注册);③ 5.2+ 特性(必须不做以保差分)。
 
 **P1 stdlib 的核心取舍**(总结):
 
