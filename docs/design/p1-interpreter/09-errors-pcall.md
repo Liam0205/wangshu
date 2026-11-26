@@ -1316,7 +1316,7 @@ debug.traceback(message, level):
   望舒按 `what` 裁剪,未知字母报 `invalid option`;另支持 `"L"`(activelines,只在一种查询形式下填,§13.4)。
   与官方的差别:`>` 被当成合法字母接受;官方在函数参数形式下、以及栈层级形式下 `>` 不在首位时报 `invalid option`
   ([#335](https://github.com/Liam0205/wangshu/issues/335))。
-- **第一个参数是协程的写法(标题里的 `[thread,]`)不支持**,见 §13.4。
+- **第一个参数是协程的写法（标题里的 `[thread,]`）不支持**，见 §13.4。
 - **给 traceback 提供数据**:`debug.traceback` 内部对每帧调 `getinfo`(等价)取 `short_src`/`currentline`/`name`。
   P1 的 `traceback`(§7.2)直接遍历 CallInfo 不必经脚本可见的 `getinfo`,但 `getinfo` 暴露同样的信息给脚本。
 
@@ -1331,7 +1331,7 @@ debug.traceback(message, level):
 | `debug.getupvalue`/`setupvalue` | **❌ 未注册** | 读写 upvalue,依赖 UpvalNames。没有实现,也没有记录过「不做」的决定 |
 | `debug.setmetatable`/`getmetatable` | **❌ 未注册** | 07 §1.3 把它们设计成给非 table 类型设元表的入口。没有实现,也没有记录过「不做」的决定([#332](https://github.com/Liam0205/wangshu/issues/332) 的评论) |
 | `debug.getregistry` | **❌ 不做** | registry 访问,P1 内部用不暴露 |
-| `debug.getfenv`/`setfenv`、`debug.debug` | **❌ 未注册** | 环境操作与分层执行的形状分析冲突(同全局的 `getfenv`/`setfenv`);`debug.debug` 是交互式控制台 |
+| `debug.getfenv`/`setfenv`、`debug.debug` | **❌ 未注册** | 环境操作与分层执行的形状分析冲突（同全局的 `getfenv`/`setfenv`）；`debug.debug` 是交互式控制台 |
 | `debug.traceback(co)` 跨协程 | **✅ 已提供**(2026-10-02,#279) | 挂起 / normal / 出错死亡的协程都按 5.1 给出栈,§13.1 |
 
 > **P1 debug 库哲学**(roadmap §5 原则 4):debug 库是「不可升层、永远走解释」的典型形状。P1 只做
@@ -1345,23 +1345,23 @@ debug.traceback(message, level):
 `setupvalue`/`getregistry`/`getmetatable`/`setmetatable`/`getfenv`/`setfenv`/`debug`)都**不存在**,
 各自的状态和说明见 §13.3 的表。
 
-**`getinfo` 只填能诚实回答的字段**。`name` / `namewhat` / `nups` 在任何查询形式下都不返回,**宁缺不假造**——
-对一个会去测这些字段的调用方来说,错的字段比没有更糟(它会当成真值用,而缺失至少能被 `if info.nups then` 挡住)。
-其余字段因查询形式而异。下表是默认选项下返回的字段(与 `lua5.1` 逐种形式对比过),别处提到 `getinfo` 的字段时
-以这张表为准:
+**`getinfo` 只填能诚实回答的字段**。`name` / `namewhat` / `nups` 在任何查询形式下都不返回，**宁缺不假造**——
+对一个会去测这些字段的调用方来说，错的字段比没有更糟（它会当成真值用，而缺失至少能被 `if info.nups then` 挡住）。
+其余字段因查询形式而异。下表是默认选项下返回的字段（与 `lua5.1` 逐种形式对比过），别处提到 `getinfo` 的字段时
+以这张表为准：
 
 | 查询形式 | 返回的字段 | 除 `name` / `namewhat` / `nups` 之外比官方少的 |
 |---|---|---|
-| 第一个参数是 Lua 函数 | `currentline`(-1)、`func`、`linedefined`、`lastlinedefined`、`short_src`、`source`、`what`;带选项 `L` 时有 `activelines` | 无 |
-| 第一个参数是 C 函数 | `currentline`(-1)、`func`、`linedefined`、`short_src`、`source`、`what` | `lastlinedefined` |
-| 栈层级,查到 Lua 函数的帧(含主块) | `currentline`、`func`、`linedefined`、`short_src`、`source`、`what` | `lastlinedefined`;带选项 `L` 时的 `activelines` |
-| 栈层级,查到 C 帧(层级 0、`pcall` 这类宿主函数的帧、主块之下的 C 帧) | `currentline`、`linedefined`、`short_src`、`source`、`what` | `func`、`lastlinedefined` |
-| 栈层级,查到尾调用留下的帧(`what` 是 `"tail"`) | `currentline`、`linedefined`、`short_src`、`source`、`what` | `lastlinedefined` |
+| 第一个参数是 Lua 函数 | `currentline`（值为 -1）、`func`、`linedefined`、`lastlinedefined`、`short_src`、`source`、`what`；带选项 `L` 时有 `activelines` | 无 |
+| 第一个参数是 C 函数 | `currentline`（值为 -1）、`func`、`linedefined`、`short_src`、`source`、`what` | `lastlinedefined` |
+| 栈层级，查到 Lua 函数的帧（含主块） | `currentline`、`func`、`linedefined`、`short_src`、`source`、`what` | `lastlinedefined`；带选项 `L` 时的 `activelines` |
+| 栈层级，查到 C 帧（层级 0、`pcall` 这类宿主函数的帧、主块之下的 C 帧） | `currentline`、`linedefined`、`short_src`、`source`、`what` | `func`、`lastlinedefined` |
+| 栈层级，查到尾调用留下的帧（`what` 是 `"tail"`） | `currentline`、`linedefined`、`short_src`、`source`、`what` | `lastlinedefined` |
 
-`lastlinedefined` 和 `activelines` 都从 Proto 推导,不需要 hook,只是目前只接在「第一个参数是 Lua 函数」这一种形式上。
-另有三处行为与官方不同:栈层级超出栈顶时两侧都返回 nil,但**负的栈层级**官方返回一张 `what` 为 `"tail"` 的表,
-望舒返回 nil;**第一个参数是协程**(`debug.getinfo(co, 1)`)官方支持,望舒报参数错误;选项里的 `>` 见 §13.2。
-这些差异都是存量,记在 [#335](https://github.com/Liam0205/wangshu/issues/335)。
+`lastlinedefined` 和 `activelines` 都从 Proto 推导，不需要 hook，只是目前只接在「第一个参数是 Lua 函数」这一种形式上。
+另有三处行为与官方不同：栈层级超出栈顶时两侧都返回 nil，但**负的栈层级**官方返回一张 `what` 为 `"tail"` 的表，
+望舒返回 nil；**第一个参数是协程**（`debug.getinfo(co, 1)`）官方支持，望舒报参数错误；选项里的 `>` 见 §13.2。
+这些差异都是存量，记在 [#335](https://github.com/Liam0205/wangshu/issues/335)。
 
 **level 的 off-by-one 值得记**:`getinfo` 自己是 host 函数,而 host 帧**不进 `cis`**,所以 level 1 是
 **最内层**的 cis 帧;直接用 `ciDepth - level` 会多跳一帧,让最常见的 `getinfo(1)` 返回 nil。实现位置
