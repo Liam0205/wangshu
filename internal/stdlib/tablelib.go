@@ -1459,7 +1459,7 @@ const (
 )
 
 // registerStdStreams installs io.stdout / io.stderr / io.stdin as file-handle userdata
-// sharing one metatable that provides :write, :close, :read and :lines.
+// sharing one metatable that provides :write, :close, :read, :lines and :flush.
 //
 // 10 §14 lists these as required. PUC reports them as "userdata", so a table would be
 // visible through type() -- which is why this needs real userdata and therefore the
@@ -1817,7 +1817,8 @@ func ioFnRead(st *crescent.State, args []value.Value) ([]value.Value, *crescent.
 	return readFormats(st, args, 1)
 }
 
-// ioFnLines is io.lines with no filename: iterate lines of the default input.
+// ioFnLines is io.lines. With no argument it iterates the lines of the default input; the
+// filename form raises, because opening files is not provided.
 func ioFnLines(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
 	if len(args) == 0 {
 		return []value.Value{makeLineIterator(st, true)}, nil
