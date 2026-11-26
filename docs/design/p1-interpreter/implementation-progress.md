@@ -730,7 +730,7 @@ nightly 的 go-fuzz（p1，`FuzzOracleDiff`）找到 `t={}table.unpack(t)`：官
 | 迭代器私有化 | 同文件 `registerIterFactory` | `pairs` / `ipairs` 各自在注册时建好迭代器的宿主闭包，由工厂函数的 Go 闭包捕获，同时挂在工厂函数的 upvalue 上让 GC 保活；不再有 `__ipairs_iter`，`pairs` 不再读全局 `next` |
 | fuzz 的 prelude | `internal/oracle/prelude.go` | 原来靠包装全局 `__ipairs_iter` 来拦 `luaL_checkint` 的未定义行为区间，改成包装 `ipairs`、发放同一个带检查的迭代器 |
 | 行为测试 | `test/language/stdlib_names_test.go`（新增） | 21 个用例，期望值逐个在 lua5.1 5.1.5 上实际执行核对过 |
-| 分层测试 | `test/difftest/tiered_stdlib_names_test.go`（新增） | 六段脚本在 P3 / P4 的升层代码里执行，与解释器、与 `lua5.1` 比对；断言 `GibbousEntries() > 0` |
+| 分层测试 | `test/difftest/tiered_stdlib_names_test.go`（新增） | 七段脚本在 P3 / P4 的升层代码里执行，与解释器、与 `lua5.1` 比对；断言 `GibbousEntries() > 0`（arm64 的 P4 上有一段例外，见 10 §12.3） |
 | 白盒探针 | `State.GibbousEntries()`（新增，testing-only） | 执行进入升层代码的次数；`PromotionCount()` 只说明编译过 |
 | 名字集合比对 | `test/difftest/corners_test.go` `TestDiff_StdlibNames`（新增） | 对着真实的 `lua5.1` 双向比对；望舒多出的名字一律失败，缺少的逐个登记在 `stdlibAbsent`（合入时 37 条）；清单里还包含哪些名字是同一个函数对象 |
 | 语料 | `test/fuzz/testdata/fuzz/FuzzOracleDiff/` | 加入 #329 的输入和六条回归语料；原来写着 `__ipairs_iter` 的两条改成经 `ipairs({})` 取迭代器 |
@@ -772,7 +772,7 @@ nightly 的 go-fuzz（p1，`FuzzOracleDiff`）找到 `t={}table.unpack(t)`：官
 | 新写的文字把范围总表叫成「§11」，实际是 §14（§11 是 coroutine 库） | 新写的三处改了；`corners_test.go` 和 `tablelib.go` 里原有的「10 §11」也一起改成 §14 |
 | 「对使用者的影响」只写了 `table.unpack` 一项 | 补全为五项 |
 | 改写的一条里全角、半角标点混用 | 统一成全角 |
-| 存量差异：`io.lines(nil)` 官方报 `FILE* expected, got nil`，望舒返回迭代器 | 在这个 PR 里修了：`io.lines` 现在区分「没有参数」和「显式 nil」，非字符串参数先报 `string expected`，与 `liolib.c` 的 `io_lines` 一致。测试在 `test/api/io_handles_test.go` |
+| 存量差异：`io.lines(nil)` 官方报 `FILE* expected, got nil`，望舒返回迭代器 | 在这个 PR 里修了：`io.lines` 现在区分「没有参数」和「显式 nil」，既不是字符串也不是数字的参数先报 `string expected`，与 `liolib.c` 的 `io_lines` 一致。测试在 `test/api/io_handles_test.go` |
 | 存量差异：10 §14 总表不完整（base 行缺 `getfenv` / `setfenv` / `newproxy`，debug 行只列了 12 个缺少函数里的 6 个） | 补全 |
 
 第三轮独立审查（全范围，又一位 reviewer）没有找到完成条件 1、2 的反例，提出一条重要问题、三条小问题和四处存量差异：
@@ -876,9 +876,26 @@ reviewer 在跑 P4 全量测试时还撞到一次 `TestIssue177_StringLimitConte
 `debug.getinfo(1, ">S")` 会让官方实现段错误，在差分 fuzz 里表现为整个测试进程崩溃，补进了
 [#335](https://github.com/Liam0205/wangshu/issues/335)。
 
+第十三轮独立审查（全范围，又一位 reviewer）有一条阻塞问题和三条小问题：
+
+| 审查意见 | 处理 |
+|---|---|
+| 阻塞：`TestTiered_StdlibNames` 的 `missing_table_unpack_error` 在 arm64 的 P4 上会失败，报「强制升层没有进入升层代码」。内核里有一条读不存在字段的 `GETTABLE`，P4 的原生翻译不接受；amd64 上它经 head-op replay 仍然升层，arm64 没有这条路径。CI 的两个 arm64 P4 任务会变红，#329 的输入在 arm64 的 P4 上也没有升层路径上的验证 | 这一段是否进入升层代码改成按构建区分的常量（`missingFieldCallRunsCompiled`，arm64 的 P4 为 false，那里只比对结果并断言进入次数为 0）。另加一段 `missing_table_unpack_upvalue_error`：同一个调用经 upvalue 取函数，P3 和两种架构的 P4 在强制升层下都进入升层代码（39 次）。现在共七段 |
+| 10 号文档一行之内全角、半角标点混用 | 这一行在半角段落里，整行改回半角 |
+| 10 号文档 `io.lines` 一行写「其他非字符串报 `string expected`」，数字其实和字符串一样当作文件名 | 改成「既不是字符串也不是数字的参数」。同样的说法在 `test/api/io_handles_test.go` 和分层测试的注释里各有一处，一起改了 |
+| 10 号文档 `os.getenv` 一行写「现在宿主关不掉它」，说得过头（宿主可以在加载脚本之前把它置空，没有的是 `Options` 里的开关） | 改成「没有对应的开关」 |
+
+前十二轮审查和每一轮的自查都只在 amd64 上执行，所以这条阻塞问题一直没有被发现。这一轮起用 `qemu-aarch64`（用户态模拟）
+运行交叉编译成 linux/arm64 的测试程序：修改之前这一段确实失败（进入升层代码 0 次），修改之后 `test/difftest`、
+`test/tiering`、`test/language`、`test/api` 四个包在 P3、P4 两种构建下通过。darwin/arm64 没有执行过，以 CI 为准。
+
+核对这条时还发现一处修改前就有、与 #329 无关的 P4 缺陷：调用结果赋给两个以上局部变量的函数升层之后，报错里被调用者的
+名字不对（`attempt to call upvalue 'u'` 变成 `attempt to call local 'a'`）。它是产品缺陷，单独记在
+[#339](https://github.com/Liam0205/wangshu/issues/339)。新加的那一段内核带算术填充，在 P4 上走原生翻译，不经过出问题的路径。
+
 验证：`make all` 与 `make fuzz-oracle` 通过。把 `internal/stdlib` 的 `stdlib.go` 和 `tablelib.go` 一起换回修复前的版本：
-行为测试 10 个用例失败，`test/api` 的 `io.lines` 用例 4 个失败，`TestTiered_StdlibNames` 在 P3、P4 两种构建下六段脚本里
-五段失败（第六段测的是迭代器对坏参数的报错，修复前后相同，它的作用是在升层路径上执行那条报错），名字比对报出两个多余
+行为测试 10 个用例失败，`test/api` 的 `io.lines` 用例 4 个失败，`TestTiered_StdlibNames` 在 P3、P4 两种构建下七段脚本里
+六段失败（剩下的一段测的是迭代器对坏参数的报错，修复前后相同，它的作用是在升层路径上执行那条报错），名字比对报出两个多余
 名字和一组缺少的别名，#329 的输入和四条回归语料失败。名字比对测试另做了两种变异（删一条登记、加一条过期登记），都会
 失败。去掉 prelude 里的检查，`TestIpairsIteratorGuard` 报 8 处、`TestIoLinesFilenameGuard` 报 5 处；`exemptions` 改一个
 条目名，`TestStdlibAbsentReasonsResolve` 失败；README 的逐名字删除见上面第三轮的表。
