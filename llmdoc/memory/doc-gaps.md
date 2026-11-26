@@ -16,6 +16,11 @@
   amd64 上另有一种情况：索引值为 nil 的 upvalue 时名字丢失，原因没有查。见
   [#339](https://github.com/Liam0205/wangshu/issues/339)。
 
+- **【未修】`make test-trace` 在 master 上不能通过** — trace 构建（`-tags wangshu_trace`）的全仓测试有两个包共 16 个测试失败：
+  `test/language` 的零分配断言在这种构建下不成立；`test/regression` 里抓取脚本标准输出的测试抓到了跟踪行。CI 和 `make all`
+  都不执行这个目标。全仓跑一次的输出约 10 GB，不要重定向到空间有限的地方。见
+  [#341](https://github.com/Liam0205/wangshu/issues/341)。
+
 - **【未做，等维护者决定】lint 只在默认构建标签下执行** — `make lint` 和 CI 的 lint 任务不带构建标签，带 `wangshu_p3` /
   `wangshu_p4` 约束的文件没有被检查过；只在 arm64 下编译的文件在 amd64 上带标签也检查不到。带标签、关掉条数上限各跑一遍
   的结果（golangci-lint 默认每个 linter 只报 50 条，不关上限看到的数偏小）和需要决定的事，见

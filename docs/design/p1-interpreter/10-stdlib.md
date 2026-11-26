@@ -2281,8 +2281,11 @@ wangshu.NewState(wangshu.Options{Exclude: []string{"os.execute", "os.exit"}})
   另有两个测试把这份登记表和别处的说法连起来：`TestStdlibAbsentReasonsResolve` 要求登记理由里写的
   `exemptions: X` 确实对应 `exemptions` 里名为 X 的条目；`TestStdlibAbsentIsInREADME` 要求登记表里的每个库名字
   都出现在两个语言版本 README 的「不提供」表里（`arg` 和文件句柄元表的 `__gc` 除外，它们不是脚本会调用的接口）。
-  `ci.yml` 不对只改 Markdown 的提交执行，所以只改 README 的提交由 `readme-check.yml` 单独执行这个测试
-  （`make check-readme`，不需要 `lua5.1`）。
+  反过来，`TestReadmeListsOnlyAbsentNames` 要求「不提供」表里列出的名字确实没有提供：以后补上某个函数而 README 没有跟着改，
+  这个测试会失败。表里因为「行为不同」而列出的已提供名字（`io.lines`、`loadfile` / `dofile`、`string.char` 等）登记在
+  `readmeListsProvided` 里，登记过期同样失败。这两个测试由 `make check-readme` 执行（不需要 `lua5.1`），它挂在 `make all` 和
+  `ci.yml` 的 `test-scripts` 任务上；`ci.yml` 不对只改 Markdown 的提交执行，所以只改 README 的提交由 `readme-check.yml`
+  单独执行它。
   三种构建是否一致由 `test/difftest/tiered_stdlib_names_test.go` 的 `TestTiered_StdlibNames` 检查：九段脚本各在
   只用解释器、强制升层、自然升温三种方式下执行，彼此比对并与 `lua5.1` 比对。其中 `io_lines_filename_error`
   （带文件名的 `io.lines`，字符串和数字各一次）的结果是已登记的差异，官方会去打开文件，这一段不与 `lua5.1` 比对，
