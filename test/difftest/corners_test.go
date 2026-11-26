@@ -265,6 +265,20 @@ if type(fm) == "table" then
 end
 local sm = getmetatable("")
 for _, k in ipairs(keys(sm)) do out[#out + 1] = "(string metatable)." .. k .. " : " .. type(sm[k]) end
+-- Names that are one and the same function object (the LUA_COMPAT aliases): "a == b : alias".
+local names, first = {}, {}
+for _, k in ipairs(keys(_G)) do
+  local v = _G[k]
+  if type(v) == "function" then names[#names + 1] = {k, v} end
+  if type(v) == "table" and v ~= _G and k ~= "package" then
+    for _, k2 in ipairs(keys(v)) do
+      if type(v[k2]) == "function" then names[#names + 1] = {k .. "." .. k2, v[k2]} end
+    end
+  end
+end
+for _, nv in ipairs(names) do
+  if first[nv[2]] then out[#out + 1] = first[nv[2]] .. " == " .. nv[1] .. " : alias" else first[nv[2]] = nv[1] end
+end
 return table.concat(out, "\n")`
 
 // stdlibAbsent is every name official Lua 5.1.5 defines that wangshu does not, and why. It is the
@@ -331,6 +345,11 @@ var stdlibAbsent = map[string]string{
 
 // TestDiff_StdlibNames compares the standard library's whole name set against a live lua5.1, in both
 // directions. It is the existence differential that 10 section 12.3 calls for.
+//
+// The dump also lists which names are one and the same function object. Official 5.1.5 has two such
+// pairs, both LUA_COMPAT aliases (math.mod is fmod, string.gfind is gmatch), and a script can see the
+// difference with ==. wangshu registered fmod twice, so math.mod == math.fmod was false until the
+// alias lines made it part of this comparison.
 func TestDiff_StdlibNames(t *testing.T) {
 	oracle := findOracle()
 	if oracle == "" {
@@ -401,9 +420,8 @@ func TestStdlibAbsentReasonsResolve(t *testing.T) {
 // really exit" for months while neither was true (#329); the section is what a user reads to learn
 // what their script cannot call, so it is held to the same per-name list as the test above.
 //
-// A name counts as listed when one table row of the section mentions it: `lib.name` spelled out, or
-// the bare name on a row that also names its library (rows abbreviate, e.g. "debug.sethook /
-// getlocal"; not accepted when the function is named like the library), or `f:name` for a file method.
+// Only the second column of each row (the items) is read: the reason column is prose, and prose
+// contains ordinary words such as "input" and "output". See readmeLists for what counts as listed.
 func TestStdlibAbsentIsInREADME(t *testing.T) {
 	excused := map[string]bool{"arg : table": true, "(file metatable).__gc : function": true}
 	for _, readme := range []struct{ path, heading string }{
@@ -421,59 +439,118 @@ func TestStdlibAbsentIsInREADME(t *testing.T) {
 		if i := strings.Index(section, "\n## "); i >= 0 {
 			section = section[:i]
 		}
-		var rows []string
-		for _, l := range strings.Split(section, "\n") {
-			if strings.HasPrefix(l, "|") {
-				rows = append(rows, l)
-			}
-		}
-		if len(rows) < 8 {
-			t.Fatalf("%s: only %d table rows under %q; the section moved or changed format", readme.path, len(rows), readme.heading)
-		}
-		// word reports whether w occurs in row as a whole name, not as part of a longer one.
-		isIdent := func(c byte) bool {
-			return c == '_' || c == '.' || c == ':' || (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
-		}
-		word := func(row, w string) bool {
-			for from := 0; ; {
-				i := strings.Index(row[from:], w)
-				if i < 0 {
-					return false
-				}
-				i += from
-				end := i + len(w)
-				if (i == 0 || !isIdent(row[i-1])) && (end == len(row) || !isIdent(row[end])) {
-					return true
-				}
-				from = i + 1
-			}
+		items := readmeItemCells(section)
+		if len(items) < 8 {
+			t.Fatalf("%s: only %d table rows under %q; the section moved or changed format", readme.path, len(items), readme.heading)
 		}
 		for entry := range stdlibAbsent {
 			if excused[entry] {
 				continue
 			}
 			name, _, _ := strings.Cut(entry, " : ")
-			listed := false
-			for _, row := range rows {
-				switch {
-				case strings.HasPrefix(name, "(file metatable)."):
-					listed = strings.Contains(row, "`f:"+strings.TrimPrefix(name, "(file metatable).")+"`")
-				case strings.Contains(name, "."):
-					lib, fn, _ := strings.Cut(name, ".")
-					// A function named like its library (debug.debug) must be spelled out: the bare
-					// word is on the row anyway, as the library's name.
-					listed = strings.Contains(row, "`"+name+"`") ||
-						fn != lib && (strings.Contains(row, "`"+lib+".") || strings.Contains(row, "`"+lib+"`")) && word(row, fn)
-				default:
-					listed = strings.Contains(row, "`"+name+"`")
-				}
-				if listed {
-					break
-				}
-			}
+			listed := readmeLists(items, name)
 			if !listed {
 				t.Errorf("%s: %q is in stdlibAbsent but no row of the \"not provided\" section lists it", readme.path, name)
 			}
+		}
+	}
+}
+
+// readmeItemCells returns the items column (the second one) of every table row in a README section,
+// header and separator rows included; they match no name.
+func readmeItemCells(section string) []string {
+	var cells []string
+	for _, l := range strings.Split(section, "\n") {
+		if !strings.HasPrefix(l, "|") {
+			continue
+		}
+		if cols := strings.Split(l, "|"); len(cols) >= 3 {
+			cells = append(cells, cols[2])
+		}
+	}
+	return cells
+}
+
+// readmeLists reports whether name, a stdlibAbsent name, is listed in one of the item cells.
+//
+//   - A library function lib.fn is listed by `lib.fn` spelled out, or by `fn` in a cell that names its
+//     library (`lib.other` or `lib`): rows abbreviate, as in "`debug.sethook` / `getlocal`". The
+//     abbreviation is not accepted when fn is the library's own name (debug.debug).
+//   - A file method is listed by `f:name`.
+//   - A global is listed by `name` in a cell that does not name a library which has a function of that
+//     name missing too. Without that restriction the abbreviation `getfenv` on the debug row, written
+//     for debug.getfenv, would also stand in for the global getfenv.
+//
+// Names must be in backticks. A bare word is not a listing.
+func readmeLists(items []string, name string) bool {
+	namesLib := func(cell, lib string) bool {
+		return strings.Contains(cell, "`"+lib+".") || strings.Contains(cell, "`"+lib+"`")
+	}
+	if m, ok := strings.CutPrefix(name, "(file metatable)."); ok {
+		for _, cell := range items {
+			if strings.Contains(cell, "`f:"+m+"`") {
+				return true
+			}
+		}
+		return false
+	}
+	if lib, fn, ok := strings.Cut(name, "."); ok {
+		for _, cell := range items {
+			if strings.Contains(cell, "`"+name+"`") || fn != lib && namesLib(cell, lib) && strings.Contains(cell, "`"+fn+"`") {
+				return true
+			}
+		}
+		return false
+	}
+	var shadowing []string
+	for entry := range stdlibAbsent {
+		full, _, _ := strings.Cut(entry, " : ")
+		if lib, fn, ok := strings.Cut(full, "."); ok && fn == name && !strings.HasPrefix(full, "(") {
+			shadowing = append(shadowing, lib)
+		}
+	}
+next:
+	for _, cell := range items {
+		if !strings.Contains(cell, "`"+name+"`") {
+			continue
+		}
+		for _, lib := range shadowing {
+			if namesLib(cell, lib) {
+				continue next
+			}
+		}
+		return true
+	}
+	return false
+}
+
+// TestReadmeListsMatcher pins the three ways readmeLists was too generous, each of which left a name
+// unchecked while TestStdlibAbsentIsInREADME stayed green.
+func TestReadmeListsMatcher(t *testing.T) {
+	debugRow := "| debug | everything in `debug` except `traceback` (`sethook` / `getfenv` / `setfenv` / `debug.debug`) | hooks |"
+	envRow := "| Environment ops | `getfenv` / `setfenv` | shape analysis |"
+	ioRow := "| Default streams | `io.close` / `io.flush` / `io.type` | The default input and output are fixed |"
+	for _, tc := range []struct {
+		what string
+		rows []string
+		name string
+		want bool
+	}{
+		{"abbreviation on its library's row", []string{debugRow}, "debug.sethook", true},
+		{"abbreviation serves the library function", []string{debugRow}, "debug.getfenv", true},
+		{"abbreviation does not serve the global of the same name", []string{debugRow}, "getfenv", false},
+		{"global on a row of its own", []string{debugRow, envRow}, "getfenv", true},
+		{"global's row does not serve the library function", []string{envRow}, "debug.getfenv", false},
+		{"function named like its library, spelled out", []string{debugRow}, "debug.debug", true},
+		{"function named like its library, only the library named", []string{"| debug | `debug` library: `sethook` | hooks |"}, "debug.debug", false},
+		{"word in the reason column is not a listing", []string{ioRow}, "io.input", false},
+		{"bare word in the items column is not a listing", []string{"| Default streams | `io.close`, input and output | fixed |"}, "io.input", false},
+		{"spelled out", []string{"| Default streams | `io.input` / `io.output` | fixed |"}, "io.output", true},
+		{"file method", []string{"| Files | `io.open` / `f:seek` | real files |"}, "(file metatable).seek", true},
+		{"file method needs the f: form", []string{"| Files | `io.open` / `seek` | real files |"}, "(file metatable).seek", false},
+	} {
+		if got := readmeLists(readmeItemCells(strings.Join(tc.rows, "\n")), tc.name); got != tc.want {
+			t.Errorf("%s: readmeLists(%q) = %v, want %v", tc.what, tc.name, got, tc.want)
 		}
 	}
 }
