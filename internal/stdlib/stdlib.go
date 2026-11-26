@@ -1,9 +1,9 @@
 // Package stdlib provides the P1 minimal Lua 5.1 standard library subset.
 //
-// Design: docs/design/p1-interpreter/10-stdlib.md (the P1 trim table). The M12
-// scope implements the minimal usable subset of the base sublibrary + common
-// math arithmetic + part of string. The full pattern matcher, io / os /
-// coroutine, etc. are deferred to later P1 work.
+// Design: docs/design/p1-interpreter/10-stdlib.md; section 14 there is the table of
+// what each library provides and what it leaves out. The base, string, table, math,
+// coroutine, os, io and debug libraries are registered by OpenAll; os, io and debug
+// are partial, and package is not provided.
 package stdlib
 
 import (
@@ -38,15 +38,12 @@ func OpenAll(st *crescent.State) {
 	// rebinding or clearing the global next changes nothing about pairs, the
 	// function pairs hands back is not the global next (pairs({}) == next is
 	// false), and ipairs' iterator has no global name at all.
-	//
-	// Both used to read a global on every call -- pairs read next, ipairs read
-	// a wangshu-only global __ipairs_iter -- which made `next = nil` break
-	// pairs and left an extra name in _G that official 5.1 does not have (#329).
 	registerIterFactory(st, "pairs", baseFnNext, value.Nil)
 	registerIterFactory(st, "ipairs", ipairsIter, value.NumberValue(0))
 	mathTbl := registerNamespaced(st, "math", append(mathFns, mathExtraFns...), mathIntrinsics)
 	// LUA_COMPAT_MOD: official 5.1.5 ships math.mod as the 5.0 name of fmod, and it is the same C
-	// function, so math.mod == math.fmod. Registering the Go function twice made two closures.
+	// function, so math.mod == math.fmod. The field is therefore set to fmod's closure itself;
+	// registering the Go function under both names would make two closures.
 	{
 		fm, _ := st.RawGet(mathTbl, intern(st, "fmod"))
 		st.SetTableField(mathTbl, "mod", fm)

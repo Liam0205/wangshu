@@ -18,8 +18,8 @@ import (
 //     interpreter. pcall(kernel, ...) is such an invocation, so a kernel whose every call sits
 //     directly under pcall is compiled (PromotionCount > 0) and never executed compiled. Each kernel
 //     that has to raise is therefore called through a small Lua wrapper, and the wrapper is what
-//     pcall gets. The wrapper must not tail-call the kernel: a tail call does not enter compiled
-//     code either.
+//     pcall gets. The wrapper must not tail-call the kernel: on P3 a tail call does not enter
+//     compiled code either.
 //
 // The test asserts GibbousEntries, the number of times execution entered compiled code, instead of
 // assuming any of this.
@@ -62,7 +62,7 @@ return table.concat(out, "|"), type(__ipairs_iter)`, false},
 	// io.lines as the generator of a promoted generic-for: an explicit nil is rejected as a file handle
 	// and a non-string fails the string check, both attributed to the for generator as on 5.1. Nothing
 	// is read from stdin. The loop is bounded because a generator that wrongly accepts its argument
-	// (io.lines(nil) used to return an iterator) would otherwise be called forever.
+	// would otherwise be called forever.
 	{"io_lines_argument_errors", `
 local function loop(f, s, c) local n = 0 for _ in f, s, c do n = n + 1 if n >= 3 then break end end return n end
 local function call(f, s, c) local n = loop(f, s, c) return n end
@@ -128,8 +128,8 @@ return total, agree`, false},
 //
 // It then requires that execution actually entered compiled code in the promoted runs, and that it
 // did not in the interpreter-only run. Without that, the comparison can silently become interpreter
-// against interpreter: an earlier version asserted PromotionCount > 0, and two of its kernels were
-// compiled but never executed compiled because every call to them sat directly under pcall.
+// against interpreter: PromotionCount > 0 only says that a Proto was compiled, and a kernel whose
+// every call sits directly under pcall is compiled without ever executing compiled.
 func TestTiered_StdlibNames(t *testing.T) {
 	oracle := findOracle()
 	for _, c := range tieredStdlibNameCases {

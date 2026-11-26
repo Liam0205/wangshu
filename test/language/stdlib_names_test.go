@@ -6,9 +6,10 @@ import (
 	"github.com/Liam0205/wangshu/test/testutil"
 )
 
-// TestStdlibHasNoNamesBeyondLua51 pins the two ways the standard library used to expose more than
-// official Lua 5.1 does (#329), and the behaviour that follows from pairs and ipairs owning their
-// iterators the way lbaselib.c's auxopen sets them up (a C closure with the iterator as upvalue).
+// TestStdlibHasNoNamesBeyondLua51 pins that the standard library exposes nothing official Lua 5.1
+// lacks -- no table.unpack, no global name for the ipairs iterator (#329) -- and the behaviour that
+// follows from pairs and ipairs owning their iterators the way lbaselib.c's auxopen sets them up (a
+// C closure with the iterator as upvalue).
 //
 // Every expectation below is what PUC Lua 5.1.5 prints for the same script. test/difftest's
 // TestDiff_StdlibNames compares the whole name set against a live lua5.1; these cases need no
@@ -23,7 +24,7 @@ func TestStdlibHasNoNamesBeyondLua51(t *testing.T) {
 			`[string "test"]:1: attempt to call field 'unpack' (a nil value)`},
 		{"table library keys", `local ks = {} for k in pairs(table) do ks[#ks + 1] = k end table.sort(ks) return table.concat(ks, ",")`,
 			"concat,foreach,foreachi,getn,insert,maxn,remove,setn,sort"},
-		// The ipairs iterator has no global name on 5.1; wangshu used to publish __ipairs_iter.
+		// The ipairs iterator has no global name on 5.1, and nothing else may hide behind a "__" prefix.
 		{"no private globals", `local ks = {} for k in pairs(_G) do if type(k) == "string" and k:sub(1, 2) == "__" then ks[#ks + 1] = k end end
 table.sort(ks) return table.concat(ks, ",")`, ""},
 		// pairs holds next as an upvalue: rebinding the global must not reach it.

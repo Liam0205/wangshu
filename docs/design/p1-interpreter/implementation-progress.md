@@ -761,7 +761,8 @@ nightly 的 go-fuzz（p1，`FuzzOracleDiff`）找到 `t={}table.unpack(t)`：官
 | 存量差异：`debug.traceback` 在 `FuzzOracleDiff` 里两侧输出不同（望舒在主块之下多一层 C 帧，与独立的 `lua5.1` 相同，与内嵌用法不同） | 需要先定以哪种用法为准，记在 [#331](https://github.com/Liam0205/wangshu/issues/331)，这一轮没有改 |
 
 第二轮独立审查（全范围，另一位 reviewer）确认代码和测试没有问题，并用它自己的变异确认 `TestTiered_StdlibNames`
-验证的确实是升层之后的路径（只改升层路径的 `TForLoop` 时，它在 P3、P4 下失败，而解释器上的行为测试照常通过）。
+验证的确实是升层之后的路径（只改升层路径的 `TForLoop` 时，它在 P3、P4 下失败，而解释器上的行为测试照常通过；
+这个结论只对走 `TForLoop` 的那两段成立，直接放在 `pcall` 下面的一段没有进入升层代码，见下面第四轮）。
 它提出一条重要问题、四条小问题和三处存量差异：
 
 | 审查意见 | 处理 |
@@ -805,6 +806,18 @@ reviewer 在跑 P4 全量测试时还撞到一次 `TestIssue177_StringLimitConte
 用新探针扫了一遍现有的分层语料：`p4Corpus` 里有 12 个出错路径用例是同一种情况（升了层、从未进入原生码），`p3Corpus`
 没有。把这 12 个临时改写成经包装函数、循环调用之后，内核确实在原生码里出错，结果与解释器、与 `lua5.1` 一致，所以没有
 发现缺陷；语料本身的修改不在这一轮的范围里，记在 [#333](https://github.com/Liam0205/wangshu/issues/333)。
+
+第五轮独立审查（全范围，又一位 reviewer）对五条完成条件都没有找到反例，没有阻塞问题和重要问题，提出三条小问题和几处
+修改前后都存在的文档问题：
+
+| 审查意见 | 处理 |
+|---|---|
+| 10 号文档 `file:setvbuf` 一行写「读 stdin 经过 State 自己的 `bufio.Reader`」，实际是进程内共享的一个（`internal/crescent/state.go` 的 `stdinShared`），同一篇文档的 §10.3 也是这么写的 | 改成「进程内共享」；`tablelib.go` 里 `readFormats` 的注释说的是同一件事，一并按代码改了 |
+| 分层测试的注释说「尾调用不进入升层代码」，这只对 P3 成立，P4 的尾调用会进入 | 注释和 10 §12.3 都写明是 P3 |
+| 代码注释和设计文档正文里有十几处在讲「以前是怎么错的」，与复盘和本文件重复 | 这些位置只留现在的行为和约束，经过只记在本文件和复盘里 |
+| `debug.getinfo` 的字段说明不完整：文档写只填 `currentline` / `source` / `short_src` / `what` / `func`，实际还有 `linedefined`，参数是 Lua 函数时有 `lastlinedefined`，带选项 `L` 时有 `activelines`（修改前后都是这样） | README 两个语言版本、09 §13、10 §14、`exemptions` 的理由和 `tablelib.go` 的注释都按实测结果改了 |
+| `file:flush()` 一行和 `fileFnFlush` 的注释还写「标准流无缓冲」，与上一轮改过的 `setvbuf` 一行不一致（读 stdin 是经过缓冲的）；`internal/stdlib` 的包注释还写 io / os / coroutine 留到以后做 | 都改成现状 |
+| 差分 fuzz 的 prelude 只裁剪全局名字和库表字段，不裁剪文件句柄的元表，所以 `io.stdout:setvbuf(...)`、`io.stdout.seek`、句柄元表的 `__gc` 在两侧不同（修改前后都是这样，现有语料里没有 `io.stdout`） | 在 #330 补了一条评论，与 #331 属于同一类「nightly 撞到会报成缺陷」的存量差异 |
 
 验证：`make all` 与 `make fuzz-oracle` 通过。把 `internal/stdlib` 的 `stdlib.go` 和 `tablelib.go` 一起换回修复前的版本：
 行为测试 10 个用例失败，`test/api` 的 `io.lines` 用例 4 个失败，`TestTiered_StdlibNames` 在 P3、P4 两种构建下六段脚本里

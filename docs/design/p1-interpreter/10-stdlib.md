@@ -737,13 +737,12 @@ func hostTonumber(vm *VM, th *Thread) int {
   ② `pairs({}) == next` 是 `false`——`pairs` 返回的是它自己的 upvalue，与全局 `next` 是两个函数对象；
   ③ `ipairs` 的迭代器没有全局名字，脚本只能从 `ipairs` 的第一个返回值拿到它；
   ④ 每个 State 里迭代器只有一个，所以 `pairs(a) == pairs(b)`、`ipairs(a) == ipairs(b)` 都是 `true`。
-  此前这两个函数每次调用都去全局表里查迭代器（`pairs` 查 `next`，`ipairs` 查一个望舒自己加的全局
-  `__ipairs_iter`），①②③ 都与官方不同。迭代器的宿主闭包同时挂在工厂函数的 upvalue 上，这样只要工厂函数还
-  可达，GC 就不会回收它（与 `coroutine.wrap` 持有协程的做法相同）。
+  迭代器的宿主闭包挂在工厂函数的 upvalue 上，这样只要工厂函数还可达，GC 就不会回收它（与 `coroutine.wrap`
+  持有协程的做法相同）。
 - **`ipairs` 的迭代器按 `luaL_checkint` 读控制值**：先查第 2 个参数、再查第 1 个参数；小数截断、超出 int32 的值回绕；
   **数字字符串也接受**（`ipairs({})(t, "1")` 从下标 1 继续，`for i, v in ipairs({}), t, "0" do … end` 会遍历 `t`）。
-  最后一条在 2026-11-25 之前是错的（报 `number expected, got string`），由 #329 的独立审查发现。别的用
-  `luaL_checkint` 的库函数早就接受数字字符串，漏掉这一处是因为迭代器没有公开的名字，按函数名逐个核对时轮不到它。
+  迭代器没有公开的名字，按函数名逐个核对库函数时轮不到它，所以这一条由 `test/language/stdlib_names_test.go`
+  和 `TestTiered_StdlibNames`（§12.3）单独检查。
 - **遍历序的差分口径**(呼应 06 §9.3/§11):`pairs`/`next` 的产出顺序由 table 的 array/node 布局决定,而 node
   布局受**字符串哈希(06 §9.3 JSHash)+ rehash 算法 + Brent 变体**影响。06 §9.3 已把哈希环锁成与官方一致;但
   `pairs` 序是否要求逐字节一致**是验收口径问题**,**由 [12](./12-testing-difftest.md) 定**(严格逐字节 vs 排序后
@@ -771,9 +770,7 @@ func hostUnpack(vm *VM, th *Thread) int {
 - **5.1 口径:`unpack` 是全局函数**(`unpack({1,2,3})` → `1, 2, 3`)。**5.2+ 把它移到 `table.unpack`**(全局
   `unpack` 在 5.2 废弃)。**P1 锁 5.1:提供全局 `unpack`,不提供 `table.unpack`**(若提供 table.unpack 会与官方
   5.1 多一个函数,差分时 `table.unpack` 在 5.1 是 nil)。**记口径**:差分基准是 5.1,全局 `unpack` 存在、
-  `table.unpack` 不存在。**实现曾经与这一条相反**：`OpenAll` 从 2026-06-11 起多注册了一个 `table.unpack`
-  别名，直到 2026-11-23 nightly 的 go-fuzz 找到 `t={}table.unpack(t)`（官方报错、望舒照常执行，#329）才发现。
-  2026-11-25 已删除；现在由 §12.3 的名字集合比对测试防住这一类问题。
+  `table.unpack` 不存在。这一条由 §12.3 的名字集合比对测试检查（#329）。
 - **返回可变个数**:`unpack` push j-i+1 个值,`return n`。调用点(`CALL C=0` 到 top)接收全部(05 §7.2)。
 - **大范围扩栈**:`unpack` 一个大表(`unpack(t)` t 有 1e6 元素)会压 1e6 个值上栈 → `ensureStack` 扩容(05 §1.4)。
   Lua 5.1 有 `unpack` 上限保护:超过栈上限报 `"too many results to unpack"`。**P1 对齐 5.1**,精确口径见下条。
@@ -1619,7 +1616,7 @@ func (vm *VM) sortLess(th *Thread, a, b value.Value, comp value.Value) (bool, *L
   有 maxn,5.2+ 无)。P1 提供。
 - **`table.getn(t)` / `table.setn(t, n)`**：Lua 5.0 遗留，官方 5.1.5 仍然带着。**两个都已提供，行为与官方一致**：
   `getn(t)` 等于 `#t`；`setn` 不是空操作，而是直接报 `'setn' is obsolete`（官方 `ltablib.c` 的 `setn` 就是一句
-  `luaL_error`）。本条原先写「P1 默认不提供，若提供则 `setn` 为空操作」，两点都与实现不符，2026-11-26 按现状改了。
+  `luaL_error`）。
   同样来自 5.0 的 `table.foreach` / `table.foreachi` 也已提供。
 
 ### 7.6 table.sort 稳定性的差分(指向 12)
@@ -1770,8 +1767,8 @@ x86-64 上从右往左、在 arm64 上从左往右,于是**两个官方构建对
 
 **判据**:豁免的正确边界是「具备被豁免那条性质的**全部入口**」,不是「我记得的那几个名字」;加豁免前
 先查有没有别名或 `LUA_COMPAT_*` 兼容名(本仓已有的同族:`string.gfind` 与 `gmatch` 是同一个函数对象,见
-`internal/stdlib/stdlib.go` 里 `LUA_COMPAT_GFIND` 那处注释;`math.mod` 与 `fmod` 也是同一个函数对象,2026-11-26
-之前它被注册成了第二个闭包,`math.mod == math.fmod` 是 `false`;`table.getn`/`setn` 见 §7.5)。方法论
+`internal/stdlib/stdlib.go` 里 `LUA_COMPAT_GFIND` 那处注释;`math.mod` 与 `fmod` 也是同一个函数对象;
+`table.getn`/`setn` 见 §7.5)。方法论
 见 `llmdoc/guides/cross-backend-semantic-fix-sweep.md`「对齐 PUC 之前先分清有定义还是 UB」的**执行体
 纪律**段。
 
@@ -1924,13 +1921,12 @@ os 库的部分函数有**进程级副作用或安全风险**,在嵌入式宿主
 
 `internal/stdlib` 注册的 os 函数只有 `time`、`clock`、`date`、`difftime`、`getenv`。官方 5.1.5 的另外六个
 （`execute`、`exit`、`remove`、`rename`、`tmpname`、`setlocale`）都**没有注册**，脚本调用它们得到的是
-`attempt to call field 'exit' (a nil value)` 这一类错误。§9.1 的表已经按这个现状改了。
+`attempt to call field 'exit' (a nil value)` 这一类错误。§9.1 的表写的就是这个现状。
 
 §9.3 和 §9.4 写的做法（默认提供完整的 os 库、`os.exit` 不真退出、`os.setlocale` 只支持 `"C"`、由 §12.1 的开关收紧）
 一直没有做，这两节保留作为原始设计。其中「默认提供完整 os 库，含 `execute` / `exit`」是 2026-06-11 设计评审的决定
-（`llmdoc/memory/decisions/2026-06-11-design-review-decisions.md` 第 6 项），实现没有照此进行，而 README 一直把
-`os.execute` 列在「不提供」里。两者哪个算数需要维护者重新确认。它与实现不一致这件事，是 #329 把望舒和官方的名字集合逐个比对时才确认的；
-在那之前 README 也写着「os 全部提供」「`os.exit` 不真的退出进程」。
+（`llmdoc/memory/decisions/2026-06-11-design-review-decisions.md` 第 6 项），实现没有照此进行，而 README 把
+`os.execute` 列在「不提供」里。两者哪个算数需要维护者重新确认。
 
 现在由 `test/difftest/corners_test.go` 的 `TestDiff_StdlibNames` 逐个名字检查（§12.3）：这六个名字登记在
 `stdlibAbsent` 里，以后补上任何一个都必须同时删掉对应的登记。哪些要补、`os.exit` 在嵌入场景下取什么语义、
@@ -1961,8 +1957,8 @@ io 库涉及**文件句柄**(full userdata + `__gc`,01 §5.5 / 06 §10),是 stdl
 | `file:close()` | 关闭 file | ✅(标准流) | 标准流**返回** `(nil, "cannot close standard file")` 而不是抬错 |
 | `file:lines()` | 行迭代器 | ✅(标准流) | 迭代器是 host closure,EOF 产出 nil |
 | `file:seek([whence [, off]])` | 文件定位 | **❌ 缺口** | 依赖真实文件句柄;P1 不做 |
-| `file:flush()` | 刷新缓冲 | ✅(标准流) | 标准流无缓冲,返回成功标志 |
-| `file:setvbuf(mode [, size])` | 设置缓冲方式 | ❌ 未注册 | 望舒对标准流的写入不经过缓冲（读 stdin 经过 State 自己的 `bufio.Reader`，大小固定），缓冲方式不可设置。它不依赖真实文件：官方对标准流调用会成功（返回 `true`），望舒这里是「attempt to call method 'setvbuf' (a nil value)」（#330） |
+| `file:flush()` | 刷新缓冲 | ✅(标准流) | 标准流的写入不经过缓冲,没有要刷新的内容,返回成功标志 |
+| `file:setvbuf(mode [, size])` | 设置缓冲方式 | ❌ 未注册 | 望舒对标准流的写入不经过缓冲（读 stdin 经过进程内共享的 `bufio.Reader`，大小固定），缓冲方式不可设置。它不依赖真实文件：官方对标准流调用会成功（返回 `true`），望舒这里是「attempt to call method 'setvbuf' (a nil value)」（#330） |
 | `io.popen`/`io.tmpfile` | 管道/临时文件 | **❌ 缺口** | popen 涉进程(安全,§9.3);P1 不做 |
 
 **P1 范围定稿**(任务点名):
@@ -1993,8 +1989,7 @@ file-handle userdata**,共享一张 metatable 提供 `write`/`close`/`read`/`lin
 像「文件是空的」。
 
 **另有五个不需要真实文件的全局函数也没有注册**（2026-11-25 核对，#329）：`io.close`、`io.flush`、`io.input`、
-`io.output`、`io.type`。§10.1 的表原先把它们标成「简化」，实际调用得到的是 `attempt to call field 'type' (a nil
-value)` 这一类错误；表已按现状改过。它们对应的方法形式（`f:close()`、`f:flush()`）是有的。要不要补上，以及
+`io.output`、`io.type`。调用它们得到的是 `attempt to call field 'type' (a nil value)` 这一类错误。它们对应的方法形式（`f:close()`、`f:flush()`）是有的。要不要补上，以及
 `io.input` / `io.output` 是否允许脚本替换默认流，记在 [#330](https://github.com/Liam0205/wangshu/issues/330)。
 
 **上一轮撤回的根因只有一行**(#205 的由来,2026-07-28):原型直接调 `object.AllocUserdata`,**跳过了
@@ -2281,27 +2276,25 @@ wangshu.NewState(wangshu.Options{Exclude: []string{"os.execute", "os.exit"}})
   - **望舒有而 5.1 没有的名字：一律失败**，没有登记表可以放行。
   - **5.1 有而望舒没有的名字：必须登记在同文件的 `stdlibAbsent` 里并写明原因**（条数以该表为准，其中 `arg` 是
     独立解释器 `lua.c` 设的，不属于库）。没登记的失败；登记了但望舒其实已经有、或 5.1 其实没有的，也失败。
-  这个用例写出来之前，「存在性必须一致」只有 `exemptions` 那份手工清单当执行体，而那份清单只记「缺什么」，
-  看不到「多了什么」。`table.unpack` 和 `__ipairs_iter` 这两个多出来的名字因此在仓库里留了五个多月（#329）。
-  `exemptions` 仍然保留，它面向读者解释每一类为什么不提供；`stdlibAbsent` 是逐个名字的、会失败的那一份。
+  `exemptions` 那份手工清单只记「缺什么」，看不到「多了什么」，所以它当不了存在性差分的执行体。它仍然保留，
+  面向读者解释每一类为什么不提供；`stdlibAbsent` 是逐个名字的、会失败的那一份。
   另有两个测试把这份登记表和别处的说法连起来：`TestStdlibAbsentReasonsResolve` 要求登记理由里写的
   「exemptions: X」确实对应 `exemptions` 里名为 X 的条目；`TestStdlibAbsentIsInREADME` 要求登记表里的每个库名字
   都出现在两个语言版本 README 的「不提供」表里（`arg` 和文件句柄元表的 `__gc` 除外，它们不是脚本会调用的接口）。
   三种构建是否一致由 `test/difftest/tiered_stdlib_names_test.go` 的 `TestTiered_StdlibNames` 检查：六段脚本各在
   只用解释器、强制升层、自然升温三种方式下执行，彼此比对并与 `lua5.1` 比对。它断言的是 `GibbousEntries() > 0`，
   即执行确实进入过升层代码。**只断言 `PromotionCount() > 0` 是不够的**：那个数是「被编译的 Proto 个数」，而被宿主函数
-  调用的 Lua 函数（`pcall(f)` 里的 `f`）即使已经编译，那一帧也固定由解释器执行。这个测试的早期版本就是这样，
-  四段脚本里有两段的内核直接放在 `pcall` 下面，升了层却一次也没有在升层代码里执行过。现在需要出错的内核都经一个
-  Lua 包装函数调用（不能是尾调用），细节见 `llmdoc/guides/prove-the-path-under-test.md` §2.2c。
+  调用的 Lua 函数（`pcall(f)` 里的 `f`）即使已经编译，那一帧也固定由解释器执行，内核直接放在 `pcall` 下面时
+  升了层也不会在升层代码里执行。所以需要出错的内核都经一个 Lua 包装函数调用（不能是尾调用：P3 下尾调用同样
+  不进入升层代码），细节见 `llmdoc/guides/prove-the-path-under-test.md` §2.2c。
   名字清单里还包含「哪些名字是同一个函数对象」（每组一行「a == b : alias」）。官方 5.1.5 有两组，都是 5.0 的兼容名：
   `math.mod` 就是 `math.fmod`，`string.gfind` 就是 `string.gmatch`，脚本用 `==` 能看出区别。只比名字和类型时看不到
-  这一点，`math.mod` 因此一直被注册成另一个闭包，2026-11-26 改成同一个对象。
-  **本文各节的逐函数表格和 §14 总表不在这些测试的范围里**，它们是同一个事实的手工副本，#329 的三轮审查每一轮都在
-  里面找到了与代码不一致的地方。要不要给它们也加检查，记在 [#332](https://github.com/Liam0205/wangshu/issues/332)。
-  写这个用例时还确认了一批「设计文档说有、实际没有」的名字：`os.exit` / `remove` / `rename` / `tmpname` /
-  `setlocale` 和 `io.close` / `flush` / `input` / `output` / `type` 都没有注册（调用它们得到的是
-  `attempt to call field 'exit' (a nil value)` 这一类错误）。`stdlibAbsent` 按实际情况把它们登记为缺少，本文
-  §9.1、§10.1 和 §14 总表也已按现状改过（§9.5、§10.1.1）；要不要补上记在
+  这一点，所以别名行是清单的一部分。
+  **本文各节的逐函数表格和 §14 总表不在这些测试的范围里**，它们是同一个事实的手工副本，没有测试约束。
+  要不要给它们也加检查，记在 [#332](https://github.com/Liam0205/wangshu/issues/332)。
+  `os.exit` / `remove` / `rename` / `tmpname` / `setlocale` 和 `io.close` / `flush` / `input` / `output` /
+  `type` 都没有注册（调用它们得到的是 `attempt to call field 'exit' (a nil value)` 这一类错误），`stdlibAbsent`
+  把它们登记为缺少（§9.5、§10.1.1）；要不要补上记在
   [#330](https://github.com/Liam0205/wangshu/issues/330)。
 
 ---
@@ -2369,7 +2362,7 @@ stdlib 的 shadow stack 纪律(§3)漏 Pin 是**最难调的 bug 类**(06 §6.3:
 | **os** | time, clock, date, difftime, getenv | — | execute, exit, remove, rename, tmpname, setlocale(**都没有注册**;原设计是提供并由宿主开关收紧,见 §9.5 与 #330) |
 | **io** | write, read, stdout, stdin, stderr(#205 已交付;标准流是真 file-handle userdata,见 §10.1.1 / §10.2.1)+ 标准流的 file:write/close/read/lines/flush | lines(无参已提供、带文件名抬错) | io.open, io.popen, io.tmpfile, file:seek(需要真实文件);file:setvbuf(缓冲方式不可设置);close, flush, input, output, type(原计划做简化版,**实际未注册**,见 §10.1.1 与 #330) |
 | **coroutine** | create, resume, yield, status, wrap, running(**机制全在 08**) | — | — |
-| **debug**(09 §13) | traceback(#205 已交付,含「显式 nil 原样返回」) | getinfo(只填 P1 能诚实给出的字段:currentline / source / short_src / what / func;nups / activelines / namewhat **宁缺不假造**) | sethook/gethook, getlocal/setlocal, getupvalue/setupvalue, getregistry, getmetatable/setmetatable, getfenv/setfenv, debug.debug(需要解释器未暴露的内省钩子) |
+| **debug**(09 §13) | traceback(#205 已交付,含「显式 nil 原样返回」) | getinfo(只填 P1 能诚实给出的字段:currentline / source / short_src / what / linedefined / func;参数是 Lua 函数时另有 lastlinedefined,带选项 `L` 时有 activelines;name / namewhat / nups **宁缺不假造**) | sethook/gethook, getlocal/setlocal, getupvalue/setupvalue, getregistry, getmetatable/setmetatable, getfenv/setfenv, debug.debug(需要解释器未暴露的内省钩子) |
 
 **P1 必做的判定标准**:① 跑 Lua 5.1 conformance 测试套必需(base 核心 + string/table/math 全集 + io 最小输出);
 ② 首个宿主(规则引擎)脚本所需(标量/表/字符串/数学操作)。**可延后的判定标准**:① 嵌入式场景罕用(文件 IO
