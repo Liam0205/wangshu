@@ -1455,7 +1455,7 @@ else {
 | `table.concat(t [, sep [, i [, j]]])` | 拼接数组段(§3.2 范例) | `(t [,sep,i,j])` → string | ✅ | Go 缓冲累积(§3.2);元素须 string/number;**产出字节数记进 step budget,按字节不按元素个数**(§3.1a) |
 | `table.sort(t [, comp])` | 原地排序数组段(§7.3/§7.4) | `(t [,comp])` → 无 | ✅ | comp 比较器重入(§7.4);默认用 `<`(`__lt`) |
 | `table.maxn(t)` | 返回最大正数字键(可非连续) | `(t)` → number | ✅ | **5.1 有 `table.maxn`**(5.2+ 移除——记口径,§7.5) |
-| `table.getn(t)` / `table.setn(t, n)` | 取/设序列长度（5.0 遗留） | `(t)` → number / 报错 | ✅ | 已提供，与官方 5.1.5 一致：`getn(t)` 等于 `#t`；`setn` 直接报 `'setn' is obsolete`（§7.5） |
+| `table.getn(t)` / `table.setn(t, n)` | 取/设序列长度（5.0 遗留） | `(t)` → number / 报错 | ✅ | 已提供，与官方 5.1.5 一致：`getn(t)` 等于 `#t`；`setn` 先检查第一个参数是表，然后报 `'setn' is obsolete`（§7.5） |
 | `table.foreach(t, f)` / `table.foreachi(t, f)` | 对每个键值对（或每个数组元素）调用 `f`（5.0 遗留） | `(t, f)` → `f` 的第一个非 nil 返回值 | ✅ | 已提供。官方 5.1.5 默认带这两个兼容函数；`f` 返回非 nil 时停止遍历并返回该值 |
 
 > **5.2+ 排除项**:`table.unpack`(5.1 是全局 `unpack`,§4.5)、`table.pack`(5.2 引入)、`table.move`(5.3)。
@@ -1615,8 +1615,8 @@ func (vm *VM) sortLess(th *Thread, a, b value.Value, comp value.Value) (bool, *L
   `#t` 可能是 1。**5.1 有 `table.maxn`**(任务点名),遍历表找最大正数字键。**5.2+ 移除**(记口径:差分基准 5.1
   有 maxn,5.2+ 无)。P1 提供。
 - **`table.getn(t)` / `table.setn(t, n)`**：Lua 5.0 遗留，官方 5.1.5 仍然带着。**两个都已提供，行为与官方一致**：
-  `getn(t)` 等于 `#t`；`setn` 不是空操作，而是直接报 `'setn' is obsolete`（官方 `ltablib.c` 的 `setn` 就是一句
-  `luaL_error`）。
+  `getn(t)` 等于 `#t`；`setn` 不是空操作：官方 `ltablib.c` 的 `setn` 先检查第一个参数是表（不是表时报
+  `table expected, got …`），然后报 `'setn' is obsolete`。
   同样来自 5.0 的 `table.foreach` / `table.foreachi` 也已提供。
 
 ### 7.6 table.sort 稳定性的差分(指向 12)
@@ -2373,7 +2373,7 @@ stdlib 的 shadow stack 纪律(§3)漏 Pin 是**最难调的 bug 类**(06 §6.3:
 |---|---|---|---|
 | **base** | print, type, tostring, tonumber, pairs, ipairs, next, select, rawget, rawset, rawequal, setmetatable, getmetatable, assert, error, pcall, xpcall, unpack, `_G`, `_VERSION`, collectgarbage(collect/count/stop/restart/setpause) | gcinfo, loadstring, load, loadfile, dofile, collectgarbage(step/setstepmul 近似) | **rawlen**(5.2), **require/module/package 系统**, **table.unpack/pack/move**(5.2+), getfenv/setfenv(与分层执行的形状分析冲突), newproxy(官方未写入手册的函数) |
 | **string** | len, sub, upper, lower, rep, reverse, byte, char, format, find, match, gmatch, gsub(**全 pattern 全集** §6);gfind(5.0 兼容名,与 gmatch 是同一个函数对象) | — | string.dump(字节码序列化) |
-| **table** | insert, remove, concat, sort, maxn;5.0 兼容函数 getn(等于 `#t`)、setn(报 `'setn' is obsolete`)、foreach、foreachi,都与官方一致 | — | table.unpack/pack/move(5.2+) |
+| **table** | insert, remove, concat, sort, maxn;5.0 兼容函数 getn(等于 `#t`)、setn(对表报 `'setn' is obsolete`)、foreach、foreachi,都与官方一致 | — | table.unpack/pack/move(5.2+) |
 | **math** | abs, ceil, floor, sqrt, sin, cos, tan, asin, acos, atan, atan2, exp, log, log10, pow, fmod, modf, max, min, random, randomseed, huge, pi, rad, deg, frexp, ldexp, sinh, cosh, tanh;mod(5.0 兼容名,与 fmod 是同一个函数对象) | — | math.tointeger/type/maxinteger/mininteger(5.3 整数) |
 | **os** | time, clock, date, difftime, getenv | — | execute, exit, remove, rename, tmpname, setlocale(**都没有注册**;原设计是提供并由宿主开关收紧,见 §9.5 与 #330) |
 | **io** | write, read, stdout, stdin, stderr(#205 已交付;标准流是真 file-handle userdata,见 §10.1.1 / §10.2.1)+ 标准流的 file:write/close/read/lines/flush | lines(无参已提供、带文件名抬错) | io.open, io.popen, io.tmpfile, file:seek(需要真实文件);file:setvbuf(缓冲方式不可设置);close, flush, input, output, type(原计划做简化版,**实际未注册**,见 §10.1.1 与 #330) |
@@ -2459,7 +2459,7 @@ stdlib 的 shadow stack 纪律(§3)漏 Pin 是**最难调的 bug 类**(06 §6.3:
   超 int64 范围行为待 12 核对。
 - **`CheckFunction` 严格度 / pcall 的 f 放宽**(§2.6):`CheckFunction` 严格要 function tag;`pcall`/`xpcall` 的 f
   是否接受有 `__call` 的对象由 09 定,记口径。
-- ~~**`table.getn`/`setn` 是否提供**(§7.5)~~:已提供,与官方一致(`getn` 等于 `#t`,`setn` 报 `'setn' is obsolete`)。
+- ~~**`table.getn`/`setn` 是否提供**(§7.5)~~:已提供,与官方一致(`getn` 等于 `#t`,`setn` 对表报 `'setn' is obsolete`)。
 - ~~**`unpack` 大表上限措辞**(§4.5)~~:**已定稿(#201,2026-07-28)**——措辞是
   `"too many results to unpack"`,上限是 `LUAI_MAXCSTACK`(8000)**减去参数个数**,84 种写法与 oracle 逐字节
   一致,详见 §4.5。

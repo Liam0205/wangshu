@@ -90,14 +90,13 @@ func tableFnForeachi(st *crescent.State, args []value.Value) ([]value.Value, *cr
 	return nil, nil
 }
 
-// tableFnSetn: table.setn -- 5.1.5 raises "'setn' is obsolete" directly
-// (ltablib.c's setn is a single luaL_error under the default build), so this
-// does too. It is not a no-op.
+// tableFnSetn is table.setn. It is not a no-op: under the default build
+// ltablib.c's setn checks that its first argument is a table and then raises
+// "'setn' is obsolete", so this does the same.
 func tableFnSetn(_ *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
-	// PUC's setn runs luaL_checktype(L, 1, LUA_TTABLE) BEFORE reaching the
-	// obsolete error, so a non-table first argument reports the type error
-	// instead. Raising the obsolete message unconditionally diverged for every
-	// such call, including table.setn() with no arguments at all.
+	// luaL_checktype(L, 1, LUA_TTABLE) comes BEFORE the obsolete error, so a
+	// non-table first argument reports the type error instead, including
+	// table.setn() with no arguments at all.
 	if len(args) == 0 || value.Tag(args[0]) != value.TagTable {
 		return nil, crescent.NewArgError(1, "table expected, got "+argTypeName(args, 0))
 	}
