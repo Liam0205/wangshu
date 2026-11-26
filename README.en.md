@@ -170,7 +170,7 @@ Wangshu implements the Lua 5.1 core language, with the same syntax surface as Lu
 | Lua 5.2+ features | `rawlen`, `table.unpack` / `table.pack` / `table.move` | Not part of Lua 5.1; `unpack` is a global |
 | Lua 5.3+ features | `math.tointeger` / `type` / `maxinteger` / `mininteger` | The integer type is a 5.3 feature |
 | Embedding safety | `os.execute`, `os.exit`, `os.remove` / `os.rename` / `os.tmpname` and `io.popen` are not provided; `loadfile` / `dofile` are off by default | An embedded VM does not let scripts run a shell, end the host process or change the filesystem; `loadfile` / `dofile` can be turned on with `Options.AllowFileLoad` |
-| Real file IO | `io.open` / `io.tmpfile` / `f:seek` | Needs filesystem access control and a `__gc` that closes files; not done yet |
+| Real file IO | `io.open` / `io.tmpfile` / `f:seek`, and `io.lines` with a filename | Needs filesystem access control and a `__gc` that closes files; not done yet. `io.lines(filename)` raises an error; `io.lines()` with no argument works |
 | Buffering | `f:setvbuf` | Wangshu writes to the standard streams without buffering and the buffering mode cannot be set; on the official implementation the call succeeds on a standard stream |
 | Default-stream management | `io.input` / `io.output` / `io.close` / `io.flush` / `io.type` | The default input and output are fixed to the process stdin / stdout; calling `f:close()` / `f:flush()` on a handle works |
 | Locale | `os.setlocale` | A pure Go implementation has no C locale; character classes and `os.date` always behave as in the C locale |

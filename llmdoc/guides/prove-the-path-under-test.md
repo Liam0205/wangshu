@@ -207,7 +207,9 @@ TAILCALL 分支的「尾调用 gibbous 分发」看见 `GibbousCodeOf(proto)` �
 的比较函数、`__index` 和算术这类由宿主代码回调的元方法处理函数都属于这种情况：宿主回调走 `callLuaFromHost` 的
 `enterLuaFrame` + `execute`，不经过 `enterGibbous`。只有解释器的 `CALL`（P4 下还有 `TAILCALL`）、宿主的顶层调用、升层代码里调用的
 慢路径才会进入升层代码。`__call` 的处理函数是例外：它经 `CALL` 指令调用，会进入升层代码。泛型 for 的迭代器如果是
-Lua 函数，由解释器的 `TFORLOOP` 调用，同样不进入升层代码。
+Lua 函数，由解释器的 `TFORLOOP` 调用，同样不进入升层代码。上面几个入口还都要求在**主线程**上：协程里的调用（哪怕是
+普通的 `CALL`）一律由解释器执行；Go 重入深度（`goDepth`）达到 `gibbousReentryCCallCap` 之后发起的调用也是。这些情况是例子，不是完整的
+清单，所以不要靠推理判断某次调用走哪条路，直接断言 `GibbousEntries()`。
 
 测出错路径最顺手的写法恰好是 `pcall(kernel, 坏参数)`。这样写时 `kernel` 会被编译，`PromotionCount() > 0` 成立，
 解释器、强制升层、自然升温三种方式的输出也完全一致，因为三次执行的都是解释器。

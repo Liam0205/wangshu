@@ -816,13 +816,17 @@ func (st *State) PromotionCount() int {
 func (st *State) SafepointCalls() int64 { return st.safepointCalls }
 
 // GibbousEntries returns the cumulative number of times Go handed control to a promoted function's
-// compiled code: from the interpreter's CALL (and, on P4 only, its TAILCALL), from the host's top-level
-// call, or from a compiled caller's slow call path (white-box probe, for tests). It is what proves a promoted function
-// RAN compiled: PromotionCount only counts Protos that were compiled, and a promoted function invoked
-// by a host function (pcall(f), a sort comparator, an __index or arithmetic metamethod handler), or as
-// a generic-for iterator by the interpreter's TFORLOOP, still runs its frame in the interpreter; a
-// __call handler goes through the CALL instruction and is entered like any other callee. Calls that
-// never leave compiled code are not counted.
+// compiled code (white-box probe, for tests). It is what proves a promoted function RAN compiled;
+// PromotionCount only counts Protos that were compiled.
+//
+// Control is handed over on the main thread only, while the Go re-entry depth (goDepth) is under
+// gibbousReentryCCallCap, and from three places: the interpreter's CALL (and, on P4 only, its
+// TAILCALL), the host's top-level call, and a compiled caller's slow call path. Any other invocation
+// of a promoted function runs its frame in the interpreter: one made by a host function (pcall(f), a
+// sort comparator, an __index or arithmetic metamethod handler), a generic-for iterator called by the
+// interpreter's TFORLOOP, everything inside a coroutine, any call made once goDepth has reached the
+// cap. A __call handler goes through the CALL instruction and is entered like any other callee. Calls that never leave
+// compiled code are not counted.
 func (st *State) GibbousEntries() int64 { return st.gibbousEntries }
 
 // SetStepBudget sets the execution work budget (<=0 disables). On overrun
