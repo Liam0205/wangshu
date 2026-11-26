@@ -729,17 +729,18 @@ nightly 的 go-fuzz（p1，`FuzzOracleDiff`）找到 `t={}table.unpack(t)`：官
 | 删 `table.unpack` | `internal/stdlib/stdlib.go` `OpenAll` | 不再注册 |
 | 迭代器私有化 | 同文件 `registerIterFactory` | `pairs` / `ipairs` 各自在注册时建好迭代器的宿主闭包，由工厂函数的 Go 闭包捕获，同时挂在工厂函数的 upvalue 上让 GC 保活；不再有 `__ipairs_iter`，`pairs` 不再读全局 `next` |
 | fuzz 的 prelude | `internal/oracle/prelude.go` | 原来靠包装全局 `__ipairs_iter` 来拦 `luaL_checkint` 的未定义行为区间，改成包装 `ipairs`、发放同一个带检查的迭代器 |
-| 行为测试 | `test/language/stdlib_names_test.go`（新增） | 20 个用例，期望值逐个在 lua5.1 5.1.5 上实际执行核对过 |
-| 名字集合比对 | `test/difftest/corners_test.go` `TestDiff_StdlibNames`（新增） | 对着真实的 `lua5.1` 双向比对；望舒多出的名字一律失败，缺少的逐个登记在 `stdlibAbsent`（合入时 37 条） |
-| 语料 | `test/fuzz/testdata/fuzz/FuzzOracleDiff/` | 加入 #329 的输入和四条回归语料；原来写着 `__ipairs_iter` 的两条改成经 `ipairs({})` 取迭代器 |
+| 行为测试 | `test/language/stdlib_names_test.go`（新增） | 21 个用例，期望值逐个在 lua5.1 5.1.5 上实际执行核对过 |
+| 名字集合比对 | `test/difftest/corners_test.go` `TestDiff_StdlibNames`（新增） | 对着真实的 `lua5.1` 双向比对；望舒多出的名字一律失败，缺少的逐个登记在 `stdlibAbsent`（合入时 37 条）；清单里还包含哪些名字是同一个函数对象 |
+| 语料 | `test/fuzz/testdata/fuzz/FuzzOracleDiff/` | 加入 #329 的输入和五条回归语料；原来写着 `__ipairs_iter` 的两条改成经 `ipairs({})` 取迭代器 |
 
-**对使用者的影响**（五项都是改成与官方 5.1 一致）：
+**对使用者的影响**（六项都是改成与官方 5.1 一致）：
 
 - 调用 `table.unpack(...)` 的脚本会开始报错，改成 `unpack(...)` 即可（Lua 5.1 本来就只有后者）。
 - 全局 `__ipairs_iter` 没有了。读过它的脚本或宿主代码改成 `ipairs({})` 的第一个返回值。
 - 改写或清空全局 `next` 不再影响 `pairs`。以前靠替换 `next` 来改变 `pairs` 行为的脚本不再生效，要改就替换 `pairs` 本身。
 - `ipairs` 的迭代器接受数字字符串作控制值，以前这种调用会报错。
 - `io.lines(nil)` 现在报 `FILE* expected, got nil`，以前返回默认输入的迭代器；不带参数的 `io.lines()` 不变。
+- `math.mod == math.fmod` 现在是 `true`，以前是 `false`（两个名字各有一个函数对象）。调用结果没有变化。
 
 ### 独立审查之后补的内容
 
@@ -769,10 +770,23 @@ nightly 的 go-fuzz（p1，`FuzzOracleDiff`）找到 `t={}table.unpack(t)`：官
 | 存量差异：`io.lines(nil)` 官方报 `FILE* expected, got nil`，望舒返回迭代器 | 在这个 PR 里修了：`io.lines` 现在区分「没有参数」和「显式 nil」，非字符串参数先报 `string expected`，与 `liolib.c` 的 `io_lines` 一致。测试在 `test/api/io_handles_test.go` |
 | 存量差异：10 §14 总表不完整（base 行缺 `getfenv` / `setfenv` / `newproxy`，debug 行只列了 12 个缺少函数里的 6 个） | 补全 |
 
-验证：`make all` 与 `make fuzz-oracle` 通过。把 `stdlib.go` 换回修复前的版本：行为测试 9 个用例失败，
-`TestTiered_StdlibNames` 在 P3、P4 两种构建下三段脚本全部失败，名字比对报出那两个多余名字，#329 的输入和两条回归
-语料失败。名字比对测试另做了两种变异（删一条登记、加一条过期登记），都会失败。去掉 prelude 里的检查，
-`TestIpairsIteratorGuard` 报 8 处；README 删掉一行或一个名字、`exemptions` 改一个条目名，对应的两个测试都会失败。
+第三轮独立审查（全范围，又一位 reviewer）没有找到完成条件 1、2 的反例，提出一条重要问题、三条小问题和四处存量差异：
+
+| 审查意见 | 处理 |
+|---|---|
+| `io.lines` 的修复只有解释器上的测试，期望值是手写的；没有升层路径上的测试，也没有差分语料 | `TestTiered_StdlibNames` 加第四段脚本（把 `io.lines` 当泛型 for 的生成器，循环设了上限，因为旧行为返回迭代器会一直循环）；加一条 `FuzzOracleDiff` 语料。换回旧的 `io.lines` 两者都失败 |
+| `TestStdlibAbsentIsInREADME` 有 4 个名字实际没有被检查：英文 README 原因栏里的普通单词 input、output 被当成了 `io.input` / `io.output`；debug 那一行为 `debug.getfenv` 写的缩写被当成了全局 `getfenv` / `setfenv` | 匹配规则改成只读「具体项」一栏、名字必须带反引号、库那一行的缩写不能代表同名的全局函数；规则本身由 `TestReadmeListsMatcher` 固定。对登记表里 35 个名字逐个从两个 README 里删掉再跑测试，每一个都会失败 |
+| `f:setvbuf` 的说法不一致：README 把它归在「真实文件 IO」，登记表的理由是「标准流不带缓冲」；10 §10.1 和 §14 总表里没有它 | README 单列一行，10 号文档两处补上。官方对标准流调用它会成功，这一点也写明了 |
+| `llmdoc/reference/embedding-contract.md` 句尾还写三层开关「留待宿主接入前完成」，与 doc-gaps 的「要不要做没有决定」相反 | 改成一致 |
+| 存量差异：`math.mod == math.fmod` 官方是 `true`，望舒是 `false` | 在这个 PR 里修了：别名改成指向同一个函数对象，与 `string.gfind` 的做法相同。名字比对测试原来只比名字和类型，看不到这一点，现在清单里加了「哪些名字是同一个对象」 |
+| 存量差异：10 号文档对 `table.getn` / `setn` 有三种说法，都与代码不符（文档说没有，实际有）；总表没有列 `table.foreach` / `foreachi`、`math.mod`、`string.gfind` | 都按现状改了。用一段临时脚本把 10 号文档的逐函数表格与实际注册的名字机械核对了一遍，改完之后不一致为 0。这些表格本身没有常驻检查，记在 [#332](https://github.com/Liam0205/wangshu/issues/332) |
+| 存量差异：#331（主块之下的 C 帧）、`io.lines(文件名)` 的报错文本（属于 #330） | 不在这一轮修。reviewer 认为可以接受，并提醒 #331 的触发输入只有二十几个字节，nightly 随时可能撞到 |
+
+验证：`make all` 与 `make fuzz-oracle` 通过。把 `internal/stdlib` 的 `stdlib.go` 和 `tablelib.go` 一起换回修复前的版本：
+行为测试 10 个用例失败，`test/api` 的 `io.lines` 用例 4 个失败，`TestTiered_StdlibNames` 在 P3、P4 两种构建下四段脚本
+全部失败，名字比对报出两个多余名字和一组缺少的别名，#329 的输入和三条回归语料失败。名字比对测试另做了两种变异
+（删一条登记、加一条过期登记），都会失败。去掉 prelude 里的检查，`TestIpairsIteratorGuard` 报 8 处；`exemptions` 改一个
+条目名，`TestStdlibAbsentReasonsResolve` 失败；README 的逐名字删除见上表。
 
 机制见 [10 §4.4 / §4.5 / §9.5 / §12.3](./10-stdlib.md)，过程记录见
 [#329 复盘](../../../llmdoc/memory/reflections/2026-11-25-issue329-stdlib-extra-names.md)。

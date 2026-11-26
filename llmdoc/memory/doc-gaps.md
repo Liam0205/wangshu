@@ -16,6 +16,11 @@
   「stdlib 提供面逐函数核对待兑现」和「三层禁用机制未完整完成」两条。哪些要补、`os.exit` 取什么语义、开关要不要做，见
   [#330](https://github.com/Liam0205/wangshu/issues/330)。
 
+- **【未做，等维护者决定】`10-stdlib.md` 的逐函数表格和 §14 总表没有常驻检查** — 它们是「望舒提供哪些函数」的手工副本。
+  有测试约束的是实际注册的名字（`TestDiff_StdlibNames`）、README 的「不提供」表（`TestStdlibAbsentIsInREADME`）和登记
+  理由（`TestStdlibAbsentReasonsResolve`）；设计文档的表格不在其中。2026-11-26 用临时脚本机械核对过一次，当时不一致为 0。
+  要不要加检查或者删掉总表，见 [#332](https://github.com/Liam0205/wangshu/issues/332)。
+
 - **【未做，等维护者决定】主块之下的 C 帧在两处取了相反的答案** — 栈回溯和 `debug.getinfo` 按独立的 `lua5.1`（末尾有
   `[C]: ?`，#279），C 调用深度按内嵌用法（下面 #281-#288 一条里登记的已知限制）。`FuzzOracleDiff` 的参照实现是内嵌用法，
   所以含 `debug.traceback` / `debug.getinfo(2)` 的脚本在那里两侧输出不同；现有语料里没有这两个名字，nightly 还没有报过。
