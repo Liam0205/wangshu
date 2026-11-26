@@ -268,8 +268,9 @@ func (st *State) SafepointCalls() int64 { return st.core.SafepointCalls() }
 // interpreter every time, so a test that wraps its kernel in pcall sees
 // PromotionCount > 0 while exercising no compiled code at all. (A __call
 // handler is different: it is reached through the CALL instruction and does
-// enter compiled code.) Take this value before and after the code under test and
-// require the difference to be positive.
+// enter compiled code. A Lua function used as a generic-for iterator is called
+// by the interpreter's TFORLOOP and is not.) Take this value before and after
+// the code under test and require the difference to be positive.
 //
 // Calls that stay inside compiled code (a compiled caller entering a compiled
 // callee on the fast path) are not counted. Non-decreasing; always 0 on builds
