@@ -901,6 +901,12 @@ reviewer 在跑 P4 全量测试时还撞到一次 `TestIssue177_StringLimitConte
 修改之前七段全部通过；解释器上的测试两种变异下都照常通过。这一轮还确认 #339 的报错行号也不对（`stdin:3:` 变成
 `stdin:5:`），补进了那个 issue。
 
+第十四轮的 reviewer 逐项复核第十三轮的发现时，指出 `io.lines` 那一条改得不完整：把数字算进「非字符串」的说法还剩两处
+（差分 fuzz 的 prelude 里 `io.lines` 包装的注释，和上面「对使用者的影响」一段）。上一轮全仓查找时用的关键词太窄，
+目录也没有包含 `internal/oracle`。这次把分支新增行里所有按类型描述 `io.lines` 参数的句子逐条看了一遍，两处都改了。
+它还指出带 P4 标签跑 lint 得到的 72 条是 golangci-lint 默认上限截断后的数，关掉上限是 105 条，linux/arm64 上另有 74 条，
+[#340](https://github.com/Liam0205/wangshu/issues/340) 的正文已更正。
+
 验证：`make all` 与 `make fuzz-oracle` 通过。把 `internal/stdlib` 的 `stdlib.go` 和 `tablelib.go` 一起换回修复前的版本：
 行为测试 10 个用例失败，`test/api` 的 `io.lines` 用例 4 个失败，`TestTiered_StdlibNames` 在 P3、P4 两种构建下七段脚本里
 六段失败（剩下的一段测的是迭代器对坏参数的报错，修复前后相同，它的作用是在升层路径上执行那条报错），名字比对报出两个多余
