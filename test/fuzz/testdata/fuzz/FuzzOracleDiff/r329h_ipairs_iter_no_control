@@ -1,0 +1,2 @@
+go test fuzz v1
+string("local f = ipairs({}) print(pcall(f, {10})) print(pcall(f, {10}, nil)) print(pcall(f, {10}, true)) print(pcall(function() local n = 0 for i, v in f, {10} do n = n + 1 if n > 3 then break end end return n end))")

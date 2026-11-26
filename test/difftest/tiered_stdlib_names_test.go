@@ -174,7 +174,8 @@ for i = 1, 40 do
 end
 return table.concat(order, " | ")`, true, true},
 	// The ipairs iterator's own argument checks, reached from a promoted generic-for: the control
-	// value is checked before the table, and a non-numeric string is not a number.
+	// value is checked before the table, and a non-numeric string, a nil (the generic-for passes
+	// one when the loop names no control value) and a boolean are not numbers.
 	{"ipairs_iterator_argument_errors", `
 local function loop(f, s, c)
   local n = 0
@@ -188,11 +189,13 @@ local function call(f, s, c) local n = loop(f, s, c) return n end
 local it = ipairs({})
 local seen, order = {}, {}
 for i = 1, 40 do
-  for _, arg in ipairs({"no table", "bad control", "bad both"}) do
+  for _, arg in ipairs({"no table", "bad control", "bad both", "nil control", "boolean control"}) do
     local ok, msg
     if arg == "no table" then ok, msg = pcall(call, it, 5, 0)
     elseif arg == "bad control" then ok, msg = pcall(call, it, {1, 2}, "x")
-    else ok, msg = pcall(call, it, 5, {}) end
+    elseif arg == "bad both" then ok, msg = pcall(call, it, 5, {})
+    elseif arg == "nil control" then ok, msg = pcall(call, it, {1, 2})
+    else ok, msg = pcall(call, it, {1, 2}, true) end
     local line = arg .. ": " .. tostring(ok) .. " " .. tostring(msg):gsub("^.-:(%d+: )", "%1")
     if not seen[line] then seen[line] = true order[#order + 1] = line end
   end
