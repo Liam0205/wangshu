@@ -816,8 +816,8 @@ func (st *State) PromotionCount() int {
 func (st *State) SafepointCalls() int64 { return st.safepointCalls }
 
 // GibbousEntries returns the cumulative number of times Go handed control to a promoted function's
-// compiled code: from the interpreter's CALL or TAILCALL, from the host's top-level call, or from a
-// compiled caller's slow call path (white-box probe, for tests). It is what proves a promoted function
+// compiled code: from the interpreter's CALL (and, on P4 only, its TAILCALL), from the host's top-level
+// call, or from a compiled caller's slow call path (white-box probe, for tests). It is what proves a promoted function
 // RAN compiled: PromotionCount only counts Protos that were compiled, and a promoted function invoked
 // by a host function (pcall(f), a sort comparator, an __index or arithmetic metamethod handler) still
 // runs its frame in the interpreter; a __call handler goes through the CALL instruction and is

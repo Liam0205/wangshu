@@ -12,7 +12,9 @@
   `io.open` / `popen` / `tmpfile` / `close` / `flush` / `input` / `output` / `type` 都没有注册；三层开关没有实现，
   宿主能用的开关只有 `Options.AllowFileLoad` 和 `Options.HideFileLoaders`。README、设计文档 10 / 11 / 12 和
   [[embedding-contract]] 写的都是这个现状。逐个名字的清单是 `test/difftest/corners_test.go` 的 `stdlibAbsent`
-  （`TestDiff_StdlibNames` 对着 lua5.1 检查，`TestStdlibAbsentIsInREADME` 检查 README）。哪些要补、`os.exit` 取什么语义、开关要不要做，见
+  （`TestDiff_StdlibNames` 对着 lua5.1 检查，`TestStdlibAbsentIsInREADME` 检查 README）。差分 fuzz 的 prelude 不裁剪文件句柄的
+  元表，所以 `io.stdout:setvbuf(...)`、`io.stdout.seek`、句柄元表的 `__gc` 在 `FuzzOracleDiff` 里两侧不同（现有语料里没有
+  `io.stdout`，nightly 还没有报过；见该 issue 2026-11-26 的评论）。哪些要补、`os.exit` 取什么语义、开关要不要做，见
   [#330](https://github.com/Liam0205/wangshu/issues/330)。
 
 - **【未做，等维护者决定】`10-stdlib.md` 的逐函数表格和 §14 总表没有常驻检查** — 它们是「望舒提供哪些函数」的手工副本。
