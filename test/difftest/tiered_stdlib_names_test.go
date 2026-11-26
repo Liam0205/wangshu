@@ -50,17 +50,22 @@ local total = 0
 for i = 1, 60 do total = total + loop(ipairs({}), t, "1") end
 return total`, true, true},
 	// Calling the name 5.1 does not have, from inside a promoted function, raises the same error.
-	// The position prefix is cut off because the chunk name differs between the two engines. This is
+	// Only the chunk name is cut off the position prefix, because it differs between the two engines.
+	// The line number is compared, and every kernel that raises spans several lines so that a line
+	// taken from the wrong instruction shows. This is
 	// the input of #329 as written, a read of a missing field followed by a call; P4 on arm64 does not
 	// compile that form, so there the three runs only compare results and the next case is the one
 	// that raises from compiled code.
 	{"missing_table_unpack_error", `
-local function kernel(t) local a, b = table.unpack(t) return a, b end
+local function kernel(t)
+  local a, b = table.unpack(t)
+  return a, b
+end
 local function call(t) local a, b = kernel(t) return a, b end
 local seen = {}
 for i = 1, 40 do
   local ok, msg = pcall(call, {1, 2})
-  seen[tostring(ok) .. " " .. tostring(msg):gsub("^.-:%d+: ", "")] = true
+  seen[tostring(ok) .. " " .. tostring(msg):gsub("^.-:(%d+: )", "%1")] = true
 end
 local out = {}
 for k in pairs(seen) do out[#out + 1] = k end
@@ -84,7 +89,7 @@ local function call(t, x) local p, q, f = kernel(t, x) return p, q, f end
 local seen = {}
 for i = 1, 40 do
   local ok, msg = pcall(call, {1, 2}, i)
-  seen[tostring(ok) .. " " .. tostring(msg):gsub("^.-:%d+: ", "")] = true
+  seen[tostring(ok) .. " " .. tostring(msg):gsub("^.-:(%d+: )", "%1")] = true
 end
 local out = {}
 for k in pairs(seen) do out[#out + 1] = k end
@@ -94,7 +99,14 @@ return table.concat(out, "|")`, true, false},
 	// is read from stdin. The loop is bounded because a generator that wrongly accepts its argument
 	// would otherwise be called forever.
 	{"io_lines_argument_errors", `
-local function loop(f, s, c) local n = 0 for _ in f, s, c do n = n + 1 if n >= 3 then break end end return n end
+local function loop(f, s, c)
+  local n = 0
+  for _ in f, s, c do
+    n = n + 1
+    if n >= 3 then break end
+  end
+  return n
+end
 local function call(f, s, c) local n = loop(f, s, c) return n end
 local seen, order = {}, {}
 for i = 1, 40 do
@@ -103,7 +115,7 @@ for i = 1, 40 do
     if arg == "nil" then ok, msg = pcall(call, io.lines, nil, nil)
     elseif arg == "table" then ok, msg = pcall(call, io.lines, {})
     else ok, msg = pcall(call, io.lines, false) end
-    local line = arg .. ": " .. tostring(ok) .. " " .. tostring(msg):gsub("^.-:%d+: ", "")
+    local line = arg .. ": " .. tostring(ok) .. " " .. tostring(msg):gsub("^.-:(%d+: )", "%1")
     if not seen[line] then seen[line] = true order[#order + 1] = line end
   end
 end
@@ -111,7 +123,14 @@ return table.concat(order, " | ")`, true, true},
 	// The ipairs iterator's own argument checks, reached from a promoted generic-for: the control
 	// value is checked before the table, and a non-numeric string is not a number.
 	{"ipairs_iterator_argument_errors", `
-local function loop(f, s, c) local n = 0 for _, v in f, s, c do n = n + v if n > 100 then break end end return n end
+local function loop(f, s, c)
+  local n = 0
+  for _, v in f, s, c do
+    n = n + v
+    if n > 100 then break end
+  end
+  return n
+end
 local function call(f, s, c) local n = loop(f, s, c) return n end
 local it = ipairs({})
 local seen, order = {}, {}
@@ -121,7 +140,7 @@ for i = 1, 40 do
     if arg == "no table" then ok, msg = pcall(call, it, 5, 0)
     elseif arg == "bad control" then ok, msg = pcall(call, it, {1, 2}, "x")
     else ok, msg = pcall(call, it, 5, {}) end
-    local line = arg .. ": " .. tostring(ok) .. " " .. tostring(msg):gsub("^.-:%d+: ", "")
+    local line = arg .. ": " .. tostring(ok) .. " " .. tostring(msg):gsub("^.-:(%d+: )", "%1")
     if not seen[line] then seen[line] = true order[#order + 1] = line end
   end
 end
