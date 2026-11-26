@@ -17,8 +17,8 @@ import (
 //   - pcall(kernel): the host function invokes it and the interpreter runs its frame, every time;
 //   - pcall(wrapper), where the wrapper CALLs the kernel: compiled again;
 //   - pcall(wrapper), where the wrapper TAIL-calls the kernel. On P3 a tail call does not enter
-//     compiled code; P4 enters it. Either way it must not be the form a tier test relies on, so the
-//     case only records which it is and checks nothing about the count.
+//     compiled code; P4 enters it, through its own entry in the interpreter's TAILCALL. The case pins
+//     which it is on this build (tailCallEntersCompiled); a tier test must not rely on this form.
 //
 // A test that wraps its kernel directly in pcall therefore sees PromotionCount > 0 while exercising
 // no compiled code, and a mutation of the compiled tier's error path leaves it green.
@@ -27,14 +27,14 @@ func TestGibbousEntries(t *testing.T) {
 `
 	for _, tc := range []struct {
 		name, body string
-		wantRun    string // "yes", "no", or "" for not asserted
+		wantRun    string // "yes", "no", or "tail" for what tailCallEntersCompiled says
 	}{
 		{"lua call", `local s = 0 for i = 1, 40 do s = s + kernel(i) end return s`, "yes"},
 		{"host invokes the kernel", `local s = 0 for i = 1, 40 do local _, v = pcall(kernel, i) s = s + v end return s`, "no"},
 		{"host invokes a wrapper that calls it", `local function call(x) local v = kernel(x) return v end
 local s = 0 for i = 1, 40 do local _, v = pcall(call, i) s = s + v end return s`, "yes"},
 		{"host invokes a wrapper that tail-calls it", `local function call(x) return kernel(x) end
-local s = 0 for i = 1, 40 do local _, v = pcall(call, i) s = s + v end return s`, ""},
+local s = 0 for i = 1, 40 do local _, v = pcall(call, i) s = s + v end return s`, "tail"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			prog, err := wangshu.Compile([]byte(kernel+tc.body), "entries")
@@ -56,6 +56,14 @@ local s = 0 for i = 1, 40 do local _, v = pcall(call, i) s = s + v end return s`
 			entries := st.GibbousEntries()
 			t.Logf("promoted %d protos, entered compiled code %d times", st.PromotionCount(), entries)
 			switch tc.wantRun {
+			case "tail":
+				if tailCallEntersCompiled && entries == 0 {
+					t.Errorf("this tier enters compiled code on a tail call, and none was counted")
+				}
+				if !tailCallEntersCompiled && entries != 0 {
+					t.Errorf("compiled code was entered %d times through a tail call on a tier recorded as not "+
+						"doing so; update tailCallEntersCompiled and the GibbousEntries godoc", entries)
+				}
 			case "yes":
 				if entries == 0 {
 					t.Errorf("the kernel was promoted but compiled code was never entered")
