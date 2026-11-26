@@ -42,6 +42,36 @@ local t = {1, 2, 3}
 local total = 0
 for i = 1, 60 do total = total + loop(ipairs(t)) + loop(pairs(t)) end
 return total`, true, true},
+	// pairs and ipairs themselves, called from a promoted function. A function that calls the global
+	// is not promoted, so the kernels reach the two factories as methods of the table, and are padded
+	// with arithmetic so that both P4 native translators accept them.
+	{"factories_called_from_compiled_code", `
+local x = {10, 20, 30, ipairs = ipairs, pairs = pairs}
+local function viaIpairs(t, i)
+  local a = i * 2 + 1
+  local b = a - i
+  local c = b * 3 - a
+  local d = c + b - i
+  local e = d * 2 + c
+  local g = e - d + a
+  local n = 0
+  for _, v in t:ipairs() do n = n + v end
+  return n + g - g
+end
+local function viaPairs(t, i)
+  local a = i * 2 + 1
+  local b = a - i
+  local c = b * 3 - a
+  local d = c + b - i
+  local e = d * 2 + c
+  local g = e - d + a
+  local n = 0
+  for k in t:pairs() do n = n + 1 end
+  return n + g - g
+end
+local total = 0
+for i = 1, 40 do total = total + viaIpairs(x, i) + viaPairs(x, i) end
+return total`, true, true},
 	// The ipairs iterator narrows its control value like luaL_checkint, numeric strings included.
 	{"ipairs_iterator_string_control", `
 local function loop(f, s, c) local n = 0 for _, v in f, s, c do n = n + v end return n end
@@ -120,6 +150,29 @@ for i = 1, 40 do
   end
 end
 return table.concat(order, " | ")`, true, true},
+	// io.lines with a filename -- a string or a number -- as the generator of a promoted generic-for.
+	// wangshu raises instead of opening the file, so this case is in tieredNotComparedWithOracle.
+	{"io_lines_filename_error", `
+local function loop(f, s, c)
+  local n = 0
+  for _ in f, s, c do
+    n = n + 1
+    if n >= 3 then break end
+  end
+  return n
+end
+local function call(f, s, c) local n = loop(f, s, c) return n end
+local seen, order = {}, {}
+for i = 1, 40 do
+  for _, arg in ipairs({"string", "number"}) do
+    local ok, msg
+    if arg == "string" then ok, msg = pcall(call, io.lines, "no-such-file")
+    else ok, msg = pcall(call, io.lines, 0) end
+    local line = arg .. ": " .. tostring(ok) .. " " .. tostring(msg):gsub("^.-:(%d+: )", "%1")
+    if not seen[line] then seen[line] = true order[#order + 1] = line end
+  end
+end
+return table.concat(order, " | ")`, true, true},
 	// The ipairs iterator's own argument checks, reached from a promoted generic-for: the control
 	// value is checked before the table, and a non-numeric string is not a number.
 	{"ipairs_iterator_argument_errors", `
@@ -170,9 +223,17 @@ end
 return total, agree`, true, false},
 }
 
+// tieredNotComparedWithOracle lists the cases whose result is a registered difference from lua5.1.
+// Their three runs are compared with each other and with the text recorded here.
+var tieredNotComparedWithOracle = map[string]string{
+	// lua5.1 opens the file and reports that it does not exist; see the exemption on io.open.
+	"io_lines_filename_error": "string: false 4: io.lines with a filename is not supported | " +
+		"number: false 4: io.lines with a filename is not supported\n",
+}
+
 // TestTiered_StdlibNames runs each kernel three ways on this build -- interpreter only, force-all
 // promoted, and promoted from natural heat -- and requires all three to agree with each other and
-// with lua5.1.
+// with lua5.1 (or, for the cases in tieredNotComparedWithOracle, with the recorded text).
 //
 // It then requires that execution actually entered compiled code in the promoted runs where the case
 // says so, and that it did not in the interpreter-only run. Without that, the comparison can silently become interpreter
@@ -180,6 +241,15 @@ return total, agree`, true, false},
 // every call sits directly under pcall is compiled without ever executing compiled.
 func TestTiered_StdlibNames(t *testing.T) {
 	oracle := findOracle()
+	known := map[string]bool{}
+	for _, c := range tieredStdlibNameCases {
+		known[c.name] = true
+	}
+	for name := range tieredNotComparedWithOracle {
+		if !known[name] {
+			t.Errorf("tieredNotComparedWithOracle names %q, which is not a case", name)
+		}
+	}
 	for _, c := range tieredStdlibNameCases {
 		t.Run(c.name, func(t *testing.T) {
 			prog, err := wangshu.Compile([]byte(c.src), "tiernames")
@@ -191,7 +261,11 @@ func TestTiered_StdlibNames(t *testing.T) {
 			if n := interp.GibbousEntries(); n != 0 {
 				t.Errorf("the interpreter-only baseline entered compiled code %d times", n)
 			}
-			if oracle != "" {
+			if want, recorded := tieredNotComparedWithOracle[c.name]; recorded {
+				if baseline != want {
+					t.Errorf("interpreter vs the recorded result:\n  wangshu:  %q\n  recorded: %q", baseline, want)
+				}
+			} else if oracle != "" {
 				if want := runOracle(t, oracle, wrapForOracle(c.src)); baseline != want {
 					t.Errorf("interpreter vs oracle:\n  wangshu: %q\n  oracle:  %q", baseline, want)
 				}

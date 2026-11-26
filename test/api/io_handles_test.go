@@ -66,6 +66,12 @@ func TestIOHandles_MatchPUC(t *testing.T) {
 			"bad argument #1 to '?' (string expected, got boolean)"},
 		{"io.lines table", `return tostring(select(2, pcall(io.lines, {})))`,
 			"bad argument #1 to '?' (string expected, got table)"},
+		// A string or a number is a filename. PUC opens the file; wangshu has no file opening and
+		// raises (a registered exemption), rather than handing back an iterator over something else.
+		{"io.lines filename", `return tostring(select(2, pcall(io.lines, "no-such-file")))`,
+			"io.lines with a filename is not supported"},
+		{"io.lines number is a filename", `return tostring(select(2, pcall(io.lines, 0)))`,
+			"io.lines with a filename is not supported"},
 	} {
 		if got := testutil.RunOne(t, tc.src).Str(); got != tc.want {
 			t.Errorf("%s: got %q, want %q", tc.name, got, tc.want)
