@@ -164,7 +164,7 @@ var exemptions = []struct {
 	{"debug 库只提供 traceback/getinfo", "10 §14 把 debug.traceback/getinfo 列为要做的、其余列在 ❌ 列。现在这两个已提供并与 lua5.1 一致;sethook / getlocal / setlocal / getupvalue / setupvalue / getregistry 仍然不存在——它们需要解释器没有暴露的内省钩子。getinfo 只填 P1 能诚实给出的字段(currentline / source / short_src / what / func),nups / activelines / namewhat 宁缺不假造"},
 	{"os.time{isdst=} 采用 glibc 的 mktime 搜索规则(跨平台统一)", "该字段的解析需要在 tzdata transition 表里搜索,而各家 libc 的搜索步长与顺序不同。wangshu 在所有平台上都用 glibc 的规则(601200 秒步长、每步先后再前、上限 381 步、找不到邻居按默认 1 小时、邻居偏移相同则 delta 取 0),因此**同一脚本在各平台答案一致**;而 PUC 的答案随宿主 libc 变化,所以在非 glibc 宿主(macOS/BSD)上,少数贴着 transition 的输入会与本地编译的 PUC 不同。产品是纯 Go(cgo 只在 internal/oracle 的 build tag 后面),调不到宿主 mktime;逐平台重写各家 libc 的搜索会把一个可验证的答案换成几个无法验证的答案。glibc 上实测零差异:598 个时区 × 1850-2199 九个年份共 21528 例"},
 	{"io 库不提供 open/popen/tmpfile/seek", "三个标准流与 io.read / io.lines / :write / :close / :flush / :read / :lines 现已提供(file-handle userdata,type() 报 userdata,与 lua5.1 一致);仍缺的是需要真实文件的部分——io.open / io.popen / io.tmpfile / f:seek,按 10 §14 的 ❌ 列。io.lines(filename) 因此会抬错而不是静默返回空迭代器"},
-	{"getfenv/setfenv", "不在 10 §14 提供面任何列;唯一设计出处是 P2 不升层形状 F4(p2-bridge §358)——按设计豁免"},
+	{"getfenv/setfenv", "10 §14 base ❌ 列;设计出处是 P2 不升层形状 F4(p2-bridge §358):改写函数环境与分层执行的形状分析冲突——按设计豁免"},
 	{"load(func) 渐进分块语义差", "已实现 reader 循环全量拼接;与 5.1 流式编译的差异仅在超大 chunk 内存峰值,语义等价"},
 	{"os.exit/remove/rename/tmpname/setlocale", "未注册(10 §9.5)。原设计是做简化版(os.exit 不真退出宿主进程、setlocale 只支持 C、文件操作受沙箱限制),一直没有做;要不要补见 issue #330"},
 	{"io.close/flush/input/output/type", "未注册(10 §10.1.1)。默认输入输出固定为进程的 stdin/stdout;句柄上的 f:close() / f:flush() 已提供。要不要补见 issue #330"},
@@ -302,7 +302,7 @@ var stdlibAbsent = map[string]string{
 	"module : function":   "exemptions: require/module/package",
 	"require : function":  "exemptions: require/module/package",
 	"package : table":     "exemptions: require/module/package",
-	"newproxy : function": "undocumented 5.1 function creating a zero-size userdata; not in the 10 section 14 scope table",
+	"newproxy : function": "undocumented 5.1 function creating a zero-size userdata; not provided (10 section 14, base row)",
 	// Not a library name: lua.c, the standalone interpreter this test runs, sets it to the command
 	// line. A host embedding the library (wangshu's situation) never has it.
 	"arg : table": "set by the standalone lua.c interpreter, not by the library",
