@@ -34,6 +34,11 @@ table.sort(ks) return table.concat(ks, ",")`, ""},
 		{"pairs iterator is not the global next", `return tostring(pairs({}) == next)`, "false"},
 		{"one iterator per library function", `return tostring(pairs({}) == pairs({})) .. " " .. tostring(ipairs({}) == ipairs({}))`, "true true"},
 		{"iterators differ from each other", `return tostring(pairs({}) == ipairs({}))`, "false"},
+		// The factories check their own argument like luaB_pairs / luaB_ipairs.
+		{"pairs without an argument", `return tostring(select(2, pcall(pairs)))`,
+			"bad argument #1 to '?' (table expected, got no value)"},
+		{"ipairs without an argument", `return tostring(select(2, pcall(ipairs)))`,
+			"bad argument #1 to '?' (table expected, got no value)"},
 		// Called directly, the iterators check arguments like luaB_next / ipairsaux.
 		{"pairs iterator works standalone", `local f = pairs({}) local k, v = f({a = 1}) return tostring(k) .. tostring(v) .. select("#", f({}))`, "a11"},
 		{"pairs iterator argument error", `local f = pairs({}) return tostring(select(2, pcall(f)))`,
