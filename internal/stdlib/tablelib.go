@@ -1222,8 +1222,7 @@ func ioFnWrite(st *crescent.State, args []value.Value) ([]value.Value, *crescent
 // ----- math completions -----
 
 var mathExtraFns = []entry{
-	{"fmod", mathFnFmod},
-	{"mod", mathFnFmod}, // LUA_COMPAT_MOD: 5.0 alias (bundled by default in official 5.1.5)
+	{"fmod", mathFnFmod}, // also published as math.mod, the same function object: see OpenAll
 	{"modf", mathFnModf},
 	{"atan2", mathFn2("atan2", atan2)},
 	{"sinh", mathFn1("sinh", sinh)},
