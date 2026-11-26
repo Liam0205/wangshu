@@ -50,6 +50,25 @@ end
 local out = {}
 for k in pairs(seen) do out[#out + 1] = k end
 return table.concat(out, "|"), type(__ipairs_iter)`, false},
+	// io.lines as the generator of a promoted generic-for: an explicit nil is rejected as a file handle
+	// and a non-string fails the string check, both attributed to the for generator as on 5.1. Nothing
+	// is read from stdin. The loop is bounded because a generator that wrongly accepts its argument
+	// (io.lines(nil) used to return an iterator) would otherwise be called forever. The position prefix
+	// is cut off because the chunk name differs between the two engines.
+	{"io_lines_argument_errors", `
+local function loop(f, s, c) local n = 0 for _ in f, s, c do n = n + 1 if n >= 3 then break end end return n end
+local seen, order = {}, {}
+for i = 1, 40 do
+  for _, arg in ipairs({"nil", "table", "boolean"}) do
+    local ok, msg
+    if arg == "nil" then ok, msg = pcall(loop, io.lines, nil, nil)
+    elseif arg == "table" then ok, msg = pcall(loop, io.lines, {})
+    else ok, msg = pcall(loop, io.lines, false) end
+    local line = arg .. ": " .. tostring(ok) .. " " .. tostring(msg):gsub("^.-:%d+: ", "")
+    if not seen[line] then seen[line] = true order[#order + 1] = line end
+  end
+end
+return table.concat(order, " | ")`, true},
 }
 
 // TestTiered_StdlibNames runs each kernel three ways on this build -- interpreter only, force-all
