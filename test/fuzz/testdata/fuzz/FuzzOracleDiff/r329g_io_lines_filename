@@ -1,0 +1,2 @@
+go test fuzz v1
+string("print(pcall(io.lines, \"no-such-file\")) print(pcall(io.lines, \".\")) print(pcall(io.lines, 0)) print(pcall(io.lines, nil, 1)) print(type(io.lines))")
