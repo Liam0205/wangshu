@@ -1789,7 +1789,7 @@ os 库**纯 Go 实现**(roadmap §0 禁 cgo),用 Go `time`/`os` 包。跨平台�
 | `os.clock()` | 进程 CPU 时间(秒,浮点) | `time` 进程时间 | ✅ | 高精度浮点;用于计时 |
 | `os.date([fmt [, t]])` | 格式化时间(strftime 指令,§9.2) | 手写指令循环(`strftime`) | ✅ | fmt 默认 `"%c"`;`*t`/`!*t` 前缀返回 table;未定义指令原样输出(§9.2) |
 | `os.difftime(t2, t1)` | 时间差(秒) | `t2 - t1` | ✅ | 简单减法 |
-| `os.getenv(name)` | 环境变量 | `os.Getenv` | ✅ | 不存在返回 nil;**嵌入场景可禁用**(§9.3) |
+| `os.getenv(name)` | 环境变量 | `os.Getenv` | ✅ | 不存在返回 nil。原设计是「嵌入场景可禁用」(§9.3),那套开关没有实现(§12.1),现在宿主关不掉它 |
 | `os.exit([code [, close]])` | 退出进程 | — | ❌ 未注册 | 原计划做「不真退出」的简化版，实际没有注册（§9.5） |
 | `os.remove(filename)` | 删文件 | — | ❌ 未注册 | 同上（§9.5） |
 | `os.rename(old, new)` | 重命名 | — | ❌ 未注册 | 同上（§9.5） |
@@ -2255,7 +2255,7 @@ wangshu.NewState(wangshu.Options{Exclude: []string{"os.execute", "os.exit"}})
 | string | `string` 表 + **string 元表 `__index`**(§5.0) | `string.upper` + `s:upper()` 双入口 |
 | table | `table` 表 | `table.insert` 等 |
 | math | `math` 表 | `math.floor` 等;`math.pi`/`math.huge` 是表内常量 |
-| os | `os` 表 | `os.time` 等(危险函数受配置) |
+| os | `os` 表 | `os.time` 等五个只读函数(execute / exit / 文件操作没有注册,§9.5) |
 | io | `io` 表 + `io.stdout`/`stdin`/`stderr`(**真 file-handle userdata**,#205 已交付) | `io.write`/`io.read`/`io.lines` + 共享的 file 方法表(§10.2 / §10.2.1) |
 | coroutine | `coroutine` 表 | `coroutine.create` 等 |
 | debug | `debug` 表(#205 已注册) | `debug.traceback`/`getinfo`(09 §13);其余不提供 |
@@ -2287,8 +2287,12 @@ wangshu.NewState(wangshu.Options{Exclude: []string{"os.execute", "os.exit"}})
   另有两个测试把这份登记表和别处的说法连起来：`TestStdlibAbsentReasonsResolve` 要求登记理由里写的
   「exemptions: X」确实对应 `exemptions` 里名为 X 的条目；`TestStdlibAbsentIsInREADME` 要求登记表里的每个库名字
   都出现在两个语言版本 README 的「不提供」表里（`arg` 和文件句柄元表的 `__gc` 除外，它们不是脚本会调用的接口）。
-  三种构建是否一致由 `test/difftest/tiered_stdlib_names_test.go` 的 `TestTiered_StdlibNames` 检查，它断言
-  `PromotionCount() > 0`，保证比较的确实是升层之后的执行路径。
+  三种构建是否一致由 `test/difftest/tiered_stdlib_names_test.go` 的 `TestTiered_StdlibNames` 检查：六段脚本各在
+  只用解释器、强制升层、自然升温三种方式下执行，彼此比对并与 `lua5.1` 比对。它断言的是 `GibbousEntries() > 0`，
+  即执行确实进入过升层代码。**只断言 `PromotionCount() > 0` 是不够的**：那个数是「被编译的 Proto 个数」，而被宿主函数
+  调用的 Lua 函数（`pcall(f)` 里的 `f`）即使已经编译，那一帧也固定由解释器执行。这个测试的早期版本就是这样，
+  四段脚本里有两段的内核直接放在 `pcall` 下面，升了层却一次也没有在升层代码里执行过。现在需要出错的内核都经一个
+  Lua 包装函数调用（不能是尾调用），细节见 `llmdoc/guides/prove-the-path-under-test.md` §2.2c。
   名字清单里还包含「哪些名字是同一个函数对象」（每组一行「a == b : alias」）。官方 5.1.5 有两组，都是 5.0 的兼容名：
   `math.mod` 就是 `math.fmod`，`string.gfind` 就是 `string.gmatch`，脚本用 `==` 能看出区别。只比名字和类型时看不到
   这一点，`math.mod` 因此一直被注册成另一个闭包，2026-11-26 改成同一个对象。

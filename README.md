@@ -128,6 +128,7 @@ st := wangshu.NewState(wangshu.Options{
 st.GCCountKB()  // 当前已用 KB（live bytes；随 Collect 回落）
 st.ArenaCapKB() // arena backing 容量 KB（不够时翻倍；收集后超过预计用量两倍才缩，wangshu_p3 构建不缩；pool 层据此判 fat state 阈值）
 st.PromotionCount() // 已升层 proto 数（testing-only 白盒断言）
+st.GibbousEntries() // 执行进入升层代码的次数（testing-only）。升了层不等于在升层代码里执行过：被 pcall 等宿主函数直接调用的函数仍由解释器执行
 ```
 
 显式驱动 GC：
@@ -182,7 +183,7 @@ for i := 0; i < 1000; i++ {
 | C 未定义行为 | `string.char` 收到超出 int 范围的数（含 NaN、±inf） | 官方行为由 C 未定义行为决定，x86-64 与 arm64 结果不同；望舒固定采用 x86-64 的结果 |
 | 时区 | `os.time{isdst=...}` 贴着夏令时切换点的少数输入 | 所有平台都按 glibc 的规则解释，所以各平台结果一致；在 macOS / BSD 上可能与本机编译的官方 Lua 不同 |
 
-完整清单和每一条的理由在 `test/difftest/corners_test.go` 的 `exemptions`，可以用 `go test -v -run TestExemptions_Documented ./test/difftest/` 列出。各函数的细节见 [10-stdlib](docs/design/p1-interpreter/10-stdlib.md)。
+按类别的说明在 `test/difftest/corners_test.go` 的 `exemptions`，可以用 `go test -v -run TestExemptions_Documented ./test/difftest/` 列出；逐个名字的清单是同一个文件里的 `stdlibAbsent`，`TestDiff_StdlibNames` 用它对着官方 `lua5.1` 检查。各函数的细节见 [10-stdlib](docs/design/p1-interpreter/10-stdlib.md)。
 
 ## 正确性验证
 

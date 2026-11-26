@@ -129,6 +129,7 @@ Statistics:
 st.GCCountKB()  // currently used KB (live bytes; drops after Collect)
 st.ArenaCapKB() // arena backing capacity in KB (doubles when full; a collection shrinks it only when it is over twice the expected need, never under wangshu_p3; the pool layer uses this as its fat-state threshold)
 st.PromotionCount() // number of promoted Protos (testing-only white-box assertion)
+st.GibbousEntries() // times execution entered compiled code (testing-only). Promoted is not the same as executed compiled: a function invoked directly by a host function such as pcall still runs in the interpreter
 ```
 
 Explicit GC control:
@@ -183,7 +184,7 @@ Wangshu implements the Lua 5.1 core language, with the same syntax surface as Lu
 | C undefined behaviour | `string.char` given a number outside the int range (including NaN, ±inf) | The official result comes from C undefined behaviour and differs between x86-64 and arm64; Wangshu always uses the x86-64 result |
 | Time zones | A few `os.time{isdst=...}` inputs right at a DST transition | Every platform uses glibc's rule, so results agree across platforms; on macOS / BSD they can differ from a locally built official Lua |
 
-The full list, with the reason for each entry, is `exemptions` in `test/difftest/corners_test.go`; `go test -v -run TestExemptions_Documented ./test/difftest/` prints it. Per-function details are in [10-stdlib](docs/design/p1-interpreter/10-stdlib.md) (Chinese).
+The per-category notes are `exemptions` in `test/difftest/corners_test.go`; `go test -v -run TestExemptions_Documented ./test/difftest/` prints them. The name-by-name list is `stdlibAbsent` in the same file, which `TestDiff_StdlibNames` checks against the official `lua5.1`. Per-function details are in [10-stdlib](docs/design/p1-interpreter/10-stdlib.md) (Chinese).
 
 ## Correctness
 

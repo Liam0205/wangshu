@@ -21,6 +21,11 @@
   理由（`TestStdlibAbsentReasonsResolve`）；设计文档的表格不在其中。2026-11-26 用临时脚本机械核对过一次，当时不一致为 0。
   要不要加检查或者删掉总表，见 [#332](https://github.com/Liam0205/wangshu/issues/332)。
 
+- **【未做】`p4Corpus` 有 12 个出错路径用例升了层却从未进入原生码** — 内核直接放在 `pcall` 下面，而被宿主函数调用的
+  Lua 函数固定由解释器执行。2026-11-26 用 `State.GibbousEntries()` 扫出来的；把它们临时改写成经包装函数调用之后结果与
+  解释器、与 lua5.1 一致，没有发现缺陷。语料的修改和给 `TestP4_Tiered` / `TestP3_Tiered` 加执行侧断言，见
+  [#333](https://github.com/Liam0205/wangshu/issues/333)。规则见 [[prove-the-path-under-test]] §2.2c。
+
 - **【未做，等维护者决定】主块之下的 C 帧在两处取了相反的答案** — 栈回溯和 `debug.getinfo` 按独立的 `lua5.1`（末尾有
   `[C]: ?`，#279），C 调用深度按内嵌用法（下面 #281-#288 一条里登记的已知限制）。`FuzzOracleDiff` 的参照实现是内嵌用法，
   所以含 `debug.traceback` / `debug.getinfo(2)` 的脚本在那里两侧输出不同；现有语料里没有这两个名字，nightly 还没有报过。
