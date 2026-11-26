@@ -55,8 +55,8 @@ func TestIOHandles_MatchPUC(t *testing.T) {
 			"nil,Bad file descriptor,9"},
 		{"lines is a function", `return type(io.stdin:lines())`, "function"},
 		// io.lines distinguishes "no argument" from an explicit nil, as PUC's io_lines does: the nil
-		// takes the default-input branch and is then rejected as a file handle. Other non-strings
-		// fail luaL_checkstring before any file would be opened.
+		// takes the default-input branch and is then rejected as a file handle. A value that is
+		// neither a string nor a number fails luaL_checkstring before any file would be opened.
 		{"io.lines without arguments", `return type(io.lines())`, "function"},
 		{"io.lines explicit nil", `return tostring(select(2, pcall(io.lines, nil)))`,
 			"bad argument #1 to '?' (FILE* expected, got nil)"},

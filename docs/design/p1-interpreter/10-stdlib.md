@@ -1786,7 +1786,7 @@ os 库**纯 Go 实现**(roadmap §0 禁 cgo),用 Go `time`/`os` 包。跨平台�
 | `os.clock()` | 进程 CPU 时间(秒,浮点) | `time` 进程时间 | ✅ | 高精度浮点;用于计时 |
 | `os.date([fmt [, t]])` | 格式化时间(strftime 指令,§9.2) | 手写指令循环(`strftime`) | ✅ | fmt 默认 `"%c"`;`*t`/`!*t` 前缀返回 table;未定义指令原样输出(§9.2) |
 | `os.difftime(t2, t1)` | 时间差(秒) | `t2 - t1` | ✅ | 简单减法 |
-| `os.getenv(name)` | 环境变量 | `os.Getenv` | ✅ | 不存在返回 nil。原设计是「嵌入场景可禁用」(§9.3),那套开关没有实现(§12.1),现在宿主关不掉它 |
+| `os.getenv(name)` | 环境变量 | `os.Getenv` | ✅ | 不存在返回 nil。原设计是「嵌入场景可禁用」(§9.3),那套开关没有实现(§12.1),现在没有对应的开关 |
 | `os.exit([code [, close]])` | 退出进程 | — | ❌ 未注册 | 原计划做「不真退出」的简化版，实际没有注册（§9.5） |
 | `os.remove(filename)` | 删文件 | — | ❌ 未注册 | 同上（§9.5） |
 | `os.rename(old, new)` | 重命名 | — | ❌ 未注册 | 同上（§9.5） |
@@ -1949,7 +1949,7 @@ io 库涉及**文件句柄**(full userdata + `__gc`,01 §5.5 / 06 §10),是 stdl
 | `io.open(filename [, mode])` | 打开文件,返回 file handle | **❌ 缺口** | 需要文件系统访问控制 + `__gc` 关文件(§10.2 / §9.3);P1 不做 |
 | `io.close([file])` | 关闭文件（默认关闭默认输出） | ❌ 未注册 | 标准流的 `file:close` 已提供（返回 `(nil, msg)`）；全局形式没有注册（§10.1.1，#330） |
 | `io.flush()` | 刷新默认输出 | ❌ 未注册 | 标准流的 `file:flush` 已提供；全局形式没有注册（§10.1.1，#330） |
-| `io.lines([filename])` | 行迭代器 | △ **部分** | 无参形式（默认输入）已提供；`io.lines(filename)` **抬错**而不是静默返回空迭代器（依赖 open）。参数检查与官方 `io_lines` 一致：显式传 `nil` 不等于不传，报 `FILE* expected, got nil`；其他非字符串报 `string expected, got …`（2026-11-26） |
+| `io.lines([filename])` | 行迭代器 | △ **部分** | 无参形式（默认输入）已提供；`io.lines(filename)` **抬错**而不是静默返回空迭代器（依赖 open）。参数检查与官方 `io_lines` 一致：显式传 `nil` 不等于不传，报 `FILE* expected, got nil`；既不是字符串也不是数字的参数报 `string expected, got …`，数字和字符串一样当作文件名（2026-11-26） |
 | `io.input([file])`/`io.output([file])` | 取/设默认输入/输出 | ❌ 未注册 | 默认输入/输出固定为进程的 stdin/stdout（§10.1.1，#330） |
 | `io.type(obj)` | 判断是否 file handle(`"file"`/`"closed file"`/nil) | ❌ 未注册 | 没有注册（§10.1.1，#330） |
 | `file:read(...)` | 从 file 读(同 io.read 格式) | ✅(标准流) | 与 `io.read` 共用实现;读一个**只写**句柄返回 PUC 的 errno 三元组(§10.3) |
@@ -2281,11 +2281,15 @@ wangshu.NewState(wangshu.Options{Exclude: []string{"os.execute", "os.exit"}})
   另有两个测试把这份登记表和别处的说法连起来：`TestStdlibAbsentReasonsResolve` 要求登记理由里写的
   「exemptions: X」确实对应 `exemptions` 里名为 X 的条目；`TestStdlibAbsentIsInREADME` 要求登记表里的每个库名字
   都出现在两个语言版本 README 的「不提供」表里（`arg` 和文件句柄元表的 `__gc` 除外，它们不是脚本会调用的接口）。
-  三种构建是否一致由 `test/difftest/tiered_stdlib_names_test.go` 的 `TestTiered_StdlibNames` 检查：六段脚本各在
-  只用解释器、强制升层、自然升温三种方式下执行，彼此比对并与 `lua5.1` 比对。强制升层那一格，六段都断言
-  `GibbousEntries() > 0`，即执行确实进入过升层代码；只用解释器的那一格断言等于 0。自然升温那一格只对其中四段断言：
-  `missing_table_unpack_error` 在自然升温下两层都不进入升层代码，`math_mod_is_fmod` 只有 P4 进入，这两段的升层路径由
-  强制升层一格覆盖。**只断言 `PromotionCount() > 0` 是不够的**：那个数是「被编译的 Proto 个数」，而被宿主函数
+  三种构建是否一致由 `test/difftest/tiered_stdlib_names_test.go` 的 `TestTiered_StdlibNames` 检查：七段脚本各在
+  只用解释器、强制升层、自然升温三种方式下执行，彼此比对并与 `lua5.1` 比对。只用解释器的那一格断言
+  `GibbousEntries()` 等于 0。强制升层那一格断言 `GibbousEntries() > 0`，即执行确实进入过升层代码，只有一处例外：
+  `missing_table_unpack_error`（#329 的原始写法，先读一个不存在的字段再调用它）在 arm64 的 P4 上不升层，这一段在那里
+  只比对结果，并断言进入次数等于 0。P4 的原生翻译只接受内联缓存已经命中的 `GETTABLE`，读不存在的字段不会命中；
+  amd64 上原生翻译不接受的函数还能经 head-op replay 升层，arm64 没有这条路径。`missing_table_unpack_upvalue_error`
+  把同一个调用改成经 upvalue 取函数，P3 和两种架构的 P4 在强制升层下都进入升层代码。自然升温那一格只对其中四段断言：
+  `missing_table_unpack_error` 在自然升温下两层都不进入升层代码，`missing_table_unpack_upvalue_error` 和
+  `math_mod_is_fmod` 只有 P4 进入，这三段的升层路径由强制升层一格覆盖。**只断言 `PromotionCount() > 0` 是不够的**：那个数是「被编译的 Proto 个数」，而被宿主函数
   调用的 Lua 函数（`pcall(f)` 里的 `f`）即使已经编译，那一帧也固定由解释器执行，内核直接放在 `pcall` 下面时
   升了层也不会在升层代码里执行。所以需要出错的内核都经一个 Lua 包装函数调用（不能是尾调用：P3 下尾调用同样
   不进入升层代码），细节见 `llmdoc/guides/prove-the-path-under-test.md` §2.2c。
@@ -2445,7 +2449,7 @@ stdlib 的 shadow stack 纪律(§3)漏 Pin 是**最难调的 bug 类**(06 §6.3:
   超 int64 范围行为待 12 核对。
 - **`CheckFunction` 严格度 / pcall 的 f 放宽**(§2.6):`CheckFunction` 严格要 function tag;`pcall`/`xpcall` 的 f
   是否接受有 `__call` 的对象由 09 定,记口径。
-- ~~**`table.getn`/`setn` 是否提供**(§7.5)~~：已提供，与官方一致（`getn` 等于 `#t`，`setn` 报 `'setn' is obsolete`）。
+- ~~**`table.getn`/`setn` 是否提供**(§7.5)~~:已提供,与官方一致(`getn` 等于 `#t`,`setn` 报 `'setn' is obsolete`)。
 - ~~**`unpack` 大表上限措辞**(§4.5)~~:**已定稿(#201,2026-07-28)**——措辞是
   `"too many results to unpack"`,上限是 `LUAI_MAXCSTACK`(8000)**减去参数个数**,84 种写法与 oracle 逐字节
   一致,详见 §4.5。
