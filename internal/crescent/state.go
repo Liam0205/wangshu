@@ -211,8 +211,8 @@ type State struct {
 	safepointCalls int64
 
 	// gibbousEntries counts how many times Go handed control to a promoted function's compiled code:
-	// every GibbousCode.Run, i.e. enterGibbous and the interpreter's tail-call entry (white-box
-	// probe). PromotionCount says a Proto was compiled; only this says compiled code ran. Read only
+	// every GibbousCode.Run, i.e. enterGibbous and the interpreter's tail-call entry, which only P4
+	// takes (white-box probe). PromotionCount says a Proto was compiled; only this says compiled code ran. Read only
 	// by tests.
 	gibbousEntries int64
 

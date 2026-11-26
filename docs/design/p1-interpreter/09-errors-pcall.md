@@ -1314,7 +1314,7 @@ debug.traceback(message, level):
 
 - **`what` 参数**:Lua 5.1 用字符串选要哪些字段(`"n"`=name,`"S"`=source,`"l"`=line,`"u"`=ups,`"f"`=func)。
   望舒按 `what` 裁剪,未知字母报 `invalid option`;另支持 `"L"`(activelines,只在第一个参数是 Lua 函数时填)。
-  与官方的差别:`>` 被当成合法字母接受,官方对脚本传入的 `>` 报 `invalid option`
+  与官方的差别:`>` 被当成合法字母接受;官方在函数参数形式下、以及栈层级形式下 `>` 不在首位时报 `invalid option`
   ([#335](https://github.com/Liam0205/wangshu/issues/335))。
 - **给 traceback 提供数据**:`debug.traceback` 内部对每帧调 `getinfo`(等价)取 `short_src`/`currentline`/`name`。
   P1 的 `traceback`(§7.2)直接遍历 CallInfo 不必经脚本可见的 `getinfo`,但 `getinfo` 暴露同样的信息给脚本。
