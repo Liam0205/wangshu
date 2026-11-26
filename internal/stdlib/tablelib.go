@@ -1864,7 +1864,7 @@ func makeLineIterator(st *crescent.State, readable bool) value.Value {
 // debugFns is the P1 subset: traceback and getinfo (09 §13). The other twelve functions of
 // 5.1's debug library (sethook, gethook, getlocal, setlocal, getupvalue, setupvalue,
 // getregistry, getmetatable, setmetatable, getfenv, setfenv, debug) stay out -- 10 §14 lists
-// them in the ❌ column, and 09 §13.3 gives the reason for each.
+// them in the ❌ column, and 09 §13.3 has a note on each.
 var debugFns = []entry{
 	{"traceback", debugFnTraceback},
 	{"getinfo", debugFnGetInfo},
@@ -1927,10 +1927,12 @@ func debugFnTraceback(st *crescent.State, args []value.Value) ([]value.Value, *c
 
 // debugFnGetInfo: debug.getinfo(level | func [, what]) -> table | nil.
 //
-// The fields P1 can fill honestly are source/short_src/currentline/what/linedefined and
-// func; the function-argument form adds lastlinedefined for a Lua function and activelines
-// under the "L" option, both derived from the proto. name, namewhat and nups are omitted
-// rather than faked -- a wrong field is worse than an absent one for a caller that tests it.
+// It fills what can be derived honestly: source/short_src/what/linedefined/currentline in
+// every form; func wherever there is a function to give (not for a C frame or a tail-call
+// placeholder reached by level); and, for a Lua function passed as the argument,
+// lastlinedefined plus activelines under "L". name, namewhat and nups are omitted rather
+// than faked -- a wrong field is worse than an absent one for a caller that tests it. A
+// thread as the first argument is not supported. 09 §13.4 has the table by query form.
 func debugFnGetInfo(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
 	if len(args) == 0 {
 		return nil, crescent.NewArgError(1, "function or level expected")
