@@ -34,10 +34,12 @@ func registerBaseEnv(st *crescent.State) {
 
 // baseFnCollectGarbage: collectgarbage([opt [, arg]]) (10 §4.6; 06 GC control).
 //
-// collect (full GC) / count (KB) / stop / restart behave as in 5.1. setpause sets the
-// collector's pause ratio and setstepmul stores a value the collector does not use; both return
-// the previous value, as lua_gc does. step runs a full collection (there is no incremental
-// collector to step) and returns true, where 5.1 returns whether the step finished a cycle.
+// collect (full GC), count (KB) and restart behave as in 5.1; so does stop, except that a later
+// collect or step leaves automatic collection off where 5.1 turns it back on (#354). setpause
+// sets the collector's pause ratio and setstepmul stores a value the collector does not use;
+// both return the previous value, as lua_gc does. step runs a full collection (there is no
+// incremental collector to step) and returns true, where 5.1 returns whether the step finished
+// a cycle.
 func baseFnCollectGarbage(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
 	opt := "collect"
 	if len(args) >= 1 && args[0] != value.Nil {
