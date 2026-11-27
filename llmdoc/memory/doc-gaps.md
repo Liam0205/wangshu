@@ -38,7 +38,8 @@
   删除一个键、又插入了别的键之后，`next(t, 已删除的键)` 报不报错（节点被接管或被 rehash 丢掉就报错），两边可能不同，两个方向都有；
   `test/difftest` 的 `TestDiff_NextOnRemovedKeyAfterStores` 的前三段固定了这一点。同一个 issue 里还记着一处与 `ltable.c` 的不同：官方的
   `luaH_set` 给「赋 nil 的不存在的键」和「被 `__newindex` 接走的赋值」也建节点（之后 `next` 认得这个键，建节点还可能引起 rehash），
-  望舒不建；同一个测试的后三段固定了它。见
+  望舒不建；同一个测试的后三段固定了它。布局还决定数组部分的大小，所以有空洞的表的 `#t`、对落在数组部分范围内的整数键调用 `next`
+  的结果也可能与官方不同（例子在 issue 的评论里）。见
   [#349](https://github.com/Liam0205/wangshu/issues/349)。
 
 - **【未修，产品缺陷】多值展开构造的表里有 nil 时，`#t` 和 `unpack(t)` 可能与官方不同** — 表构造式以多值展开结尾
