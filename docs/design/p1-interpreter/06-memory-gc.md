@@ -649,7 +649,8 @@ type Collector struct {
 1. **mark 阶段登记**(修改 §5.2 Table 扫描行):`scanObject(Table)` 先经 `object.Table.WeakMode()`(07 §13.4 下沉的 object 侧 helper,读元表 `__mode` 解析 `'k'`/`'v'`)判定——非弱表照旧全扫;弱表**弱侧不标记**(weak value 不扫 val、weak key 不扫 key;P1 简化:weak key 表的 val 无条件标活,07 §13.5),并把该表 GCRef 登记进 `weakList`。metaRef 恒扫(元表自身是强引用)。
 2. **clearWeakTables 阶段**(§8.2 主流程,位于 separateFinalizers 之后、sweep 之前):遍历 `weakList`,对每表遍历全部 entry,移除「弱侧对象为本轮死白」的 entry(key 或 val 是 collectable 且 `colorOf == deadWhite()`)。移除即把值置 Nil(数组槽置 Nil;node 只清 val,key 和 next 保留,节点成为已删除状态,并在 word2 的第 32 位记下「值是回收器清掉的」,[01](./01-value-object-model.md) §5.2),**不**触发 rehash(GC 内不分配)。键本身指向本轮死白对象时,把键换成 `object.DeadKey`。该表有条目被清或有键被替换时 `BumpGen` 一次。
    保留键是为了让正停在这个条目上的遍历能继续：`for k, v in pairs(weak) do ... collectgarbage() end` 里，回收清掉了当前条目的值，
-   下一步 `next(weak, k)` 仍然要能找到 `k`（官方 `cleartable` 的 `removeentry` 也只清值）。
+   下一步 `next(weak, k)` 仍然要能找到 `k`。官方的 `cleartable` 清值之后用 `removeentry` 把可回收的键改成 `LUA_TDEADKEY`，键指向的对象还活着也一样；
+   它的 `next` 按地址认得 dead key，遍历同样可以继续。望舒只在键指向的对象已死时才替换键，由此带来的差异见第 3 点末尾。
 3. **已删除节点里的键（clearDeadKeys）**：脚本用 `t[k] = nil` 删除的键留在节点里（[01](./01-value-object-model.md) §5.2），但节点不该让键指向的
    对象一直存活。mark 阶段遇到已删除的节点时不标记它的键（赋 nil 留下的字符串除外，见下），并把表登记进 `deadKeyList`；`clearDeadKeys` 在 sweep 之前遍历
    这些表，把指向死白对象的键换成 `object.DeadKey` 并 `BumpGen`。弱表里已删除的节点由 `clearWeakTables` 用同样的办法处理。
@@ -680,7 +681,7 @@ type Collector struct {
      这个代价要不要接受、换成哪种做法，记在 [#352](https://github.com/Liam0205/wangshu/issues/352)。
 
    登记在 `test/difftest/corners_test.go` 的 `exemptions` 和 README 的差异表里，`TestDiff_NextFromCollectedStringKey` 固定望舒一侧的结果
-   （官方一侧取决于分配器，只记录、不断言）。回收器清掉的条目，两边都不让它的字符串键存活，剩下的差别只在官方按地址认已回收的键：
+   （官方一侧取决于分配器，只记录、不断言）。回收器清掉的条目，两边都不让它的字符串键存活，对这种键调用 `next` 时剩下的差别只在官方按地址认已回收的键（把还活着的键写回去时的差别见本点末尾）：
    重新拼出来的字符串正好分配在原地址上时官方的 `next` 成功，望舒一律报错，`TestDiff_NextFromKeysOfClearedEntries` 固定望舒一侧的结果。
    官方有一类永远不回收的字符串：保留字、`ltm.c` 列的 17 个元方法名（没有 `__tostring` 和 `__metatable`）和 `"not enough memory"`（`llex.c`、`ltm.c`、`lstate.c` 里的 `luaS_fix`）。它们作键时，被清掉的条目的 dead key 一直指向
    还活着的对象，官方的 `next` 每次都成功；望舒不固定任何字符串：键没有别的引用时照常被回收，`next` 报错；另有引用时（`__index` 是字符串元表的键，`__mode` 是弱表自己元表的键）两边都成功。这一种两边的结果都是确定的，
@@ -691,6 +692,9 @@ type Collector struct {
    之后，同一个键再次写入时找不到原节点、按新键插入（可能引起 rehash，丢掉其他已删除的键）。望舒只替换对象已死的键，活着的键不管
    隔了几次回收都写回原节点。`TestDiff_NextOnRemovedKeyAfterStores` 的 `same_keys_stored_again_after_a_collection` 固定两边各自的结果，
    `…_weak_keys_and_values` 固定键和值都弱的表上、键另有引用时两边相同（删掉的字符串键没有别的引用、又不是官方永远不回收的那几种时，官方把它回收，写回去的新字符串不在原地址上就按新键插入）。
+   回收器清掉的弱表条目没有这个例外：官方的 `cleartable` 清值之后接着执行 `removeentry`，三种弱表模式都一样（键和值都弱的表在标记阶段被跳过，
+   `cleartable` 照样处理它），所以被清掉的条目的键即使另有引用，写回去在官方也是新键，可能接管别的已删除节点或者引起 rehash；望舒写回原节点。
+   `keys_of_cleared_entries_stored_again_weak_values` 和 `…_weak_keys_and_values` 固定两边各自的结果。
    遍历过程中继续使用某个键的调用方（`next` 的调用者、`table.foreach`、公开 API 的 `Table.ForEach`）自己保证这个键可达。
 4. **可观察性**:cleartable 移除 entry 影响后续 `pairs`/`next` 产出,与 `pairs` 序、`tostring` 地址同类,纳入 §11 / [12](./12-testing-difftest.md) 的差分口径。
 
