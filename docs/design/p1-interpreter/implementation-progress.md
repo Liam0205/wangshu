@@ -1134,7 +1134,7 @@ arena 大小跟着比例变。`TestTiered_StdlibNames` 加一段
 | 主位置上已删除的节点可以被新键接管，保留链接 | `rawtable.go::insertNewKey` | 对应官方 `newkey` 的 `ttisnil(gval(mp))`；节点可能在别的冲突链中间，所以 `next` 不动 |
 | 找空闲节点时跳过已删除的节点 | `rawtable.go::findFreeNode` | 判断条件没有变（键为 Nil 才算空闲），变的是已删除的节点现在有键 |
 | 已删除的节点没有 IC 位置 | `ic.go::rawGetWithLoc` | 返回 `locNone`，IC 不会回填到没有值的节点上 |
-| 已删除节点里的键不让对象存活，字符串除外 | `gc/mark.go::scanTable` | 对应官方 `traversetable` 的 `removeentry` |
+| 已删除节点里的键不让对象存活，赋 nil 留下的字符串除外 | `gc/mark.go::scanTable`、`object.NodeClearedByCollector` | 对应官方 `traversetable` 的 `removeentry` |
 | 对象已死的键在 sweep 之前换成 `object.DeadKey` | `gc/sweep.go::clearDeadKeys`、`clearWeakTables` | 强表登记在 `deadKeyList`；节点仍然是已删除状态，见 [06 §8.4](./06-memory-gc.md) |
 | 弱表清项只清值，键保留 | `gc/sweep.go::clearWeakTables` | 遍历弱表时回收清掉了当前条目，遍历可以继续 |
 | `table.foreach` 和公开 API 的 `Table.ForEach` 在回调期间固定当前的键 | `stdlib/tablelib.go`、`table.go` | 回调清掉条目、丢掉键再回收时，下一步仍然要从这个键继续；官方的 `lua_next` 把键留在 C 栈上 |
@@ -1157,16 +1157,18 @@ arena 大小跟着比例变。`TestTiered_StdlibNames` 加一段
    以及对落在数组部分范围内的整数键调用 `next` 的结果，在一部分脚本上与修改前不同。这两项与官方不同是修改前就有的（数组部分的
    大小取决于布局，#349），这次改动只改变了哪些脚本会碰到。
 4. 遍历弱表时发生回收、当前条目被清掉，遍历可以继续。
-5. 强表里作为键被删除的字符串会多存活到所在的表下一次 rehash；原地清空之后闲置的表不释放它放过的字符串键（见下面「与官方不同、有意保留」）。
-   弱表不这样：弱表里已删除节点的字符串键不被保活，值被回收器清掉的条目，键在下一轮回收时就可以释放。
+5. 用 `t[k] = nil` 删掉的字符串键会多存活到它的节点被接管或者所在的表 rehash；原地清空之后闲置的表不释放它放过的字符串键（见下面
+   「与官方不同、有意保留」）。弱表里值被回收器清掉的条目不这样：它的字符串键不被保活，下一轮回收时就可以释放。两种节点靠节点第三个字的
+   第 32 位区分。
 6. 删除一个键之后又有键写入，`next(t, 已删除的键)` 报不报错取决于那个节点有没有被接管或者被 rehash 丢掉。两边可能一个报错、一个继续，
    两个方向都有，原因有五个：哈希部分的布局与官方不同（[#349](https://github.com/Liam0205/wangshu/issues/349)）；官方每次回收都把
-   已删除的键标成 dead key，之后同一个键写回去按新键插入、可能引起 rehash，望舒总是写回原节点；官方给不存在的键赋 nil、或者赋值被
+   已删除的键里可回收的那些（数字和布尔值不算）标成 dead key，之后同一个键写回去按新键插入、可能引起 rehash，望舒里只要键的对象还活着就写回原节点；官方给不存在的键赋 nil、或者赋值被
    `__newindex` 接走时也会给键建一个节点（占掉空闲节点、可能引起 rehash），望舒不建；对象作键时按地址取哈希，地址两边不同；
    官方回收之后按地址认已删除的键，从来没有进过表的新对象正好分配在已回收的键的地址上时也被接受，望舒一律报错。
    修改前望舒在这种情况下一律报错。
    第四个原因在望舒内部也起作用：对象的地址取决于之前分配和回收过什么，所以删除之后又插入对象键时，同一段脚本在不同的回收时机下
-   结果可能不同（40 张表各删一个字符串键、再各插入两个新表作键，脚本开头有没有一次 `collectgarbage()`，40 个结果里有 3 个不同）。
+   结果可能不同（40 张表各删一个字符串键、再各插入两个新表作键：`TestNextOnRemovedKey_ObjectKeysInsertedAfterwards` 把这段脚本在普通回收和
+   每个安全点都回收两种方式下各执行一遍并记录结果，40 个结果里有 3 个不同）。
    含对象键的表的遍历顺序修改前就随回收时机变化；`next(t, 已删除的键)` 修改前一律报错，现在跟着布局变。
    第五个原因修改前就有，修改前后望舒的结果相同（30 轮、每轮 200 个新表，官方接受 29 到 30 个，望舒是 0）。
    第三个原因本身修改前就有（`t.x = nil` 之后 `next(t, "x")`，官方成功、望舒报错）；修改前它引起 rehash 的那一半看不出来，因为那时
@@ -1181,10 +1183,11 @@ arena 大小跟着比例变。`TestTiered_StdlibNames` 加一段
 - `test/difftest`：`TestDiff_ClearWhileTraversing`，17 段结果与遍历顺序无关的脚本，不经过 prelude，直接与 `lua5.1` 比较，在普通回收
   和每个安全点都回收两种方式下各执行一遍；`nextvar.lua` 的「erasing values」一段原样收在里面。`TestTiered_ClearWhileTraversing`，6 段
   脚本在 P3 / P4 下按「解释器预热、再强制升层」执行，断言进入了升层代码。`TestDiff_NextFromCollectedStringKey` 固定上面第 2 条里与官方
-  不同的那一种情况（见下）。
+  不同的那一种情况（见下）。`TestDiff_NextFromKeysOfClearedEntries`、`TestRemovedStringKeysOfWeakValuedTable` 固定弱表上两种已删除节点
+  各自的结果。
 - `test/api`：`TestTableForEach_ClearingEntries`。
 
-变异验证：26 处改动逐个撤掉或改坏，每一处都有测试失败。其中「接管时不 bump」由单元测试和 P3 下的
+变异验证：31 处改动逐个撤掉或改坏，每一处都有测试失败。其中「接管时不 bump」由单元测试和 P3 下的
 `deleted_global_node_taken_over` 发现（P4 下没有分层用例能看到它：P4 的内联路径都不写入 nil，删除总是经过表操作、在删除时 bump）；
 「删除时不 bump」只由单元测试发现（现在没有哪个内联路径的正确性依赖这一次 bump，见下面 P4 模板一段）；P4 模板「不内联写入 nil」
 这一项只由模板的字节布局测试发现（去掉它之后槽位变成 nil，下一次赋值照样退回宿主，行为上没有差别）。把同一份 `TestDiff_ClearWhileTraversing` 放到修改前的 master 上，
@@ -1192,13 +1195,13 @@ arena 大小跟着比例变。`TestTiered_StdlibNames` 加一段
 
 **与官方不同、有意保留**：
 
-- 强表里已删除的节点让字符串键存活。`t[k] = nil`、回收、再用重新拼出来的同内容字符串调用 `next(t, k)`，望舒从原位置继续；官方不让这样的键
+- 赋 nil 留下的已删除节点让字符串键存活。`t[k] = nil`、回收、再用重新拼出来的同内容字符串调用 `next(t, k)`，望舒从原位置继续；官方不让这样的键
   存活，回收之后只按对象地址认它，新字符串没有正好分配到原地址上就报 `invalid key to 'next'`。没有发生回收时两边相同。官方的结果
-  取决于回收有没有在中间发生；望舒里回收本身不改变这个键能不能找回节点（节点被后来插入的键接管或者 rehash 时除外，见第 6 条）。代价是内存：被删除的字符串键要到下一次 rehash 才能回收，原地清空之后闲置的表会一直
+  取决于回收有没有在中间发生；望舒里回收本身不改变这个键能不能找回节点（节点被后来插入的键接管或者 rehash 时除外，见第 6 条）。代价是内存：被删除的字符串键要等节点被接管或者表 rehash 才能回收，原地清空之后闲置的表会一直
   占着它们（10 万个约 105 字节的键，清空并回收之后官方剩 5402KB，望舒仍是 15584KB）。这个取舍要不要保留记在
   [#352](https://github.com/Liam0205/wangshu/issues/352)。`TestDiff_NextFromCollectedStringKey` 固定望舒一侧的结果。
-  弱表不保活（上面第 5 条），所以这个代价不落在弱值缓存上；弱表上剩下的差别是官方按地址认已回收的键，
-  `TestDiff_NextFromCollectedKeysOfWeakTables` 固定望舒一侧的结果。
+  回收器清掉的弱表条目不保活（上面第 5 条），所以这个代价不落在弱值缓存上；这种条目上剩下的差别是官方按地址认已回收的键，
+  `TestDiff_NextFromKeysOfClearedEntries` 固定望舒一侧的结果。
 - 上面第 6 条。`TestDiff_NextOnRemovedKeyAfterStores` 固定七段脚本两边各自的结果：前三段的原因是布局，#349 解决之后应当变成两边
   相同；第四段的原因是回收，它与上一条是同一个取舍（回收本身不改变已删除的键能不能找回节点）；后三段的原因是官方给「不留下值的赋值」
   也建节点，要不要照做记在 #349（[01 §5.2](./01-value-object-model.md)）。对象作键的那个原因没有固定的结果可以断言，
