@@ -19,49 +19,68 @@ import (
 // still runs in the interpreter (see tieredStdlibNameCases).
 //
 // pre runs before the kernel is defined and sets up the upvalue u.
-var tieredErrorNameCases = []struct{ name, pre, kernel string }{
+//
+// compiled says whether force-all runs the kernel compiled on this build, which the test asserts
+// in both directions. The kernels that call do on every build. The others read or store through a
+// table access whose inline cache never holds a hit: see errorNameIndexKernelsRunCompiled.
+var tieredErrorNameCases = []struct {
+	name, pre, kernel string
+	compiled          bool
+}{
 	// The callee's name when the call's results go to two or three locals: luac puts one MOVE per
 	// result between the CALL and the RETURN.
 	{"call_nil_upvalue_two_results", `local u = table.nosuch`, `
   local a, b = u(t)
   return a,
-    b`},
+    b`, true},
 	{"call_nil_upvalue_three_results", `local u = table.nosuch`, `
   local a, b, c = u(t)
   return a,
     b,
-    c`},
+    c`, true},
 	{"host_function_argument_error_two_results", `local u = string.rep`, `
   local a, b = u(t)
   return a,
-    b`},
+    b`, true},
 	{"call_nil_upvalue_one_result", `local u = table.nosuch`, `
   local a = u(t)
-  return a`},
+  return a`, true},
 	{"call_nil_upvalue_no_result", `local u = table.nosuch`, `
   u(t)
-  return 1`},
+  return 1`, true},
 	// Indexing an upvalue that is nil, for reading and for writing, at an instruction that is not
 	// the function's first.
 	{"index_nil_upvalue_two_results", `local u = table.nosuch`, `
   local a, b = u.x
   return a,
-    b`},
+    b`, errorNameIndexKernelsRunCompiled},
 	{"index_nil_upvalue_one_result", `local u = table.nosuch`, `
   local a = u.x
-  return a`},
+  return a`, errorNameIndexKernelsRunCompiled},
 	{"store_to_nil_upvalue", `local u = table.nosuch`, `
   u.x = 1
-  return 1`},
+  return 1`, errorNameIndexKernelsRunCompiled},
 	{"store_to_nil_upvalue_after_other_statements", `local u = table.nosuch`, `
   local n = t[1]
   local m = n
   u.x = m
-  return m`},
+  return m`, errorNameIndexKernelsRunCompiled},
 	{"index_nil_field_two_results", ``, `
   local a, b = t.nosuch.x
   return a,
-    b`},
+    b`, errorNameIndexKernelsRunCompiled},
+	// A store to a global and a read of one, each reaching a metamethod of the globals table that
+	// raises with level 2: the position in the message is the line of the kernel's own instruction.
+	// Neither is the function's first instruction.
+	{"store_to_global_reaches_newindex", `setmetatable(_G, {__newindex = function(t, k) error("newindex " .. k, 2) end})`, `
+  local n = t[1]
+  zz339_g = n
+  return n`, errorNameIndexKernelsRunCompiled},
+	{"read_of_global_reaches_index", `setmetatable(_G, {__index = function(t, k) error("index " .. k, 2) end})`, `
+  local n = t[1]
+  local a = zz339_nosuch
+  a = n
+  return a`, errorNameIndexKernelsRunCompiled},
 }
 
 func tieredErrorNameScript(pre, kernel string) string {
@@ -79,12 +98,11 @@ return table.concat(out, " / ")`
 
 // TestTiered_ErrorNames runs each kernel three ways on this build -- interpreter only, force-all
 // promoted, and promoted from natural heat -- and requires all three to agree with each other and
-// with lua5.1. It logs how often execution entered compiled code, and requires that across the
-// whole table it did under force-all: which kernels a tier compiles differs between P3, P4 on
-// amd64 and P4 on arm64, and a kernel that is not compiled is still a valid comparison.
+// with lua5.1. For each kernel it requires that force-all entered compiled code where the case
+// says the build compiles it, and did not where it says the build does not: a kernel that stops
+// being compiled would otherwise leave its case comparing the interpreter with itself.
 func TestTiered_ErrorNames(t *testing.T) {
 	oracle := findOracle()
-	var forcedEntries int64
 	for _, c := range tieredErrorNameCases {
 		t.Run(c.name, func(t *testing.T) {
 			src := tieredErrorNameScript(c.pre, c.kernel)
@@ -107,15 +125,19 @@ func TestTiered_ErrorNames(t *testing.T) {
 			if got := runAutoOnce(t, prog, forced, "force-all"); got != baseline {
 				t.Errorf("force-all diverged from the interpreter:\n  force-all:   %q\n  interpreter: %q", got, baseline)
 			}
-			forcedEntries += forced.GibbousEntries()
+			switch n := forced.GibbousEntries(); {
+			case c.compiled && n == 0:
+				t.Errorf("force-all never entered compiled code (%d protos promoted): this kernel does not exercise the tier",
+					forced.PromotionCount())
+			case !c.compiled && n != 0:
+				t.Errorf("force-all entered compiled code %d times on a build recorded as not compiling this kernel: "+
+					"errorNameIndexKernelsRunCompiled is out of date", n)
+			}
 			auto := newAutoState()
 			if got := runAutoOnce(t, prog, auto, "auto"); got != baseline {
 				t.Errorf("auto diverged from the interpreter:\n  auto:        %q\n  interpreter: %q", got, baseline)
 			}
 			t.Logf("entries into compiled code: force-all %d, auto %d", forced.GibbousEntries(), auto.GibbousEntries())
 		})
-	}
-	if forcedEntries == 0 {
-		t.Errorf("no kernel entered compiled code under force-all: this test does not exercise the tier")
 	}
 }
