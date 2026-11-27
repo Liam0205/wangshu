@@ -147,6 +147,17 @@ func TestPJ4Templates_Execute(t *testing.T) {
 	sentinel := math.Float64bits(-1)
 	table := tmplTable | tmplHeadWord*8
 
+	// Executable pages exist on linux and, with cgo, on darwin/arm64; a build for another
+	// platform (a darwin/arm64 one without cgo, say) has a stub that returns an error.
+	if probe, err := archMmapCode(archEmitLoadKReturn(nil, 0)); err != nil {
+		if runtime.GOOS == "linux" {
+			t.Fatalf("archMmapCode: %v", err)
+		}
+		t.Skipf("no executable pages on this platform: %v", err)
+	} else if err := probe.Dispose(); err != nil {
+		t.Fatalf("Dispose: %v", err)
+	}
+
 	for _, f := range tmplForms() {
 		cases := tmplArrayCases
 		if f.node {
@@ -159,13 +170,10 @@ func TestPJ4Templates_Execute(t *testing.T) {
 					t.Fatalf("archMmapCode: %v", err)
 				}
 				defer func() {
-					if err := page.Munmap(); err != nil {
-						t.Errorf("Munmap: %v", err)
+					if err := page.Dispose(); err != nil {
+						t.Errorf("Dispose: %v", err)
 					}
 				}()
-				if page.Addr() == 0 {
-					t.Skip("no executable pages on this platform")
-				}
 
 				w, valueWord := tmplArena(f.node, c, old)
 				before := append([]uint64(nil), w...)

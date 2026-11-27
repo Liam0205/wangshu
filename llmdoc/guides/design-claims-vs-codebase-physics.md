@@ -75,7 +75,7 @@ SETGLOBAL / SETTABLE NodeHit 和 P3 wasm 常量键 SETTABLE NodeHit 还会检查
 | consumer | 守卫 | 位置 |
 |---|---|---|
 | P4 native GETGLOBAL / SETGLOBAL NodeHit | gen + slot != Nil | `peroptranslator/emit_ops_amd64.go` `emitInlineGetGlobalNodeHit` / `emitInlineSetGlobalNodeHit`;arm64 见 `emit_arm64.go` `emitInlineGetGlobalNodeHitArm64` / `emitInlineSetGlobalNodeHitArm64` |
-| P4 native GETTABLE / SETTABLE NodeHit | gen + **NodeKey** + slot != Nil | `emit_ops_amd64.go` Guard 5;`emit_arm64.go` `emitInlineGetTableNodeHitArm64` / `emitInlineSetTableNodeHitArm64`(那里编号 Guard 4) |
+| P4 native GETTABLE / SETTABLE NodeHit | gen + 下标在表内(`index <= hmask` 且 `nodeRef != 0`) + **NodeKey** + slot != Nil | `emit_ops_amd64.go` Guard 5;`emit_arm64.go` `emitInlineGetTableNodeHitArm64` / `emitInlineSetTableNodeHitArm64`(那里编号 Guard 4) |
 | P3 wasm GETGLOBAL / SETGLOBAL NodeHit | gen + slot != Nil | `wasm/translate_table.go` `emitGetGlobal` / `emitSetGlobal` |
 | P3 wasm 常量键 GETTABLE / SETTABLE / SELF NodeHit | IsTable + TableRef + gen + slot != Nil | `wasm/translate_table.go` `tableInlineable` → `emitTableGuard` + `emitSlotBase` |
 | 解释器 `icGetTable` / `icSetTable` | gen + NodeKey 复验 + slot != Nil | `crescent/ic.go`(不是 gen-only,gen 只是快速否决) |
