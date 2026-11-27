@@ -2094,6 +2094,13 @@ func analyzeCallVoidForm(proto *bytecode.Proto) (shapeInfo, bool) {
 		if rtA != clA+nret {
 			return shapeInfo{}, false
 		}
+		// Exactly nret MOVEs sit between the CALL and the RETURN. Run derives
+		// the CALL's pc from retPC and nret, and executes only these nret
+		// copies: a further MOVE in the gap would be dropped and would shift
+		// the pc the host is handed.
+		if retIdx != callIdx+1+int(nret) {
+			return shapeInfo{}, false
+		}
 		// Verify the N intermediate MOVE copies (luac emits R(callA+nret+k) ← R(callA+k))
 		for k := 0; k < nret; k++ {
 			mv := proto.Code[callIdx+1+k]
