@@ -3,6 +3,7 @@
 package difftest
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/Liam0205/wangshu"
@@ -101,46 +102,114 @@ return table.concat(out, " / ")`
 // with each other and with lua5.1. For each kernel it requires that force-all entered compiled
 // code where the case says the build compiles it, and did not where it says the build does not: a
 // kernel that stops being compiled would otherwise leave its case comparing the interpreter with
-// itself. The run under lowered thresholds is not required to enter compiled code, and for most
-// kernels here it does not (its count is logged): it only checks that whatever heat promotes
-// gives the same result.
+// itself. The run under lowered thresholds is not required to enter compiled code, and for many
+// kernels it does not (its count is logged): it only checks that whatever heat promotes gives
+// the same result.
 func TestTiered_ErrorNames(t *testing.T) {
 	oracle := findOracle()
 	for _, c := range tieredErrorNameCases {
-		t.Run(c.name, func(t *testing.T) {
-			src := tieredErrorNameScript(c.pre, c.kernel)
-			prog, err := wangshu.Compile([]byte(src), "errnames")
-			if err != nil {
-				t.Fatalf("wangshu compile: %v", err)
-			}
-			interp := newInterpBaselineState()
-			baseline := runAutoOnce(t, prog, interp, "baseline")
-			if n := interp.GibbousEntries(); n != 0 {
-				t.Errorf("the interpreter-only baseline entered compiled code %d times", n)
-			}
-			if oracle != "" {
-				if want := runOracle(t, oracle, wrapForOracle(src)); baseline != want {
-					t.Errorf("interpreter vs oracle:\n  wangshu: %q\n  oracle:  %q", baseline, want)
-				}
-			}
-			forced := wangshu.NewState(wangshu.Options{})
-			forced.SetForceAllPromote(true)
-			if got := runAutoOnce(t, prog, forced, "force-all"); got != baseline {
-				t.Errorf("force-all diverged from the interpreter:\n  force-all:   %q\n  interpreter: %q", got, baseline)
-			}
-			switch n := forced.GibbousEntries(); {
-			case c.compiled && n == 0:
-				t.Errorf("force-all never entered compiled code (%d protos promoted): this kernel does not exercise the tier",
-					forced.PromotionCount())
-			case !c.compiled && n != 0:
-				t.Errorf("force-all entered compiled code %d times on a build recorded as not compiling this kernel: "+
-					"errorNameIndexKernelsRunCompiled is out of date", n)
-			}
-			auto := newAutoState()
-			if got := runAutoOnce(t, prog, auto, "auto"); got != baseline {
-				t.Errorf("auto diverged from the interpreter:\n  auto:        %q\n  interpreter: %q", got, baseline)
-			}
-			t.Logf("entries into compiled code: force-all %d, auto %d", forced.GibbousEntries(), auto.GibbousEntries())
-		})
+		t.Run(c.name, func(t *testing.T) { checkErrorNameKernel(t, oracle, c.pre, c.kernel, c.compiled) })
 	}
+}
+
+// tieredErrorNameFarCases are kernels whose faulting instruction lies beyond pc 255: errorNameFarPad
+// precedes each tail. The P4 replay path keeps the pc of an instruction in a field of its own for
+// each kind of instruction (head ops, FORPREP, TFORLOOP, the side effects, the calls), and a field
+// that is too narrow hands the host the pc of an earlier instruction: the error then names no
+// variable and reports that instruction's line. The cases go through each of those fields.
+//
+// compiled is as in tieredErrorNameCases: the four kernels whose faulting instruction is a table
+// or global access do not run compiled where errorNameIndexKernelsRunCompiled is false.
+var tieredErrorNameFarCases = []struct {
+	name, pre, tail string
+	compiled        bool
+}{
+	{"index_nil_upvalue", `local u = table.nosuch`, `
+  local a = u.x
+  return a`, errorNameIndexKernelsRunCompiled},
+	{"index_nil_field", ``, `
+  local a = t.q.x
+  return a`, errorNameIndexKernelsRunCompiled},
+	{"read_of_global_reaches_index", `setmetatable(_G, {__index = function(t, k) error("index " .. k, 2) end})`, `
+  local a = zz339_nosuch
+  return a`, errorNameIndexKernelsRunCompiled},
+	{"arithmetic_on_nil_upvalue", `local u = table.nosuch`, `
+  local a = t[1] + u
+  return a`, true},
+	{"negation_of_nil_upvalue", `local u = table.nosuch`, `
+  local a = -u
+  return a`, true},
+	{"length_of_nil_upvalue", `local u = table.nosuch`, `
+  local a = #u
+  return a`, true},
+	{"concatenation_of_nil_upvalue", `local u = table.nosuch`, `
+  local a = t[1] .. u
+  return a`, true},
+	{"comparison_with_nil_upvalue", `local u = table.nosuch`, `
+  local a = t[1] < u
+  return a`, true},
+	{"numeric_for_from_nil_upvalue", `local u = table.nosuch`, `
+  local s = 0
+  for i = u, 2 do s = s + i end
+  return s`, true},
+	{"generic_for_over_nil_upvalue", `local u = table.nosuch`, `
+  local s = 0
+  for k in u do s = s + 1 end
+  return s`, true},
+	{"store_to_nil_upvalue", `local u = table.nosuch`, `
+  u.x = 1
+  return 1`, errorNameIndexKernelsRunCompiled},
+	{"call_nil_upvalue_two_results", `local u = table.nosuch`, `
+  local a, b = u(t)
+  return a,
+    b`, true},
+}
+
+// errorNameFarPad is 300 stores, one instruction and one line each.
+var errorNameFarPad = strings.Repeat("\n  t[3] = 1", 300)
+
+// TestTiered_ErrorNamesBeyondPC255 is TestTiered_ErrorNames for tieredErrorNameFarCases.
+func TestTiered_ErrorNamesBeyondPC255(t *testing.T) {
+	oracle := findOracle()
+	for _, c := range tieredErrorNameFarCases {
+		t.Run(c.name, func(t *testing.T) { checkErrorNameKernel(t, oracle, c.pre, errorNameFarPad+c.tail, c.compiled) })
+	}
+}
+
+// checkErrorNameKernel runs one kernel the three ways TestTiered_ErrorNames describes.
+func checkErrorNameKernel(t *testing.T, oracle, pre, kernel string, compiled bool) {
+	t.Helper()
+	src := tieredErrorNameScript(pre, kernel)
+	prog, err := wangshu.Compile([]byte(src), "errnames")
+	if err != nil {
+		t.Fatalf("wangshu compile: %v", err)
+	}
+	interp := newInterpBaselineState()
+	baseline := runAutoOnce(t, prog, interp, "baseline")
+	if n := interp.GibbousEntries(); n != 0 {
+		t.Errorf("the interpreter-only baseline entered compiled code %d times", n)
+	}
+	if oracle != "" {
+		if want := runOracle(t, oracle, wrapForOracle(src)); baseline != want {
+			t.Errorf("interpreter vs oracle:\n  wangshu: %q\n  oracle:  %q", baseline, want)
+		}
+	}
+	forced := wangshu.NewState(wangshu.Options{})
+	forced.SetForceAllPromote(true)
+	if got := runAutoOnce(t, prog, forced, "force-all"); got != baseline {
+		t.Errorf("force-all diverged from the interpreter:\n  force-all:   %q\n  interpreter: %q", got, baseline)
+	}
+	switch n := forced.GibbousEntries(); {
+	case compiled && n == 0:
+		t.Errorf("force-all never entered compiled code (%d protos promoted): this kernel does not exercise the tier",
+			forced.PromotionCount())
+	case !compiled && n != 0:
+		t.Errorf("force-all entered compiled code %d times on a build recorded as not compiling this kernel: "+
+			"errorNameIndexKernelsRunCompiled is out of date", n)
+	}
+	auto := newAutoState()
+	if got := runAutoOnce(t, prog, auto, "auto"); got != baseline {
+		t.Errorf("auto diverged from the interpreter:\n  auto:        %q\n  interpreter: %q", got, baseline)
+	}
+	t.Logf("entries into compiled code: force-all %d, auto %d", forced.GibbousEntries(), auto.GibbousEntries())
 }
