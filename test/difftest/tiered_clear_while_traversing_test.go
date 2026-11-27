@@ -112,8 +112,8 @@ k2621 = 7
 local b = read338(1)
 return a, b, k2621`},
 	// The same takeover with the nil stored by a function that is nothing but one field store, run
-	// on the globals table. P4 compiles such a function into a dedicated template that stores into
-	// the node directly.
+	// on the globals table. P4 compiles such a function into a dedicated template; the template does
+	// not store nil itself, so the deletion goes through the host and the table code.
 	{"deleted_global_node_taken_over_single_store", `
 v4927 = 1
 function set338(t, v) t["v4927"] = v end
