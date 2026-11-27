@@ -504,7 +504,7 @@ P3 把 GC 压力模式套到 gibbous 执行层。**靶标从 P1 的「crescent s
 | gibbous 特有漏根 | 来源 | 高频 GC 如何必现 |
 |---|---|---|
 | **locals 缓存写回遗漏** | 若 [PW9](./00-overview.md) 启用 [§2.2B](./02-translation.md) locals 缓存优化:缓存进 Wasm locals 的值对 GC 不可见,任何 safepoint/助手调用前必须写回栈槽([05 §4](./05-safepoint-gc.md))。**漏写回** = GC 扫到的栈槽是陈旧值 → 缓存的活对象未被根登记 → 被误回收 | 每个安全点都 GC ⇒ 缓存活对象期间的任一安全点必然触发 GC ⇒ 漏写回的对象必被回收 ⇒ 后续读栈槽是脏值/已回收 → 输出错(透明性破)或崩溃 |
-| **助手内根登记缺漏** | imported 助手(`$h_call`/`$h_gettable`/`$h_arith`)内分配中间对象时,若漏 push shadow stack([06 §6.3](../p1-interpreter/06-memory-gc.md)),分配窗口内被回收 | 助手里的安全点都触发 GC:`Concat`、`SetTable`、`DoSetGlobal`、`NewTable`、`SetList`、`Closure` 这几个助手末尾各有一个,助手回调的 Lua 函数或元方法自己执行到安全点时也有([06 §6.3](../p1-interpreter/06-memory-gc.md)) ⇒ 跨这些点持有而漏 Pin 的中间对象必被回收 ⇒ 之后用必崩。助手自己的分配只记账,没有这些点的一段里漏 Pin 碰不到 |
+| **助手内根登记缺漏** | imported 助手(`$h_call`/`$h_gettable`/`$h_arith`)内分配中间对象时,若漏 push shadow stack([06 §6.3](../p1-interpreter/06-memory-gc.md)),分配窗口内被回收 | 助手里的安全点都触发 GC:`Concat`、`SetTable`、`DoSetGlobal`、`NewTable`、`SetList`、`Closure` 这几个助手末尾各有一个,`$h_call` 调用的是 host function 时在它返回之后有一个,助手回调的 Lua 函数或元方法自己执行到安全点时也有([06 §6.3](../p1-interpreter/06-memory-gc.md)) ⇒ 跨这些点持有而漏 Pin 的中间对象必被回收 ⇒ 之后用必崩。助手自己的分配只记账,没有这些点的一段里漏 Pin 碰不到 |
 
 ```go
 //go:build wangshu_p3
