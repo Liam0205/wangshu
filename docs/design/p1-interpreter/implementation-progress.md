@@ -1193,8 +1193,9 @@ arena 大小跟着比例变。`TestTiered_StdlibNames` 加一段
   不同的那一种情况（见下）。`TestDiff_NextFromKeysOfClearedEntries`、`TestRemovedStringKeysOfWeakValuedTable` 固定弱表上两种已删除节点
   各自的结果，`TestDiff_InsertionsAfterClearedEntries` 固定「回收器清掉过条目的表里再插入新键，结果随回收时机变化」（弱表上两边相同；
   变成强表之后望舒仍随回收变化），`TestDiff_NextFromRuntimeHeldKeysOfClearedEntries`、`TestDiff_NextFromDebugNamesOfClearedEntries` 固定键是官方另有引用的字符串
-  （库表和注册表里的名字、函数原型里的局部变量名）时两边各自的结果，`TestDiff_NextFromConstantsOfDroppedChunks` 固定键是已经丢掉的
-  代码块的字符串常量（望舒一直让它存活，[#359](https://github.com/Liam0205/wangshu/issues/359)）时望舒一侧的结果。
+  （库表和注册表里的名字、函数原型里的源名和局部变量名）时两边各自的结果，`TestDiff_NextFromConstantsOfDroppedChunks` 固定键是已经丢掉的
+  代码块的字符串常量（望舒一直让它存活，[#359](https://github.com/Liam0205/wangshu/issues/359)）时望舒一侧的结果，
+  `TestDiff_NextFromKeysRemovedFromAnotherTable` 固定键在别的表里被赋 nil 删过（望舒由那张表的节点保活）时望舒一侧的结果。
 - `test/api`：`TestTableForEach_ClearingEntries`；`TestTableForeach_PanicInCallbackReleasesTheValue`（`table.foreach` 的回调里 arena 用尽，
   之后同一个 State 上弱值表的那一条照常被清掉）。
 
@@ -1209,7 +1210,7 @@ arena 大小跟着比例变。`TestTiered_StdlibNames` 加一段
 
 - 赋 nil 留下的已删除节点让字符串键存活。`t[k] = nil`、回收、再用重新拼出来的同内容字符串调用 `next(t, k)`，望舒从原位置继续；官方的节点不让这样的键
   存活，它没有别的引用时会被回收，回收之后只按对象地址认它，新字符串没有正好分配到原地址上就报 `invalid key to 'next'`。没有发生回收、
-  这个字符串另有引用（函数里的常量、别的表的键）、或者它是官方永远不回收的字符串（保留字、`ltm.c` 列的元方法名、`"not enough memory"`）时两边相同，
+  这个字符串另有引用（函数里的常量、别的表里还有值的条目的键）、或者它是官方永远不回收的字符串（保留字、`ltm.c` 列的元方法名、`"not enough memory"`）时两边相同，
   最后一种由 `TestDiff_NextFromRemovedFixedKeys` 固定。官方的结果
   取决于回收有没有在中间发生；望舒里回收本身不改变这个键能不能找回节点（节点被后来插入的键接管或者 rehash 时除外，见第 6 条）。代价是内存：被删除的字符串键要等节点被接管或者表 rehash 才能回收，原地清空之后闲置的表会一直
   占着它们（10 万个约 105 字节的键，清空并回收之后官方剩 5402KB，望舒仍是 15584KB）。这个取舍要不要保留记在
@@ -1218,8 +1219,9 @@ arena 大小跟着比例变。`TestTiered_StdlibNames` 加一段
   `TestDiff_NextFromKeysOfClearedEntries` 固定望舒一侧的结果。键是官方永远不回收的字符串（保留字、`ltm.c` 列的元方法名、`"not enough memory"`）时，官方的 `next` 总是成功，
   望舒里这个字符串没有别的引用时报错（`__index` 这样另有引用的两边都成功），这一种修改前就有，`TestDiff_NextFromFixedKeysOfClearedEntries` 固定两边各自的结果。
   更一般地，一个字符串在两边是否另有引用不一定相同，被清掉的条目上 `next` 的结果随之不同，两个方向都有：官方的库表、`package` 表、注册表
-  和函数原型的调试信息（局部变量名、upvalue 名）引用着望舒没有引用的字符串，这时官方成功、望舒报错；望舒让加载过的每个代码块的字符串常量
-  一直存活（[#359](https://github.com/Liam0205/wangshu/issues/359)），这时望舒成功。
+  和函数原型的调试信息（源名、局部变量名、upvalue 名）引用着望舒没有引用的字符串，这时官方成功、望舒报错；望舒让加载过的每个代码块的字符串常量
+  一直存活（[#359](https://github.com/Liam0205/wangshu/issues/359)），别的表里赋 nil 删掉的键也由那张表的节点保活（本条开头的保活对每张表都生效，
+  官方的已删除节点不算引用），这两种情况望舒成功。
 - 上面第 6 条。`TestDiff_NextOnRemovedKeyAfterStores` 固定十段脚本两边各自的结果：前三段的原因是布局，#349 解决之后应当变成两边
   相同；第四段的原因是回收，它与上一条是同一个取舍（回收本身不改变已删除的键能不能找回节点），第五段是同一段脚本换成键和值都弱的表，
   官方在这种表上不把脚本删掉的键标成 dead key，键另有引用时（脚本用一张表存着这些键）两边相同；第六、第七段是回收器清掉的弱表条目

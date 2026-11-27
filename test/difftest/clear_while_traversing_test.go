@@ -353,14 +353,16 @@ func TestDiff_NextFromRuntimeHeldKeysOfClearedEntries(t *testing.T) {
 	}
 }
 
-// nextFromDebugNamesOfClearedEntries is the same for the names of local variables. lua5.1's
-// function prototypes refer to the names of their locals and upvalues as strings, for debug
-// information, so the name of a local of any function that is still alive stays alive; wangshu
-// keeps those names outside the arena. The third key has the same form and names nothing: it
-// shows that lua5.1's answers to the first two are not address reuse.
+// nextFromDebugNamesOfClearedEntries is the same for the names in debug information. lua5.1's
+// function prototypes refer to their chunk name and to the names of their locals and upvalues as
+// strings, so those of any function that is still alive stay alive; wangshu keeps them outside
+// the arena. The chunk name is built at run time, or it would be a constant of this script. The
+// fourth key has the same form and names nothing: it shows that lua5.1's answers to the first
+// three are not address reuse.
 const nextFromDebugNamesOfClearedEntries = `
 local function keepme(a) local zzqqlocal = a + 1 local function inner() return zzqqlocal end return inner end
 local held = keepme(1)
+local heldchunk = loadstring("return 1", "zzqq" .. "chunk")
 local function count(build)
   local ok = 0
   for round = 1, 30 do
@@ -375,11 +377,12 @@ local function count(build)
   return ok
 end
 return count(function() return "zzqq" .. "local" end), count(function() return "kee" .. "pme" end),
-  count(function() return "zzqq" .. "other" end), held()`
+  count(function() return "zzqq" .. "chunk" end), count(function() return "zzqq" .. "other" end),
+  held(), heldchunk()`
 
 // TestDiff_NextFromDebugNamesOfClearedEntries pins both sides of that.
 func TestDiff_NextFromDebugNamesOfClearedEntries(t *testing.T) {
-	const wantWangshu, wantOracle = "0\t0\t0\t2", "30\t30\t0\t2"
+	const wantWangshu, wantOracle = "0\t0\t0\t0\t2\t1", "30\t30\t30\t0\t2\t1"
 	for _, stress := range []bool{false, true} {
 		if got := runClearCase(t, nextFromDebugNamesOfClearedEntries, stress); got != wantWangshu {
 			t.Errorf("wangshu (collecting at every safepoint: %v):\n  got:  %q\n  want: %q", stress, got, wantWangshu)
@@ -416,6 +419,40 @@ func TestDiff_NextFromConstantsOfDroppedChunks(t *testing.T) {
 	for _, stress := range []bool{false, true} {
 		if got := runClearCase(t, nextFromConstantsOfDroppedChunks, stress); got != "30" {
 			t.Errorf("wangshu (collecting at every safepoint: %v): got %q, want %q", stress, got, "30")
+		}
+	}
+}
+
+// nextFromKeysRemovedFromAnotherTable is a second way for wangshu to hold a string that lua5.1
+// does not. A key removed with an assignment of nil stays alive in its node, in whatever table
+// that node is; lua5.1 does not mark the key of a removed node. So when the key of a cleared
+// entry was also stored in and removed from another table, wangshu's next accepts it every
+// time, and when it was not, never. lua5.1 tells the key by its address: with the strings
+// allocated before the call it answered 0 and 1 here, without them 30 and 30. Only wangshu's
+// side is pinned.
+const nextFromKeysRemovedFromAnotherTable = `
+local other = {}
+local function count(build, remove)
+  local ok = 0
+  for round = 1, 30 do
+    local w = setmetatable({}, {__mode = "v"})
+    for i = 1, 4 do w["pad" .. i .. "_" .. round] = true end
+    w[build()] = {}
+    if remove then other[build()] = 1 other[build()] = nil end
+    collectgarbage() collectgarbage() collectgarbage()
+    local junk = {}
+    for j = 1, 64 do junk[j] = ("#"):rep(7) .. j end
+    if pcall(next, w, build()) then ok = ok + 1 end
+  end
+  return ok
+end
+return count(function() return "zzqq" .. "kept" end, false), count(function() return "zzqq" .. "removed" end, true)`
+
+// TestDiff_NextFromKeysRemovedFromAnotherTable pins wangshu's side of that.
+func TestDiff_NextFromKeysRemovedFromAnotherTable(t *testing.T) {
+	for _, stress := range []bool{false, true} {
+		if got := runClearCase(t, nextFromKeysRemovedFromAnotherTable, stress); got != "0\t30" {
+			t.Errorf("wangshu (collecting at every safepoint: %v): got %q, want %q", stress, got, "0\t30")
 		}
 	}
 }
