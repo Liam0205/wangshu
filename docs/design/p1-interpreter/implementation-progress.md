@@ -972,7 +972,7 @@ reviewer 在跑 P4 全量测试时还撞到一次 `TestIssue177_StringLimitConte
 | 审查意见 | 处理 |
 |---|---|
 | `engineering.md` 有一处还写「读 Markdown 的测试目前只有一个」，同一份文档的另一处已经列了两个 | 改成指向 `make check-readme` 执行的那几个测试，不再写个数 |
-| `table.setn` 的三处说明写成官方「就是一句 `luaL_error`」「直接报 `'setn' is obsolete`」。官方 `ltablib.c` 先检查第一个参数是表，再报这个错。实现一直是对的 | 函数头注释和 10 号文档的四处一起改成「先检查第一个参数是表，然后报错」。本分支新增的、描述官方 C 函数行为的注释逐条对着源码重读了一遍，没有其他不符 |
+| `table.setn` 的三处说明写成官方「就是一句 `luaL_error`」「直接报 `'setn' is obsolete`」。官方 `ltablib.c` 先检查第一个参数是表，再报这个错。实现一直是对的 | 函数头注释和 10 号文档的四处一起改成「先检查第一个参数是表，然后报错」 |
 
 第二十轮独立审查（全范围，又一位 reviewer）没有阻塞问题和重要问题，一条小问题：`ci.yml` 里说明 `check-readme` 那一步的注释
 写的是 `readme-check.yml`「只在 README 变化时触发」，而那个工作流在自己变化时也触发。注释改了，`engineering.md` 里同一件事的
@@ -984,6 +984,12 @@ reviewer 在跑 P4 全量测试时还撞到一次 `TestIssue177_StringLimitConte
   会丢掉 nil 之后的参数。记在 [#342](https://github.com/Liam0205/wangshu/issues/342)。
 - `io.stdout.close()` 不传句柄时报 `got no value`，官方报 `got nil`。记在
   [#343](https://github.com/Liam0205/wangshu/issues/343)。
+
+第二十轮的 reviewer 复核第十九轮的 `table.setn` 一条时，把本分支新增的、提到官方 C 函数的注释和文档逐条对着源码读了一遍，
+又找到一处同类的错误：`ipairs` 迭代器的两处注释写 `luaL_checkint` 经过 `lua_tonumber`，官方经过的是 `lua_tointeger`
+（`luaL_checkinteger` 调用它，结果为 0 时再调 `lua_isnumber`）。结论「数字字符串是合法的控制值」没有错，函数名改了。
+我随后把这些注释和文档句子带着文件名和行号列出来（Go 文件 40 多行，Markdown 十余行），对着 `lbaselib.c`、`liolib.c`、
+`ltablib.c`、`lmathlib.c`、`lstrlib.c`、`lauxlib.c`、`lapi.c` 的对应函数逐条核对，没有找到第三处。
 
 验证：`make all` 与 `make fuzz-oracle` 通过。把 `internal/stdlib` 的 `stdlib.go` 和 `tablelib.go` 一起换回修复前的版本：
 行为测试 10 个用例失败，`test/api` 的 `io.lines` 用例 4 个失败，`TestTiered_StdlibNames` 在 P3、P4 两种构建下九段脚本里
