@@ -70,12 +70,17 @@ type Options struct {
     MaxArenaBytes     uint32 // 主 arena 上限(默认 4 GiB,bump/cap 是 uint32,06 §3)
     MaxCallDepth      int    // Lua 调用深度上限(CallInfo 数,05 §7.4;默认如 200000)
     MaxCCalls         int    // host→Lua 重入深度上限(真 Go 栈,05 §7.4;默认 200)
-    GCPause           int    // GC pacing,存活量百分比(0 = 用默认值 200:再分配 2 倍存活量时回收;负数 = 不再自动回收;06 §8.3;含义与官方的 gcpause 差 100)
+    GCPause           int    // GC pacing,存活量百分比(默认 200:再分配 2 倍存活量时回收,06 §8.3;含义与官方的 gcpause 差 100)
     Libs              Lib      // 标准库位掩码(零值=LibsDefault 对齐 gopher-lua 面;LibsSafe=计算沙箱;见 10 §12.1)
     Exclude           []string // 函数级排除路径(注册后删除),如 {"os.execute","io.open"}(10 §12.1 三层粒度)
 }
 ```
 
+> **`MaxCallDepth`、`MaxCCalls`、`GCPause` 三个字段存在，但 `NewState` 不读它们**（2026-11-28 核对）：设了不起作用。两个深度上限是
+> 编译期常量（20000 层 Lua 调用、200 层宿主到 Lua 的重入，[05](./05-interpreter-loop.md) §7.4），回收器的比例每个 State 都从 200 开始，
+> 脚本可以用 `collectgarbage("setpause", n)` 改。`test/api` 的 `TestOptions_FieldsNotRead` 固定这个现状；要不要接上见
+> [#356](https://github.com/Liam0205/wangshu/issues/356)。
+>
 > **`Libs` 和 `Exclude` 是原始设计，没有实现**（2026-11-25 核对）：`wangshu.Options` 里没有这两个字段，标准库是
 > 无条件注册的。实际存在、上面没有列出的开关是 `AllowFileLoad`（允许 `loadfile` / `dofile` 读文件，默认关）和
 > `HideFileLoaders`（从全局表里去掉 `loadfile` / `dofile` / `loadstring` / `load`）。默认提供面也没有对齐

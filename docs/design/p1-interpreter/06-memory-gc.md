@@ -608,7 +608,7 @@ updatePacing():
 
 - `GCPAUSE`（默认 **200**）：存活 `live` 字节后，再分配 `2*live` 字节（总量到 `3*live`）触发下次 GC。
   默认值与 Lua 5.1 `LUAI_GCPAUSE` 相同，**含义不同**：官方拿 `estimate/100 * gcpause` 与总字节数比较，200 是总量到 `2*live` 时回收。
-  所以这里的比例 `p` 大约相当于官方的 `p + 100`。`Options.GCPause` 和脚本的 `collectgarbage("setpause")` 设置的都是这个量
+  所以这里的比例 `p` 大约相当于官方的 `p + 100`。脚本的 `collectgarbage("setpause")` 设置的是这个量；公开的 `Options.GCPause` 目前没有接到回收器上，设了不起作用（[#356](https://github.com/Liam0205/wangshu/issues/356)）
   （[10](./10-stdlib.md) §4.6）；要不要改成官方的口径见 [#353](https://github.com/Liam0205/wangshu/issues/353)。
 - **首次触发**:`threshold` 初值 = 一个小常量(如 arena 初始容量,避免极早 GC)。
 - **下限**：每轮回收之后算出的 `threshold` 不低于 arena 容量的 1/16。所以比例再小（包括 0），两次自动回收之间也要分配这么多字节；
@@ -867,7 +867,8 @@ GC 主流程(§8.2)的两个终结相关步骤:
 - **GC 压力 fuzz**:打开 collector 的压力模式(每个安全点都 full GC,§8.3),反复跑同一程序,验证:
   ① 输出与「正常 pacing」byte-equal(GC 透明性);② 不崩溃(捕获「漏 push shadow stack(§6.3)/mark 漏扫字段(§5.2)」类 bug)。
   这是 §6.3 纪律、§5.2 完整性的**主要自动化防线**——这类 bug 在正常 pacing 下偶发难复现,高频 GC 下必现(漏 push 要求持有窗口里有安全点,
-  也就是 host function 回调了 Lua 函数;它自己的分配只记账,§6.3)。
+  §6.3 列了这些安全点:host function 回调了 Lua 函数或 `collectgarbage`、调用了会收集的公开 API;它自己的分配只记账,
+  `coroutine.create` 除外,它在分配新协程之前检查一次,§7.1)。
 - **finalizer 顺序**:`__gc` 调用序(创建逆序,§10)若被测试观察(终结器打印),须与 Lua 5.1 一致——属差分用例。
 
 > 与 [01](./01-value-object-model.md) §8 / [02](./02-bytecode-isa.md) §10 的缺口呼应:`pairs` 是否逐字节一致是验收口径问题,

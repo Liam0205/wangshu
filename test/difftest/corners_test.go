@@ -279,7 +279,7 @@ var exemptions = []struct {
 	{"os.exit/remove/rename/tmpname/setlocale", "未注册（10 §9.5）。原设计是做简化版（os.exit 不真退出宿主进程、setlocale 只支持 C、文件操作受沙箱限制），一直没有做；要不要补见 issue #330"},
 	{"io.close/flush/input/output/type", "未注册（10 §10.1.1）。默认输入输出固定为进程的 stdin/stdout；句柄上的 f:close() / f:flush() 已提供。要不要补见 issue #330"},
 	{"collectgarbage step/setstepmul 精确语义", "10 §4.6:GC 是 stop-the-world,没有增量步进。step 做一次完整回收并返回 true(官方返回这一步有没有结束一轮回收);setstepmul 的值会保存并在下次调用时返回,但不影响回收"},
-	{"collectgarbage setpause 的比例含义", "10 §4.6：返回值和参数转换与官方一致，比例的含义不同。望舒拿 live × 比例 / 100 与上次回收以来新分配的字节数比较，官方拿它与总字节数比较，所以望舒的比例 p 大约相当于官方的 p + 100（200 在官方是总量翻倍时回收，在望舒是总量到三倍时回收）；0 在望舒是每分配 arena 容量的 1/16 回收一次，在官方是几乎不停地回收。`Options.GCPause` 是同一个量。要不要改成官方的口径见 issue #353。TestDiff_GCPauseMeaning 固定两边各自的结果"},
+	{"collectgarbage setpause 的比例含义", "10 §4.6：返回值和参数转换与官方一致，比例的含义不同。望舒拿 live × 比例 / 100 与上次回收以来新分配的字节数比较，官方拿它与总字节数比较，所以望舒的比例 p 大约相当于官方的 p + 100（200 在官方是总量翻倍时回收，在望舒是总量到三倍时回收）；0 在望舒是每分配 arena 容量的 1/16 回收一次，在官方是几乎不停地回收。要不要改成官方的口径见 issue #353。TestDiff_GCPauseMeaning 固定两边各自的结果"},
 	{"pattern 灾难性回溯有界失败", "回溯预算 1<<20 步:`.*.+%A*x` 级灾难回溯报 'pattern too complex',oracle 慢速算完——嵌入式防挂起裁量(官方成功/本实现报错的有意分歧)"},
 	{"loadfile/dofile 默认禁用", "文件系统读默认关(不可信脚本越权探测面);Options.AllowFileLoad 显式开启后行为对齐官方"},
 }
