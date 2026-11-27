@@ -1196,6 +1196,9 @@ arena 大小跟着比例变。`TestTiered_StdlibNames` 加一段
 就退回宿主的慢路径；模板内联完成的只剩「非 nil 的值覆盖非 nil 的值」这一种赋值，它本来就不查 `__newindex`。
 `TestTiered_SingleStoreTemplate`（5 段，哈希部分和数组部分各有「自己删了再写」「换一张已删除的表」两种）在 P4 的 amd64 和 arm64 上
 都进入了模板；撤掉模板的改动，前 4 段失败。
+这两项检查读的是固化下标对应的槽位，前提是下标在这张表之内。模板不检查这一点（[#350](https://github.com/Liam0205/wangshu/issues/350)，
+修改前就有）：换一张 gen 相同但数组部分或哈希部分更小的表，读到的是表外的内存，跳过 `__newindex` 的现象在这样的表上仍然会出现，要等
+#350 修掉。
 
 **这一轮没有修、另外登记的存量问题**：弱表会清掉字符串（[#348](https://github.com/Liam0205/wangshu/issues/348)）；
 哈希部分的遍历顺序与官方不同（[#349](https://github.com/Liam0205/wangshu/issues/349)）；P4 单条表访问的模板不检查下标是否在表内
