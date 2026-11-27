@@ -129,20 +129,20 @@ func (c *Collector) scanTable(t arena.GCRef) {
 			// clearWeakTables or clearDeadKeys replaces the key before the
 			// sweep frees the object.
 			//
-			// A string in a strong table is the exception and is marked: an
-			// equal string can be created again after this one is gone, and a
-			// collection would then decide whether the new one finds this node
-			// or is inserted as a new key. The cost is memory: the string of
-			// every DEAD node lives until the table's next rehash, so a table
-			// that is cleared in place and then left alone keeps all the string
-			// keys it held (06 §8.4).
+			// A string that a store of nil left behind is the exception and is
+			// marked: an equal string can be created again after this one is
+			// gone, and a collection would then decide whether the new one
+			// finds this node or is inserted as a new key. The cost is memory:
+			// such a string lives until the node is taken over or the table is
+			// rehashed, so a table that is cleared in place and then left alone
+			// keeps all the string keys it held (06 §8.4).
 			//
-			// A weak table makes no such exception. What a script sees in it
-			// depends on when collections run anyway, and its DEAD nodes are
-			// mostly entries the collector cleared: keeping their strings would
-			// have a cache with string keys and weak values hold every key it
-			// ever had until its next rehash.
-			if value.Tag(k) == value.TagString && mode == 0 {
+			// The exception does not extend to a node the collector made by
+			// clearing the entry of a weak table. When that happens depends on
+			// the collector to begin with, and keeping those strings would have
+			// a cache with string keys and weak values hold every key it ever
+			// had.
+			if value.Tag(k) == value.TagString && !object.NodeClearedByCollector(c.a, t, i) {
 				c.markValue(k)
 			} else if value.IsCollectable(k) {
 				deadKeys = true

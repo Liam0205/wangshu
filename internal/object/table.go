@@ -11,13 +11,16 @@
 //
 //	word0: key   (Value)
 //	word1: val   (Value)
-//	word2: [31:0] next (int32, links into collision chain; -1=none) | [63:32] reserved
+//	word2: [31:0] next (int32, links into collision chain; -1=none) | [32] cleared by
+//	       the collector | [63:33] reserved
 //
 // A node is FREE (key Nil, val Nil, next -1), LIVE (key and val non-Nil) or DEAD
 // (key non-Nil, val Nil: the key was deleted and stays in place so that
 // next(t, key) still finds it). The key of a DEAD node is the deleted key, or
 // DeadKey once the collector has found the key's object dead. crescent's
-// rawtable.go owns the transitions.
+// rawtable.go owns the transitions. Bit 32 of word2 tells the two sources of a
+// DEAD node apart: it is set on a node whose value the collector cleared (an
+// entry of a weak table) and clear on one a store of nil made.
 //
 // Key point: the Table head is a 6-word head object; the array/node segments are
 // attached blocks without a GCHeader.
@@ -236,14 +239,42 @@ func NodeNext(a *arena.Arena, t arena.GCRef, idx uint32) int32 {
 	return int32(a.WordAt(node + arena.GCRef(idx*nodeWords*8+16)))
 }
 
+// SetNode writes a node. The upper half of word2 becomes zero, so the node is no
+// longer marked as cleared by the collector.
 func SetNode(a *arena.Arena, t arena.GCRef, idx uint32, key, val value.Value, next int32) {
 	node := TableNodeRef(a, t)
 	base := node + arena.GCRef(idx*nodeWords*8)
 	a.SetWordAt(base, uint64(key))
 	a.SetWordAt(base+8, uint64(val))
-	// next occupies the low 32 bits, the high 32 bits are reserved. Preserve the
-	// current high 32 bits (currently always 0).
 	a.SetWordAt(base+16, uint64(uint32(next)))
+}
+
+// SetNodeNext changes a node's chain link and nothing else: the key, the value
+// and the collector's mark stay.
+func SetNodeNext(a *arena.Arena, t arena.GCRef, idx uint32, next int32) {
+	node := TableNodeRef(a, t)
+	ref := node + arena.GCRef(idx*nodeWords*8+16)
+	a.SetWordAt(ref, a.WordAt(ref)&^0xFFFF_FFFF|uint64(uint32(next)))
+}
+
+const nodeClearedByCollector = uint64(1) << 32
+
+// NodeClearedByCollector reports whether the node is a DEAD node the collector
+// made by clearing the entry of a weak table, as opposed to one a store of nil
+// made. Any later write of the node through SetNode resets it; SetNodeNext
+// does not.
+func NodeClearedByCollector(a *arena.Arena, t arena.GCRef, idx uint32) bool {
+	node := TableNodeRef(a, t)
+	return a.WordAt(node+arena.GCRef(idx*nodeWords*8+16))&nodeClearedByCollector != 0
+}
+
+// ClearNodeValue is the collector removing an entry: the value becomes Nil, the
+// key and the chain link stay, and the node is marked as cleared by the collector.
+func ClearNodeValue(a *arena.Arena, t arena.GCRef, idx uint32) {
+	node := TableNodeRef(a, t)
+	base := node + arena.GCRef(idx*nodeWords*8)
+	a.SetWordAt(base+8, uint64(value.Nil))
+	a.SetWordAt(base+16, a.WordAt(base+16)|nodeClearedByCollector)
 }
 
 // TableWeakMode returns the weak-table mode: 'k'/'v'/'a'(both)/0(strong table).

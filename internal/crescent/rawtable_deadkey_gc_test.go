@@ -231,34 +231,34 @@ func TestWeak_DeletedKeyIsReplacedWhenItsObjectDies(t *testing.T) {
 	}
 }
 
-// A weak table does not keep the string key of a DEAD node alive, as a strong table does
-// (TestDeadKey_StringKeyIsKept): the string goes with the first collection that finds it
-// unreferenced, and the key is replaced like that of any other dead object.
-func TestWeak_DeletedStringKeyIsNotKept(t *testing.T) {
+// A string key the script removed is kept alive in a weak table as in a strong one
+// (TestDeadKey_StringKeyIsKept): stored again after any number of collections, it finds its node.
+func TestWeak_DeletedStringKeyIsKept(t *testing.T) {
 	for _, mode := range []string{"k", "v", "kv"} {
 		st, th := gcTestState(t)
 		weak := weakTable(st, th, mode)
-		key := value.MakeGC(value.TagString, st.gc.Intern([]byte("only-referenced-by-the-dead-node")))
+		ref := st.gc.Intern([]byte("only-referenced-by-the-dead-node"))
+		key := value.MakeGC(value.TagString, ref)
 		_ = st.rawSet(weak, key, value.NumberValue(1))
 		idx := nodeOf(t, st, weak, key)
 		_ = st.rawSet(weak, key, value.Nil)
-		gen0 := object.TableGen(st.arena, weak)
 
 		st.gc.Collect()
+		st.gc.Collect()
 
-		if k := object.NodeKey(st.arena, weak, idx); k != object.DeadKey {
-			t.Errorf("mode %q: node %d holds %x after the deleted string died, want DeadKey", mode, idx, uint64(k))
+		if k := object.NodeKey(st.arena, weak, idx); k != key {
+			t.Errorf("mode %q: node %d holds %x, want the deleted string key", mode, idx, uint64(k))
 		}
-		if object.TableGen(st.arena, weak) == gen0 {
-			t.Errorf("mode %q: node %d changed its key but gen stayed %d", mode, idx, gen0)
+		if again := st.gc.Intern([]byte("only-referenced-by-the-dead-node")); again != ref {
+			t.Errorf("mode %q: the string was collected and interned again at %x (was %x)", mode, uint64(again), uint64(ref))
 		}
 	}
 }
 
-// The entries the collector clears are the DEAD nodes a weak-valued table mostly has. The string
-// key of such an entry is a strong reference while the entry has its value, so it survives the
-// collection that clears the entry; from then on only its other references keep it. A cache with
-// string keys and weak values must not hold on to every key it ever had.
+// An entry the collector cleared is a DEAD node of another kind: its string key is not kept
+// alive. The key is a strong reference while the entry has its value, so in a weak-valued table
+// it survives the collection that clears the entry; from then on only its other references keep
+// it. A cache with string keys and weak values must not hold on to every key it ever had.
 func TestWeak_ClearedEntryDoesNotKeepItsStringKey(t *testing.T) {
 	for _, held := range []bool{false, true} {
 		st, th := gcTestState(t)
@@ -277,6 +277,9 @@ func TestWeak_ClearedEntryDoesNotKeepItsStringKey(t *testing.T) {
 		if k := object.NodeKey(st.arena, weak, idx); k != key {
 			t.Fatalf("held %v: node %d holds %x right after its entry was cleared, want the key", held, idx, uint64(k))
 		}
+		if !object.NodeClearedByCollector(st.arena, weak, idx) {
+			t.Fatalf("held %v: node %d is not marked as cleared by the collector", held, idx)
+		}
 
 		st.gc.Collect()
 		k := object.NodeKey(st.arena, weak, idx)
@@ -290,6 +293,114 @@ func TestWeak_ClearedEntryDoesNotKeepItsStringKey(t *testing.T) {
 		} else if k != object.DeadKey {
 			t.Errorf("node %d holds %x one collection after its entry was cleared, want DeadKey", idx, uint64(k))
 		}
+	}
+}
+
+// The mark of a cleared entry belongs to that clearing only. Once the key is stored again the
+// node is an ordinary one, and removing the key by a store of nil leaves a string the node keeps
+// alive.
+func TestWeak_ClearedEntryStoredAgainIsAnOrdinaryNode(t *testing.T) {
+	st, th := gcTestState(t)
+	weak := weakTable(st, th, "v")
+	ref := st.gc.Intern([]byte("cleared-then-stored-again"))
+	key := value.MakeGC(value.TagString, ref)
+	_ = st.rawSet(weak, key, value.MakeGC(value.TagTable, st.allocTable(0, 0)))
+	idx := nodeOf(t, st, weak, key)
+	st.gc.Collect() // clears the entry; the key survives this round
+
+	_ = st.rawSet(weak, key, value.NumberValue(1))
+	if got := nodeOf(t, st, weak, key); got != idx {
+		t.Fatalf("stored again, the key is in node %d, want its old node %d", got, idx)
+	}
+	if object.NodeClearedByCollector(st.arena, weak, idx) {
+		t.Fatalf("node %d holds a value and is still marked as cleared by the collector", idx)
+	}
+	_ = st.rawSet(weak, key, value.Nil)
+	if object.NodeClearedByCollector(st.arena, weak, idx) {
+		t.Fatalf("node %d was emptied by a store of nil and is marked as cleared by the collector", idx)
+	}
+
+	st.gc.Collect()
+	st.gc.Collect()
+	if k := object.NodeKey(st.arena, weak, idx); k != key {
+		t.Errorf("node %d holds %x, want the string key the script removed", idx, uint64(k))
+	}
+	if again := st.gc.Intern([]byte("cleared-then-stored-again")); again != ref {
+		t.Errorf("the string was collected and interned again at %x (was %x)", uint64(again), uint64(ref))
+	}
+}
+
+// A cleared entry keeps its mark when another key's relocation rewrites its chain link: the node
+// is the predecessor of an entry that Brent's variation moves, and it must still not keep its
+// string key alive afterwards.
+func TestWeak_ClearedEntryKeepsItsMarkWhenRelinked(t *testing.T) {
+	st, th := gcTestState(t)
+	weak := newHashTable(st, 16)
+	meta := st.allocTable(0, 8)
+	_ = st.tableSet(meta, st.makeStringValue("__mode"), st.makeStringValue("v"))
+	st.SetMeta(weak, meta)
+	th.push(value.MakeGC(value.TagTable, weak))
+
+	// a and b share main position 0: a sits in node 0, b in a free node linked behind it.
+	a := keyWithMainPosition(t, st, weak, 0, "a")
+	_ = st.rawSet(weak, a, value.MakeGC(value.TagTable, st.allocTable(0, 0)))
+	b := keyWithMainPosition(t, st, weak, 0, "b")
+	_ = st.rawSet(weak, b, value.NumberValue(2))
+	bIdx := nodeOf(t, st, weak, b)
+	if nodeOf(t, st, weak, a) != 0 || object.NodeNext(st.arena, weak, 0) != int32(bIdx) {
+		t.Fatalf("chain is not 0 -> %d; rebuild the test for the current placement", bIdx)
+	}
+	d := keyWithMainPosition(t, st, weak, bIdx, "d")
+	th.push(b)
+	th.push(d)
+
+	st.gc.Collect() // clears a's entry; a itself survives this round
+	if !object.NodeClearedByCollector(st.arena, weak, 0) {
+		t.Fatal("node 0 is not marked as cleared by the collector")
+	}
+	// d's main position is b's node and b is not in its own: b moves, and node 0 is relinked.
+	_ = st.rawSet(weak, d, value.NumberValue(4))
+	if nodeOf(t, st, weak, d) != bIdx || nodeOf(t, st, weak, b) == bIdx {
+		t.Fatal("b was not relocated; rebuild the test for the current placement")
+	}
+	if got := object.NodeNext(st.arena, weak, 0); got != int32(nodeOf(t, st, weak, b)) {
+		t.Fatalf("node 0 links to %d, want b's new node %d", got, nodeOf(t, st, weak, b))
+	}
+	if !object.NodeClearedByCollector(st.arena, weak, 0) {
+		t.Fatal("relinking node 0 dropped the collector's mark")
+	}
+
+	st.gc.Collect()
+	if k := object.NodeKey(st.arena, weak, 0); k != object.DeadKey {
+		t.Errorf("node 0 holds %x after its string died, want DeadKey", uint64(k))
+	}
+	if v := st.rawGet(weak, b); v != value.NumberValue(2) {
+		t.Errorf("b reads %x after the collection, want 2", uint64(v))
+	}
+}
+
+// A cleared entry keeps its mark when the table stops being weak: the strong-table pass then
+// replaces the key once the string is dead, so the node never refers to a freed object.
+func TestWeak_ClearedEntryInATableMadeStrong(t *testing.T) {
+	st, th := gcTestState(t)
+	weak := weakTable(st, th, "v")
+	key := value.MakeGC(value.TagString, st.gc.Intern([]byte("cleared-then-made-strong")))
+	_ = st.rawSet(weak, key, value.MakeGC(value.TagTable, st.allocTable(0, 0)))
+	idx := nodeOf(t, st, weak, key)
+	st.gc.Collect()
+	st.SetMeta(weak, arena.GCRef(0))
+	if object.TableWeakMode(st.arena, weak) != 0 {
+		t.Fatal("the table is still weak after its metatable was removed")
+	}
+	gen0 := object.TableGen(st.arena, weak)
+
+	st.gc.Collect()
+
+	if k := object.NodeKey(st.arena, weak, idx); k != object.DeadKey {
+		t.Errorf("node %d holds %x after the string died, want DeadKey", idx, uint64(k))
+	}
+	if object.TableGen(st.arena, weak) == gen0 {
+		t.Errorf("node %d changed its key but gen stayed %d", idx, gen0)
 	}
 }
 

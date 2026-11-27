@@ -16,9 +16,10 @@
 //     three ways: the same key is stored again (LIVE again, in the same
 //     node); a new key whose main position it is takes the node over; or a
 //     rehash drops it. A DEAD node does not keep its key's object alive,
-//     the strings of a table that is not weak excepted: once the object is
-//     dead the collector replaces the key with object.DeadKey, which no
-//     lookup matches, and the node stays DEAD (internal/gc);
+//     with one exception, a string that a store of nil left behind (not one
+//     in an entry the collector cleared): once the object is dead the
+//     collector replaces the key with object.DeadKey, which no lookup
+//     matches, and the node stays DEAD (internal/gc);
 //   - gen contract: BumpGen on every path that takes a LIVE node's value
 //     away or changes which key a node holds: rehash, Brent relocation and
 //     the takeover of a DEAD node in insertNewKey, key deletion in rawSet,
@@ -247,10 +248,9 @@ func (st *State) insertNewKey(t arena.GCRef, key, val value.Value) *LuaError {
 		occVal := object.NodeVal(st.arena, t, mainPos)
 		occNext := object.NodeNext(st.arena, t, mainPos)
 		object.SetNode(st.arena, t, free, occKey, occVal, occNext)
-		// 3) Point the predecessor at the new position.
-		pk := object.NodeKey(st.arena, t, uint32(prev))
-		pv := object.NodeVal(st.arena, t, uint32(prev))
-		object.SetNode(st.arena, t, uint32(prev), pk, pv, int32(free))
+		// 3) Point the predecessor at the new position. The predecessor may be
+		//    a DEAD node and keeps what it is.
+		object.SetNodeNext(st.arena, t, uint32(prev), int32(free))
 		// 4) Place the new key at the main position.
 		object.SetNode(st.arena, t, mainPos, key, val, -1)
 		// Relocating an existing key changes the key->slot mapping, which
@@ -267,8 +267,7 @@ func (st *State) insertNewKey(t arena.GCRef, key, val value.Value) *LuaError {
 	// chaining it into the main position's chain.
 	mainNext := object.NodeNext(st.arena, t, mainPos)
 	object.SetNode(st.arena, t, free, key, val, mainNext)
-	mv := object.NodeVal(st.arena, t, mainPos)
-	object.SetNode(st.arena, t, mainPos, occKey, mv, int32(free))
+	object.SetNodeNext(st.arena, t, mainPos, int32(free))
 	return nil
 }
 
