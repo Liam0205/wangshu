@@ -664,7 +664,7 @@ type Collector struct {
    它的字符串键也不会因此被保活。弱值表（`__mode = "v"`）里，条目被清掉的那一轮，键是作为有值条目的强键标记的，所以它至少活过这一轮，
    正停在这个条目上的遍历可以继续；从下一轮起只看它有没有别的引用。键也是弱引用的两种模式里，只被这张表引用的字符串键可能和值在同一轮
    死亡（[#348](https://github.com/Liam0205/wangshu/issues/348)）。实测 10 万个约 105 字节的键、值全部死亡之后回收三次，剩 3084KB
-   （官方 5401KB）。`TestWeak_DeletedStringKeyIsKept`、`TestWeak_ClearedEntryDoesNotKeepItsStringKey`、
+   （官方约 5400KB）。`TestWeak_DeletedStringKeyIsKept`、`TestWeak_ClearedEntryDoesNotKeepItsStringKey`、
    `TestWeak_ClearedEntryStoredAgainIsAnOrdinaryNode`、`TestWeak_ClearedEntryAssignedNilKeepsItsMark`、`TestWeak_ClearedEntryKeepsItsMarkWhenRelinked`、
    `TestWeak_ClearedEntryInATableMadeStrong` 和 `weak_valued_cache_releases_its_string_keys` 断言。
    保活脚本删掉的字符串键与官方不同，是有意保留的差异，有两面：
