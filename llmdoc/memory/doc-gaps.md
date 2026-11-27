@@ -25,11 +25,6 @@
   `exemptions` 只登记了 `step` / `setstepmul`。差分 fuzz 的 prelude 把 `collectgarbage` 换成了桩，nightly 看不到。见
   [#345](https://github.com/Liam0205/wangshu/issues/345)。
 
-- **【未修】文件句柄的 `close` 不传句柄时报错文字不同** — `io.stdout.close()` 官方报 `FILE* expected, got nil`，望舒报
-  `got no value`：官方的 `io_close` 在没有参数时先压入默认输出（句柄方法的环境里没有，所以是 nil）再检查。其余句柄方法
-  两侧相同。差分 fuzz 能直接看到。见
-  [#343](https://github.com/Liam0205/wangshu/issues/343)。
-
 - **【未修】P3 升层后，数值 for 里步数预算用完或 context 取消时报错的行号不同** — 解释器和 P4 报 `for` 那一行（在 FORLOOP 上检查），
   P3 报循环体最后一条语句的行号。只有数值 for 这样：泛型 for、`while`、`repeat` 上 P3 与解释器相同。`test/difftest` 的
   `TestTiered_StepBudgetLineInNumericFor` 因此只在 P4 构建，泛型 for 的那个测试 P3、P4 都构建。见
@@ -108,6 +103,10 @@
   指令条数的上限（位置放在 22 位里）。P3 在数值 for 的步数预算报错上行号与解释器不同（泛型 for 上相同），没有在这次修，见
   [#357](https://github.com/Liam0205/wangshu/issues/357)。记录在
   [P4 过程记录 §29](../../docs/design/p4-method-jit/implementation-progress.md)。
+
+- **【已完成 2026-11-27，#343】文件句柄的 `close` 不传句柄时报错文字不同** — `io.stdout.close()` 现在与官方一样报
+  `FILE* expected, got nil`；其余句柄方法不带参数时仍然报 `got no value`，也与官方相同。说明在
+  [10 §10.3](../../docs/design/p1-interpreter/10-stdlib.md) 的「IO 错误转 Lua 错误」一条里。
 
 - **【已完成 2026-10-05,#296 / #297】#290-#292 本地审查发现的两处存量差异** — 对账见
   `docs/design/p1-interpreter/implementation-progress.md` 的 #296 / #297 条目:LARGE 空闲块合并、顶部块退回 bump、

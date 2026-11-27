@@ -2119,6 +2119,8 @@ func hostIoWrite(vm *VM, th *Thread) int {
   参数类型错误;② 读一个**只写**句柄返回 PUC 的 errno 三元组 `(nil, "Bad file descriptor", 9)`(`fread` 在
   只写 handle 上失败,`g_read` 报 `strerror(EBADF)` + `EBADF`,Linux 上是 9)——不是单个 nil;
   ③ 关一个标准流**返回** `(nil, "cannot close standard file")` 而不是抬错,所以 pcall 包住它会成功。
+  句柄方法完全不带参数时(`io.stdout.flush()`)报 `FILE* expected, got no value`,只有 `close` 报 `got nil`:
+  它在 PUC 里就是 `io_close`,没有参数时先压入默认输出再检查,而句柄方法表的环境里没有默认输出,压进去的是 nil(#343)。
   **例外 `io.write`**:它的 `g_write` 压布尔、写失败压 `false`,不抛错(上面已更正);标准流的
   `file:write` 同样返回布尔(返回句柄是 5.2+)。
 

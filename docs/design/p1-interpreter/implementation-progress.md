@@ -1067,6 +1067,22 @@ reviewer 另外列了三处修改前就过期、本分支没有碰的文字：`t
 机制见 [10 §4.4 / §4.5 / §9.5 / §12.3](./10-stdlib.md)，过程记录见
 [#329 复盘](../../../llmdoc/memory/reflections/2026-11-25-issue329-stdlib-extra-names.md)。
 
+## 2026-11-27：文件句柄的 `close` 不带参数时报 `got nil`（#343）
+
+`io.stdout.close()` 官方报 `bad argument #1 to 'close' (FILE* expected, got nil)`，望舒报 `got no value`。#329 的独立审查发现的，
+修改前三种构建相同，只影响报错文字。
+
+官方的句柄方法 `close` 就是 `liolib.c` 的 `io_close`：没有参数时先 `lua_rawgeti(L, LUA_ENVIRONINDEX, IO_OUTPUT)` 压入默认输出，
+再检查第一个参数是不是文件。句柄方法表的环境里没有默认输出，压进去的是 nil。`fileFnClose` 现在在没有参数时按 nil 报错。
+`flush`、`read`、`write`、`lines` 在官方实现里没有这一步，不带参数时两侧都报 `got no value`，没有改。
+
+把三个标准流的七个方法在「不带参数、nil、数字、表」四种情况下的报错与 `lua5.1` 逐行比过，除 `close` 这一处以外，不同的只有望舒
+没有提供的 `seek`、`setvbuf` 和元表的 `__gc`（都是已经登记的豁免）。
+
+测试：`test/api` 的 `TestIOHandles_MatchPUC` 加 11 个用例（三个标准流、按名字调用、显式 nil、数字、多余参数，以及另外四个方法不带参数时的
+对照）；差分 fuzz 语料 `r343_file_close_no_handle`；`TestTiered_StdlibNames` 加一段 `file_close_without_handle`，在 P3 / P4 的升层代码里
+调用。只撤掉 `fileFnClose` 的改动，这三处都失败。
+
 ## 相关
 
 [00-overview](./00-overview.md) · [../engineering](../engineering.md) ·

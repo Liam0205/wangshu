@@ -1,0 +1,2 @@
+go test fuzz v1
+string("print(pcall(io.stdout.close)) print(pcall(io.stdin.close)) print(pcall(io.stderr.close)) print(pcall(io.stdout.close, nil)) print(pcall(io.stdout.close, 1)) print(pcall(function() return io.stdout.close() end)) print(pcall(io.stdout.flush)) print(pcall(io.stdout.write)) print(pcall(io.stdout.read)) print(pcall(io.stdout.lines))")

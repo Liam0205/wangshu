@@ -208,6 +208,37 @@ for i = 1, 40 do
   end
 end
 return table.concat(order, " | ")`, true, true},
+	// A file handle's close called with no argument at all, from a promoted function: the error says
+	// "got nil" (io_close pushes the default output first; the other handle methods say
+	// "got no value", and flush is called the same way to show it). A function is promoted only if
+	// its calls are to known-safe library functions, which a call through a parameter or through
+	// io.stdout is not; the methods are therefore stored in the table library and reached as
+	// upvalues initialised from it, like math.mod below. Under natural heat P4 runs the kernel
+	// compiled and P3 does not, hence auto = false.
+	{"file_close_without_handle", `
+table.close343, table.flush343 = io.stdout.close, io.stdout.flush
+local hclose, hflush = table.close343, table.flush343
+local function kernel(x, which)
+  local a = x * 2 + 1
+  local b = a - x
+  local c = b * 3 - a
+  local d = c + b - x
+  local e = d * 2 + c
+  local f = e - d + a
+  local r
+  if which then r = hclose() else r = hflush() end
+  return r, f
+end
+local function call(x, which) local r, f = kernel(x, which) return r, f end
+local seen, order = {}, {}
+for i = 1, 40 do
+  for _, which in ipairs({true, false}) do
+    local ok, msg = pcall(call, i, which)
+    local line = tostring(which) .. ": " .. tostring(ok) .. " " .. tostring(msg):gsub("^.-:(%d+: )", "%1")
+    if not seen[line] then seen[line] = true order[#order + 1] = line end
+  end
+end
+return table.concat(order, " | ")`, true, false},
 	// math.mod is fmod's 5.0 name and the same function object. A promoted function sees the two equal
 	// and gets the same results from either. The kernel reaches them as upvalues and is padded with
 	// arithmetic, a form both tiers promote under force-all. Under natural heat P4 runs it compiled

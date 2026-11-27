@@ -1548,9 +1548,19 @@ func fileFnWrite(st *crescent.State, args []value.Value) ([]value.Value, *cresce
 
 // fileFnClose refuses to close a standard stream. PUC RETURNS the failure as (nil, msg)
 // rather than raising, so a pcall around it succeeds.
+//
+// The handle method close is liolib.c's io_close, the function io.close would also be: called
+// with no argument at all it first pushes the default output, and only then checks that
+// argument 1 is a file. The method table's environment holds no default output, so what it
+// pushes is nil and the error says "got nil" where every other handle method says
+// "got no value".
 func fileFnClose(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
 	if _, ok := streamKind(st, args); !ok {
-		return nil, crescent.NewArgError(1, "FILE* expected, got "+argTypeName(args, 0))
+		got := "nil"
+		if len(args) > 0 {
+			got = crescent.TypeNameOf(args[0])
+		}
+		return nil, crescent.NewArgError(1, "FILE* expected, got "+got)
 	}
 	return []value.Value{value.Nil, intern(st, "cannot close standard file")}, nil
 }
