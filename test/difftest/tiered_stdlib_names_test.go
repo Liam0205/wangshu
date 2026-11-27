@@ -209,8 +209,8 @@ for i = 1, 40 do
 end
 return table.concat(order, " | ")`, true, true},
 	// A file handle's close called with no argument at all, from a promoted function: the error says
-	// "got nil" (io_close pushes the default output first; the other handle methods say
-	// "got no value", and flush is called the same way to show it). A function is promoted only if
+	// "got nil" (io_close first pushes field [2] of the globals table, which is nil here; the other
+	// handle methods say "got no value", and flush is called the same way to show it). A function is promoted only if
 	// its calls are to known-safe library functions, which a call through a parameter or through
 	// io.stdout is not; the methods are therefore stored in the table library and reached as
 	// upvalues initialised from it, like math.mod below. Under natural heat P4 runs the kernel

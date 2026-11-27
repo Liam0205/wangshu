@@ -64,6 +64,29 @@ return math.sinh(0), math.cosh(0), math.tanh(0)`},
 	{"corner_gc_set_without_value", `return collectgarbage("setpause"), collectgarbage("setpause", 200), collectgarbage("setstepmul"), collectgarbage("setstepmul", nil), collectgarbage("setstepmul", 200)`},
 	{"corner_gc_set_conversions", `return collectgarbage("setpause", 150.7), collectgarbage("setpause", "120"), collectgarbage("setpause", -5), collectgarbage("setpause", 2^31), collectgarbage("setpause", 2^31 - 1), collectgarbage("setpause", -2^31), collectgarbage("setpause", 200)`},
 	{"corner_gc_set_bad_value", `return select(2, pcall(collectgarbage, "setpause", "x")), select(2, pcall(collectgarbage, "setstepmul", {}))`},
+	// The option is checked before the second argument.
+	{"corner_gc_bad_option_and_bad_value", `return select(2, pcall(collectgarbage, "bogus", "x")), select(2, pcall(collectgarbage, "bogus")), select(2, pcall(collectgarbage, "count", "x")), select(2, pcall(collectgarbage, 0, "x")), select(2, pcall(collectgarbage, {}, "x")), select(2, pcall(collectgarbage, nil, "x"))`},
+	// A file handle's close called with no argument checks the raw field [2] of the globals table
+	// (liolib.c's io_close reads IO_OUTPUT from its environment).
+	{"corner_io_close_without_handle_reads_globals_2", `
+local out = {}
+local function try(label)
+  local ok, a, b = pcall(io.stdout.close)
+  out[#out + 1] = label .. "=" .. tostring(ok) .. "," .. tostring(a) .. "," .. tostring(b)
+end
+try("nil")
+rawset(_G, 2, 5) try("number")
+rawset(_G, 2, "s") try("string")
+rawset(_G, 2, {}) try("table")
+rawset(_G, 2, io.stderr) try("stderr")
+rawset(_G, 2, io.stdin) try("stdin")
+rawset(_G, 2, nil)
+setmetatable(_G, {__index = function(_, k) if k == 2 then return io.stderr end end}) try("index")
+setmetatable(_G, nil)
+rawset(_G, 2, io.stderr)
+out[#out + 1] = "flush=" .. tostring(select(2, pcall(io.stdout.flush)))
+rawset(_G, 2, nil)
+return table.concat(out, " | ")`},
 	{"corner_gc_pause_survives_collect", `return collectgarbage("setpause", 300), collectgarbage("collect"), collectgarbage(), collectgarbage("setpause", 200)`},
 	{"corner_gc_other_options_return_zero", `return collectgarbage("stop", 5), collectgarbage("restart", 5), collectgarbage("collect", 5), collectgarbage("stop"), collectgarbage("restart")`},
 	// A pause ratio of 0 collects again almost at once; the largest one practically never does. The

@@ -606,10 +606,10 @@ updatePacing():
   threshold = live * GCPAUSE / 100     // 与「上次回收以来新分配的字节数」比较;GCPAUSE 默认 200 ⇒ 再分配 2*live 字节时 GC
 ```
 
-- `GCPAUSE`(默认 **200**):存活 `live` 字节后,再分配 `2*live` 字节(总量到 `3*live`)触发下次 GC。
-  默认值与 Lua 5.1 `LUAI_GCPAUSE` 相同,**含义不同**:官方拿 `estimate/100 * gcpause` 与总字节数比较,200 是总量到 `2*live` 时回收。
+- `GCPAUSE`（默认 **200**）：存活 `live` 字节后，再分配 `2*live` 字节（总量到 `3*live`）触发下次 GC。
+  默认值与 Lua 5.1 `LUAI_GCPAUSE` 相同，**含义不同**：官方拿 `estimate/100 * gcpause` 与总字节数比较，200 是总量到 `2*live` 时回收。
   所以这里的比例 `p` 大约相当于官方的 `p + 100`。`Options.GCPause` 和脚本的 `collectgarbage("setpause")` 设置的都是这个量
-  ([10](./10-stdlib.md) §4.6);要不要改成官方的口径见 [#353](https://github.com/Liam0205/wangshu/issues/353)。
+  （[10](./10-stdlib.md) §4.6）；要不要改成官方的口径见 [#353](https://github.com/Liam0205/wangshu/issues/353)。
 - **首次触发**:`threshold` 初值 = 一个小常量(如 arena 初始容量,避免极早 GC)。
 - P1 **只做 full GC**(无增量步长 `GCstepmul`);threshold 是「下次 full GC 的分配水位」。增量步长是 P3+ 的事。
 - **存活量估计**:精确 live = sweep 时累加存活对象字节;或近似 = `bump - sum(freelist 空闲块)`。P1 用 sweep 时精确累加(简单准确)。
@@ -617,7 +617,7 @@ updatePacing():
   加进 live;分配量上，创建协程时按段大小计入，扩容时经 `Collector.Account` 计入增量(只记账、不收集),与 lua5.1 把线程栈
   算进 `totalbytes` 一样，详见 [08](./08-coroutines.md) §6.1。
 
-> pacing 影响 GC **频率**,不影响**正确性**与**可观察行为**(§11):无论何时 GC,存活对象不变、`pairs` 序不变。
+> pacing 影响 GC **频率**,不影响**正确性**(§11):无论何时 GC,存活对象不变、`pairs` 序不变。脚本能看到回收时机的地方只有弱表条目何时被清、终结器何时执行和 `collectgarbage("count")` 的数值。
 > 但 GC 频率影响**性能**与**捕获 bug 的概率**——[12](./12-testing-difftest.md) 的「高频 GC 模式」(把 GCPAUSE 设到极小,
 > 每次分配都 GC)是逼出「漏 push shadow stack / mark 漏字段」类 bug 的压力测试手段(§11)。
 

@@ -98,8 +98,8 @@
   [#357](https://github.com/Liam0205/wangshu/issues/357)。记录在
   [P4 过程记录 §29](../../docs/design/p4-method-jit/implementation-progress.md)。
 
-- **【已完成 2026-11-27，#343】文件句柄的 `close` 不传句柄时报错文字不同** — `io.stdout.close()` 现在与官方一样报
-  `FILE* expected, got nil`；其余句柄方法不带参数时仍然报 `got no value`，也与官方相同。说明在
+- **【已完成 2026-11-27，#343】文件句柄的 `close` 不传句柄时报错文字不同** — `io.stdout.close()` 现在与官方一样检查全局表的原始字段
+  `[2]`（通常是 nil，报 `FILE* expected, got nil`）；其余句柄方法不带参数时仍然报 `got no value`，也与官方相同。说明在
   [10 §10.3](../../docs/design/p1-interpreter/10-stdlib.md) 的「IO 错误转 Lua 错误」一条里。
 
 - **【已完成 2026-11-27，#345】`collectgarbage("setpause")` / `("setstepmul")` 固定返回 0** — 两个选项现在都返回设置之前的值；

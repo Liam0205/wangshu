@@ -819,14 +819,17 @@ STW §7.3)。本文只列 opt 字符串 → 行为映射(对齐 Lua 5.1):
 | `"collect"`(默认) | 跑一次 full GC | 0 | ✅ | 06 §8.2 `collect()` |
 | `"count"` | 返回当前 arena 使用的 KB 数(浮点,含小数 = 字节/1024) | number | ✅ | 06 §8.3 live 字节 / 1024 |
 | `"step"` | 跑一步增量 GC(arg = 步长 KB) | bool(是否完成一轮) | △ | **P1 只 full GC**(06 §8.3:无增量步长);P1 把 `step` 实现为「触发一次 full GC,返回 true」(语义近似,记口径) |
-| `"setpause"` | 设 GCPAUSE(arg = 百分比),返回旧值 | number(旧值) | △ | 06 §8.3 GCPAUSE(默认 200,或 `Options.GCPause` 给的值);新值从下一次回收结束、计算下次触发阈值时起生效,与官方相同。返回值和参数转换与官方一致;**比例的含义不同**(见下面「`setpause` 的比例」) |
+| `"setpause"` | 设 GCPAUSE（arg = 百分比），返回旧值 | number（旧值） | △ | 06 §8.3 GCPAUSE（默认 200，或 `Options.GCPause` 给的值）；新值从下一次回收结束、计算下次触发阈值时起生效，与官方相同。返回值和参数转换与官方一致；**比例的含义不同**（见下面「`setpause` 的比例」） |
 | `"setstepmul"` | 设步长倍率,返回旧值 | number(旧值) | △ | P1 无增量,`setstepmul` 存值但不生效(记口径);默认 200 |
 | `"stop"` | 停止自动 GC | 0 | ✅ | P1:置 `gcEnabled=false`,Alloc 不主动触发(06 §8.2) |
 | `"restart"` | 重启自动 GC | 0 | ✅ | 置 `gcEnabled=true` |
 
-- **第二个参数**对所有 opt 都按官方的 `luaL_optint(L, 2, 0)` 读取:不给或给 nil 是 0,数字字符串可以,小数截断,超出 int 范围的按
-  `double → lua_Integer → int` 收窄;给了又不是数字时报 `bad argument #2 ... (number expected, got X)`。所以 `collectgarbage("setpause")`
-  (不带值)是把比例设成 0。
+- **第二个参数**对所有 opt 都按官方的 `luaL_optint(L, 2, 0)` 读取：不给或给 nil 是 0，数字字符串可以，小数截断，超出 int 范围的按
+  `double → lua_Integer → int` 收窄；给了又不是数字时报 `bad argument #2 ... (number expected, got X)`。所以 `collectgarbage("setpause")`
+  （不带值）是把比例设成 0。选项先检查、第二个参数后检查，与官方的顺序相同：`collectgarbage("bogus", "x")` 报的是 `invalid option`。
+  数超出 `lua_Integer`（int64）的范围时（`1e20`、±inf、NaN），`double → lua_Integer` 这一步在 C 里是未定义行为，官方的结果随平台变化：
+  x86-64 上得到 0，arm64 上按指令的饱和语义推出来是 -1（没有在 arm64 的官方解释器上实测）。望舒在所有平台上固定采用 x86-64 的结果，
+  与 `string.char` 的做法相同（README 的「C 未定义行为」一行）。
 - **`setpause` 的比例**：望舒拿 `live × 比例 / 100` 与**上次回收以来新分配的字节数**比较（06 §8.3），官方拿它与**总字节数**比较
   （`lgc.c` 的 `setthreshold`）。所以望舒的比例 `p` 大约相当于官方的 `p + 100`：200 在官方是总量翻倍时回收，在望舒是总量到三倍时回收；
   100 在官方是回收刚结束就接着回收，在望舒是再分配与存活量一样多的字节之后回收。`Options.GCPause` 是同一个量，含义相同。这是登记的
@@ -2132,8 +2135,11 @@ func hostIoWrite(vm *VM, th *Thread) int {
   参数类型错误;② 读一个**只写**句柄返回 PUC 的 errno 三元组 `(nil, "Bad file descriptor", 9)`(`fread` 在
   只写 handle 上失败,`g_read` 报 `strerror(EBADF)` + `EBADF`,Linux 上是 9)——不是单个 nil;
   ③ 关一个标准流**返回** `(nil, "cannot close standard file")` 而不是抬错,所以 pcall 包住它会成功。
-  句柄方法完全不带参数时(`io.stdout.flush()`)报 `FILE* expected, got no value`,只有 `close` 报 `got nil`:
-  它在 PUC 里就是 `io_close`,没有参数时先压入默认输出再检查,而句柄方法表的环境里没有默认输出,压进去的是 nil(#343)。
+  句柄方法完全不带参数时(`io.stdout.flush()`)报 `FILE* expected, got no value`,只有 `close` 不同:
+  它在 PUC 里就是 `io_close`,没有参数时先 `lua_rawgeti(L, LUA_ENVIRONINDEX, IO_OUTPUT)` 再检查。句柄方法是在 `luaopen_io`
+  换上私有环境之前注册的,它们的环境是全局表,`IO_OUTPUT` 是 2,所以压进去的是全局表的原始字段 `[2]`:脚本没有往那里放过东西时是
+  nil,报 `got nil`;放了别的值就按那个值检查(`rawset(_G, 2, 5)` 之后报 `got number`,放的是标准流时返回
+  `(nil, "cannot close standard file")`)。`fileFnClose` 照这个做(#343)。
   **例外 `io.write`**:它的 `g_write` 压布尔、写失败压 `false`,不抛错(上面已更正);标准流的
   `file:write` 同样返回布尔(返回句柄是 5.2+)。
 
@@ -2387,7 +2393,7 @@ stdlib 的 shadow stack 纪律(§3)漏 Pin 是**最难调的 bug 类**(06 §6.3:
 
 | 库 | ✅ 必做(conformance 所需) | △ 简化/部分 | ❌ 缺口(P1 不做) |
 |---|---|---|---|
-| **base** | print, type, tostring, tonumber, pairs, ipairs, next, select, rawget, rawset, rawequal, setmetatable, getmetatable, assert, error, pcall, xpcall, unpack, `_G`, `_VERSION`, collectgarbage(collect/count/stop/restart) | gcinfo, loadstring, load, loadfile, dofile, collectgarbage(step/setstepmul 近似；setpause 的比例含义与官方不同) | **rawlen**(5.2), **require/module/package 系统**, **table.unpack/pack/move**(5.2+), getfenv/setfenv(与分层执行的形状分析冲突), newproxy(官方未写入手册的函数) |
+| **base** | print, type, tostring, tonumber, pairs, ipairs, next, select, rawget, rawset, rawequal, setmetatable, getmetatable, assert, error, pcall, xpcall, unpack, `_G`, `_VERSION`, collectgarbage(collect/count/stop/restart) | gcinfo, loadstring, load, loadfile, dofile, collectgarbage(step/setstepmul 近似;setpause 的比例含义与官方不同) | **rawlen**(5.2), **require/module/package 系统**, **table.unpack/pack/move**(5.2+), getfenv/setfenv(与分层执行的形状分析冲突), newproxy(官方未写入手册的函数) |
 | **string** | len, sub, upper, lower, rep, reverse, byte, char, format, find, match, gmatch, gsub(**全 pattern 全集** §6);gfind(5.0 兼容名,与 gmatch 是同一个函数对象) | — | string.dump(字节码序列化) |
 | **table** | insert, remove, concat, sort, maxn;5.0 兼容函数 getn(等于 `#t`)、setn(对表报 `'setn' is obsolete`)、foreach、foreachi,都与官方一致 | — | table.unpack/pack/move(5.2+) |
 | **math** | abs, ceil, floor, sqrt, sin, cos, tan, asin, acos, atan, atan2, exp, log, log10, pow, fmod, modf, max, min, random, randomseed, huge, pi, rad, deg, frexp, ldexp, sinh, cosh, tanh;mod(5.0 兼容名,与 fmod 是同一个函数对象) | — | math.tointeger/type/maxinteger/mininteger(5.3 整数) |

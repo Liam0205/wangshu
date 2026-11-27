@@ -1072,15 +1072,18 @@ reviewer 另外列了三处修改前就过期、本分支没有碰的文字：`t
 `io.stdout.close()` 官方报 `bad argument #1 to 'close' (FILE* expected, got nil)`，望舒报 `got no value`。#329 的独立审查发现的，
 修改前三种构建相同，只影响报错文字。
 
-官方的句柄方法 `close` 就是 `liolib.c` 的 `io_close`：没有参数时先 `lua_rawgeti(L, LUA_ENVIRONINDEX, IO_OUTPUT)` 压入默认输出，
-再检查第一个参数是不是文件。句柄方法表的环境里没有默认输出，压进去的是 nil。`fileFnClose` 现在在没有参数时按 nil 报错。
+官方的句柄方法 `close` 就是 `liolib.c` 的 `io_close`：没有参数时先 `lua_rawgeti(L, LUA_ENVIRONINDEX, IO_OUTPUT)`，再检查第一个参数是
+不是文件。句柄方法是在 `luaopen_io` 换上私有环境之前注册的，环境是全局表（官方里 `getfenv(io.stdout.close) == _G`），`IO_OUTPUT` 是 2，
+所以压进去的是全局表的原始字段 `[2]`：通常是 nil，报 `got nil`；脚本往 `_G[2]` 放过值时按那个值检查（数字报 `got number`，标准流则返回
+`(nil, "cannot close standard file")`）。`fileFnClose` 在没有参数时读全局表的 `[2]`（不经过元方法）再检查。
 `flush`、`read`、`write`、`lines` 在官方实现里没有这一步，不带参数时两侧都报 `got no value`，没有改。
 
 把三个标准流的七个方法在「不带参数、nil、数字、表」四种情况下的报错与 `lua5.1` 逐行比过，除 `close` 这一处以外，不同的只有望舒
 没有提供的 `seek`、`setvbuf` 和元表的 `__gc`（都是已经登记的豁免）。
 
-测试：`test/api` 的 `TestIOHandles_MatchPUC` 加 11 个用例（三个标准流、按名字调用、显式 nil、数字、多余参数，以及另外四个方法不带参数时的
-对照）；差分 fuzz 语料 `r343_file_close_no_handle`；`TestTiered_StdlibNames` 加一段 `file_close_without_handle`，在 P3 / P4 的升层代码里
+测试：`test/api` 的 `TestIOHandles_MatchPUC` 加 16 个用例（三个标准流、按名字调用、`_G[2]` 是数字 / 表 / 标准流 / 只能经 `__index` 取到、
+显式 nil、数字、多余参数，以及另外四个方法不带参数时的对照）；差分 fuzz 语料 `r343_file_close_no_handle` 和 `r343_file_close_reads_globals_2`；`test/difftest` 的探测
+`corner_io_close_without_handle_reads_globals_2`；`TestTiered_StdlibNames` 加一段 `file_close_without_handle`，在 P3 / P4 的升层代码里
 调用。只撤掉 `fileFnClose` 的改动，这三处都失败。
 
 ## 2026-11-27：`collectgarbage("setpause")` / `("setstepmul")` 返回设置之前的值（#345）
@@ -1100,6 +1103,10 @@ reviewer 另外列了三处修改前就过期、本分支没有碰的文字：`t
 不符，这次改成了代码的实际行为。`setpause` 在 10 §4.6 里标成 △，登记进 README 的差异表和 `exemptions`，`TestDiff_GCPauseMeaning` 固定
 两边各自的结果，`corner_gc_setpause_ratios_in_between` 在两边结果相同的中间取值上比较。要不要改成官方的口径、池化复用时要不要恢复
 回收器的设置，记在 [#353](https://github.com/Liam0205/wangshu/issues/353)。
+
+选项和第二个参数都不合法时先报选项（`collectgarbage("bogus", "x")` 报 `invalid option 'bogus'`），与官方 `luaL_checkoption` 在前、
+`luaL_optint` 在后的顺序相同；之前先报第二个参数。第二个参数超出 64 位整数范围时官方的结果是 C 的未定义行为、随平台变化，望舒固定
+采用 x86-64 的结果，登记在 README 的「C 未定义行为」一行和 10 §4.6。
 
 `step` 没有改：仍然做一次完整回收并返回 `true`，官方返回的是这一步有没有结束一轮回收。这是登记过的差异（README「增量 GC」一行、
 `exemptions`），两处的文字从「只返回占位值」改成了现在的实际行为。

@@ -49,9 +49,10 @@ func TestIOHandles_MatchPUC(t *testing.T) {
 		{"bad receiver",
 			`local ok, e = pcall(io.stdout.write, {}, "x") return tostring(ok) .. "," .. tostring(e)`,
 			"false,bad argument #1 to '?' (FILE* expected, got table)"},
-		// close called with no argument at all reports "got nil": PUC's io_close pushes the default
-		// output first, and the method table's environment has none. The other handle methods have
-		// no such step and report "got no value".
+		// close called with no argument at all: PUC's io_close first pushes field [2] of its
+		// environment, which for the handle methods is the globals table, and checks that. It is nil
+		// unless a script stored something there, hence "got nil". The other handle methods have no
+		// such step and report "got no value".
 		{"close without a handle", `return tostring(select(2, pcall(io.stdout.close)))`,
 			"bad argument #1 to '?' (FILE* expected, got nil)"},
 		{"close without a handle, stdin", `return tostring(select(2, pcall(io.stdin.close)))`,
@@ -61,6 +62,21 @@ func TestIOHandles_MatchPUC(t *testing.T) {
 		{"close without a handle, called by name",
 			`return tostring(select(2, pcall(function() return io.stdout.close() end)))`,
 			`[string "test"]:1: bad argument #1 to 'close' (FILE* expected, got nil)`},
+		{"close without a handle, _G[2] is a number",
+			`rawset(_G, 2, 5) return tostring(select(2, pcall(io.stdout.close)))`,
+			"bad argument #1 to '?' (FILE* expected, got number)"},
+		{"close without a handle, _G[2] is a table",
+			`_G[2] = {} return tostring(select(2, pcall(io.stdout.close)))`,
+			"bad argument #1 to '?' (FILE* expected, got table)"},
+		{"close without a handle, _G[2] is a standard stream",
+			`rawset(_G, 2, io.stderr) local ok, a, b = pcall(io.stdout.close) return tostring(ok) .. "," .. tostring(a) .. "," .. tostring(b)`,
+			"true,nil,cannot close standard file"},
+		{"close without a handle, _G[2] only through __index",
+			`setmetatable(_G, {__index = function(_, k) if k == 2 then return io.stderr end end}) return tostring(select(2, pcall(io.stdout.close)))`,
+			"bad argument #1 to '?' (FILE* expected, got nil)"},
+		{"flush without a handle ignores _G[2]",
+			`rawset(_G, 2, io.stderr) return tostring(select(2, pcall(io.stdout.flush)))`,
+			"bad argument #1 to '?' (FILE* expected, got no value)"},
 		{"close with an explicit nil", `return tostring(select(2, pcall(io.stdout.close, nil)))`,
 			"bad argument #1 to '?' (FILE* expected, got nil)"},
 		{"close with a number", `return tostring(select(2, pcall(io.stdout.close, 1)))`,
