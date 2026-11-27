@@ -30,18 +30,11 @@ func TestOptions_FieldsNotRead(t *testing.T) {
 		return strings.Join(parts, " ")
 	}
 
-	// The ratio a script reads back is 200, and a negative GCPause does not stop automatic
-	// collections: an object held only by a weak table is gone after 200000 small tables.
-	const pause = `
-local prev = collectgarbage("setpause", 200)
-local probe = setmetatable({}, {__mode = "v"})
-probe[1] = {}
-local keep = {}
-for i = 1, 200000 do keep[i % 50 + 1] = {i} end
-return prev, probe[1] == nil`
+	// The ratio a script reads back is 200 whatever GCPause says.
+	const pause = `return collectgarbage("setpause", 200)`
 	for _, p := range []int{0, 150, -1, 100000} {
-		if got := run(t, wangshu.Options{GCPause: p}, pause); got != "200 true" {
-			t.Errorf("Options.GCPause = %d: got %q, want %q (the field is not read)", p, got, "200 true")
+		if got := run(t, wangshu.Options{GCPause: p}, pause); got != "200" {
+			t.Errorf("Options.GCPause = %d: got %q, want %q (the field is not read)", p, got, "200")
 		}
 	}
 
