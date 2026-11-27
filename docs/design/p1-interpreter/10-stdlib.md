@@ -558,7 +558,7 @@ func gsubFunctionRepl(vm *VM, th *Thread, captures []value.Value, repl value.Val
 > **stdlib 纪律总则(三条范例归纳)**:① **优先 Go 缓冲累积**(concat/format/rep),把 arena 分配压缩到末尾一次,
 > 根本规避中间持有窗口;② **不可避免地在 arena 持有中间引用跨分配/跨重入时,Pin/defer Unpin**(gsub 捕获);
 > ③ **能尽早把引用送进 Lua 栈/表的就送**(进栈即 R5 可达,免 Pin)。差分测试的 **GC 压力 fuzz**(06 §11:压力模式,
-> 每个安全点都 GC)是捕获漏 Pin 的主要自动化防线——漏 Pin 在正常 pacing 下偶发,持有窗口里有安全点(06 §6.3:回调 Lua 函数等)时高频 GC 下必现(§13.3)。
+> 每个安全点都 GC)是捕获漏 Pin 的主要自动化防线——漏 Pin 在正常 pacing 下偶发,持有窗口里有安全点(06 §6.3:回调的 Lua 函数自己执行到安全点等)时高频 GC 下必现(§13.3)。
 
 ---
 
@@ -2383,7 +2383,7 @@ stdlib 的 shadow stack 纪律(§3)漏 Pin 是**最难调的 bug 类**(06 §6.3:
 - **机制**:打开 collector 的压力模式(06 §8.3,每个安全点都 full GC),反复跑大量 stdlib 调用(尤其分配类:
   format/concat/rep/gsub/match,§3.1),验证:① 输出与正常 pacing byte-equal;② 不崩溃。
 - **为什么有效**:漏 Pin 的中间对象在正常 pacing 下偶发被回收(GC 恰好在持有窗口触发的概率低),高频 GC 下
-  **必现**(每个安全点都 GC,持有窗口里只要有一个安全点就必然触发;host function 的分配本身只记账,窗口里的安全点是 06 §6.3 列的那几种:回调 Lua 函数或 `collectgarbage`、调用会收集的公开 API,以及 `coroutine.create` 分配新协程之前的那一次检查)。这是 §3 纪律的**主要自动化防线**(06 §11)。
+  **必现**(每个安全点都 GC,持有窗口里只要有一个安全点就必然触发;host function 的分配本身只记账,窗口里的安全点是 06 §6.3 列的那几种:回调 `collectgarbage` 或调用会收集的公开 API,回调的 Lua 函数自己执行到安全点(只做比较和算术的回调里没有),以及 `coroutine.create` 分配新协程之前的那一次检查)。这是 §3 纪律的**主要自动化防线**(06 §11)。
 - **指向 12**:GC 压力 fuzz 的具体 harness(强制高频 GC + stdlib 调用矩阵)在 12 定稿;本文 §3 的纪律范例
   (concat/format/gsub)是它的测试对象。
 
@@ -2395,7 +2395,7 @@ stdlib 的 shadow stack 纪律(§3)漏 Pin 是**最难调的 bug 类**(06 §6.3:
 
 | 库 | ✅ 必做(conformance 所需) | △ 简化/部分 | ❌ 缺口(P1 不做) |
 |---|---|---|---|
-| **base** | print, type, tostring, tonumber, pairs, ipairs, next, select, rawget, rawset, rawequal, setmetatable, getmetatable, assert, error, pcall, xpcall, unpack, `_G`, `_VERSION`, collectgarbage(collect/count/stop/restart) | gcinfo, loadstring, load, loadfile, dofile, collectgarbage(step/setstepmul 近似;setpause 的比例含义与官方不同) | **rawlen**(5.2), **require/module/package 系统**, **table.unpack/pack/move**(5.2+), getfenv/setfenv(与分层执行的形状分析冲突), newproxy(官方未写入手册的函数) |
+| **base** | print, type, tostring, tonumber, pairs, ipairs, next, select, rawget, rawset, rawequal, setmetatable, getmetatable, assert, error, pcall, xpcall, unpack, `_G`, `_VERSION`, collectgarbage(collect/count/restart) | gcinfo, loadstring, load, loadfile, dofile, collectgarbage(step/setstepmul 近似;setpause 的比例含义与官方不同;stop 之后的 collect/step 不恢复自动回收,#354) | **rawlen**(5.2), **require/module/package 系统**, **table.unpack/pack/move**(5.2+), getfenv/setfenv(与分层执行的形状分析冲突), newproxy(官方未写入手册的函数) |
 | **string** | len, sub, upper, lower, rep, reverse, byte, char, format, find, match, gmatch, gsub(**全 pattern 全集** §6);gfind(5.0 兼容名,与 gmatch 是同一个函数对象) | — | string.dump(字节码序列化) |
 | **table** | insert, remove, concat, sort, maxn;5.0 兼容函数 getn(等于 `#t`)、setn(对表报 `'setn' is obsolete`)、foreach、foreachi,都与官方一致 | — | table.unpack/pack/move(5.2+) |
 | **math** | abs, ceil, floor, sqrt, sin, cos, tan, asin, acos, atan, atan2, exp, log, log10, pow, fmod, modf, max, min, random, randomseed, huge, pi, rad, deg, frexp, ldexp, sinh, cosh, tanh;mod(5.0 兼容名,与 fmod 是同一个函数对象) | — | math.tointeger/type/maxinteger/mininteger(5.3 整数) |
