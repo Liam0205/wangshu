@@ -614,7 +614,7 @@ updatePacing():
   默认值与 Lua 5.1 `LUAI_GCPAUSE` 相同，**含义不同**：官方拿 `estimate/100 * gcpause` 与总字节数比较，200 是总量到 `2*live` 时回收。
   所以这里的比例 `p` 大约相当于官方的 `p + 100`。脚本的 `collectgarbage("setpause")` 设置的是这个量；公开的 `Options.GCPause` 目前没有接到回收器上，设了不起作用（[#356](https://github.com/Liam0205/wangshu/issues/356)）
   （[10](./10-stdlib.md) §4.6）；要不要改成官方的口径见 [#353](https://github.com/Liam0205/wangshu/issues/353)。
-- **首次触发**:`threshold` 初值 = 一个小常量(如 arena 初始容量,避免极早 GC)。
+- **首次触发**:`threshold` 初值 = 创建 collector 时 arena 容量的 1/4(既不过早 GC,也不拖到太晚)。
 - **下限**：每轮回收之后算出的 `threshold` 不低于 arena 容量的 1/16。所以比例再小（包括 0），两次自动回收之间也要分配这么多字节；
   要让每个安全点都回收，用的是压力模式（`Collector.SetStressMode`，公开入口 `State.SetGCStressMode`，§11），不是把比例调小。
 - P1 **只做 full GC**(无增量步长 `GCstepmul`);threshold 是「下次 full GC 的分配水位」。增量步长是 P3+ 的事。
