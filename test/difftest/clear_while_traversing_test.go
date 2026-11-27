@@ -114,6 +114,17 @@ w.a = keep[1] w.b = keep[2] w.c = keep[3]
 local n = 0
 for k, v in pairs(w) do v = nil keep = nil collectgarbage() n = n + 1 end
 return n, next(w)`, "1\tnil"},
+	// A cache with string keys and weak values releases its keys once the values are gone: the
+	// entries the collector cleared do not keep their keys alive.
+	{"weak_valued_cache_releases_its_string_keys", `
+local w = setmetatable({}, {__mode = "v"})
+local hold = {}
+for i = 1, 2000 do local o = {} hold[i] = o w[string.rep("k", 200) .. i] = o end
+collectgarbage() collectgarbage()
+local before = collectgarbage("count")
+hold = nil
+collectgarbage() collectgarbage() collectgarbage()
+return collectgarbage("count") < before / 2`, "true"},
 	// next accepts a key that was removed before the traversal reached it, and still rejects one
 	// that never was in the table.
 	{"next_from_a_removed_key", `
@@ -196,11 +207,11 @@ func TestDiff_ClearWhileTraversing(t *testing.T) {
 
 // nextFromCollectedStringKey removes a string key that nothing else refers to, collects, and then
 // hands next a string with the same contents. In wangshu a collection in between changes nothing
-// about the node: a removed node keeps its string key alive, so the rebuilt string finds it as long
-// as no later insertion has taken the node over or rehashed the table (06 §8.4). lua5.1 lets the string die and marks the node's key dead, after which
-// next matches that key by object address only: the call then fails unless the rebuilt string
-// happens to be allocated where the old one was. The difference is registered in exemptions
-// (corners_test.go).
+// about the node: in a strong table a removed node keeps its string key alive, so the rebuilt
+// string finds it as long as no later insertion has taken the node over or rehashed the table
+// (06 §8.4). lua5.1 lets the string die and marks the node's key dead, after which next matches
+// that key by object address only: the call then fails unless the rebuilt string happens to be
+// allocated where the old one was. The difference is registered in exemptions (corners_test.go).
 const nextFromCollectedStringKey = `
 local t = {}
 for i = 1, 5 do t["dyn" .. i] = i end
@@ -222,9 +233,55 @@ func TestDiff_NextFromCollectedStringKey(t *testing.T) {
 	}
 }
 
+// nextFromCollectedKeysOfWeakTables count, for 50 string keys each, how often next accepts a
+// rebuilt key whose string was collected. A weak table does not keep the string key of a removed
+// node alive, whether the script removed the key or the collector cleared the entry: once the
+// string is gone the node holds a key that matches nothing, and next raises.
+var nextFromCollectedKeysOfWeakTables = []struct{ name, src string }{
+	{"entries_cleared_by_the_collector", `
+local w = setmetatable({}, {__mode = "v"})
+local hold = {}
+for i = 1, 50 do local o = {} hold[i] = o w["wk" .. i] = o end
+hold = nil
+collectgarbage() collectgarbage() collectgarbage()
+local ok = 0
+for i = 1, 50 do if pcall(next, w, "wk" .. i) then ok = ok + 1 end end
+return ok`},
+	{"keys_removed_by_the_script", `
+local ok = 0
+for _, mode in ipairs({"k", "v", "kv"}) do
+  local w = setmetatable({}, {__mode = mode})
+  for i = 1, 50 do w["wd" .. mode .. i] = i end
+  for i = 1, 50 do w["wd" .. mode .. i] = nil end
+  collectgarbage() collectgarbage()
+  for i = 1, 50 do if pcall(next, w, "wd" .. mode .. i) then ok = ok + 1 end end
+end
+return ok`},
+}
+
+// TestDiff_NextFromCollectedKeysOfWeakTables pins wangshu's side: no call succeeds, with the
+// collector in its normal mode and collecting at every safepoint. lua5.1 lets these strings die
+// too and then matches a dead key by address, so there a call succeeds when the rebuilt string
+// happens to be allocated where the old one was; its count is logged and not asserted.
+func TestDiff_NextFromCollectedKeysOfWeakTables(t *testing.T) {
+	oracle := findOracle()
+	for _, c := range nextFromCollectedKeysOfWeakTables {
+		t.Run(c.name, func(t *testing.T) {
+			for _, stress := range []bool{false, true} {
+				if got := runClearCase(t, c.src, stress); got != "0" {
+					t.Errorf("wangshu (collecting at every safepoint: %v):\n  got:  %q\n  want: %q", stress, got, "0")
+				}
+			}
+			if oracle != "" {
+				t.Logf("lua5.1 here: %s", strings.TrimSuffix(runOracle(t, oracle, wrapForOracle(c.src)), "\n"))
+			}
+		})
+	}
+}
+
 // nextOnRemovedKeyAfterStores are calls of next on a removed key after further stores to the table.
 // Whether the table still has a node for such a key is internal state, and it differs from lua5.1
-// in either direction. Four causes are known:
+// in either direction. Five causes are known:
 //
 //   - the layout of the hash part: a new key whose main position is that node takes it over, and an
 //     insertion that finds no free node rehashes, which drops every removed key. wangshu's hash
@@ -241,7 +298,11 @@ func TestDiff_NextFromCollectedStringKey(t *testing.T) {
 //     address, in both implementations, and the addresses the two allocators hand out have nothing
 //     to do with each other. Which node such a key lands on, and so whether it takes a removed
 //     key's node over, also varies within one implementation with what was allocated and
-//     collected before (TestNextOnRemovedKey_ObjectKeysInsertedAfterwards).
+//     collected before (TestNextOnRemovedKey_ObjectKeysInsertedAfterwards);
+//   - dead keys matched by address: after a collection lua5.1's next recognises a removed key
+//     whose object is gone by the address it had, so it also accepts an object or string that
+//     never was in the table and happens to be allocated there. wangshu's next raises for every
+//     key the table has no node for (TestDiff_NextFromKeysNeverInTheTable).
 //
 // The manual leaves the behaviour undefined once a traversal has assigned to a field that did not
 // exist; the cases are here so that a change in wangshu's answers is noticed. want is wangshu's
@@ -306,6 +367,36 @@ func TestDiff_NextOnRemovedKeyAfterStores(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// nextFromKeysNeverInTheTable removes a table used as a key, lets it be collected, and then asks
+// next about 200 fresh tables that never were keys of t, in 30 rounds. The result is the number of
+// calls that did not raise.
+const nextFromKeysNeverInTheTable = `
+local ok = 0
+for i = 1, 30 do
+  local t = {}
+  for j = 1, 4 do t["s" .. j] = j end
+  do local k = {} t[k] = 1 t[k] = nil end
+  collectgarbage() collectgarbage()
+  local objs = {}
+  for m = 1, 200 do objs[m] = {} end
+  for m = 1, 200 do if pcall(next, t, objs[m]) then ok = ok + 1 end end
+end
+return ok`
+
+// TestDiff_NextFromKeysNeverInTheTable pins wangshu's side: every call raises, with the collector
+// in its normal mode and collecting at every safepoint. lua5.1 accepts the fresh table that is
+// allocated where the collected key was; its count depends on the C allocator and is logged.
+func TestDiff_NextFromKeysNeverInTheTable(t *testing.T) {
+	for _, stress := range []bool{false, true} {
+		if got := runClearCase(t, nextFromKeysNeverInTheTable, stress); got != "0" {
+			t.Errorf("wangshu (collecting at every safepoint: %v):\n  got:  %q\n  want: %q", stress, got, "0")
+		}
+	}
+	if oracle := findOracle(); oracle != "" {
+		t.Logf("lua5.1 here: %s", strings.TrimSuffix(runOracle(t, oracle, wrapForOracle(nextFromKeysNeverInTheTable)), "\n"))
 	}
 }
 
