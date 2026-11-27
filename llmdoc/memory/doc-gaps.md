@@ -52,6 +52,12 @@
   `io.stdout`，nightly 还没有报过；见该 issue 2026-11-26 的评论）。哪些要补、`os.exit` 取什么语义、开关要不要做，见
   [#330](https://github.com/Liam0205/wangshu/issues/330)。
 
+- **【未做，等维护者决定】`engineering.md` §1 的 Makefile 片段与真实的 Makefile 不一致** — 片段里 `all:` 的依赖是
+  `test fuzz conformance difftest bench-test`，真实的是 `build-all test-all fuzz-all conformance difftest-all`；片段只有 12 个
+  目标的规则，真实的有 46 个，按构建分的目标和 `check-readme` 的规则都不在片段里；`.PHONY` 里还留着已经不存在的 `race`；
+  下面的说明写「七件套」，`all:` 实际有 9 个依赖。片段是逐行保持一致还是只作示意，见
+  [#344](https://github.com/Liam0205/wangshu/issues/344)。
+
 - **【未做，等维护者决定】`10-stdlib.md` 的逐函数表格和 §14 总表没有常驻检查** — 它们是「望舒提供哪些函数」的手工副本。
   有测试约束的是实际注册的名字（`TestDiff_StdlibNames`）、README 的「不提供」表（`TestStdlibAbsentIsInREADME`）和登记
   理由（`TestStdlibAbsentReasonsResolve`）；设计文档的表格不在其中。2026-11-26 用临时脚本机械核对过一次，当时不一致为 0。

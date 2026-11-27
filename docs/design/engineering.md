@@ -217,7 +217,7 @@ jobs:
 
   test-scripts:    # 工具脚本自测(2026-07-25,issue #179;<5s;与 lint 并列独立 job 便于 rerun)
     - run: make test-scripts
-    - run: make check-readme    # README 的「不提供」表与标准库登记表的双向检查(2026-11-27,#329)
+    - run: make check-readme    # README 的「不提供」表与标准库登记表的双向检查（2026-11-27，#329）
 
   test:            # 单测 + race + 覆盖率(12 §8 步骤 1)
     - run: go test -race -coverprofile=coverage.out -covermode=atomic ./...
