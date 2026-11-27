@@ -149,6 +149,11 @@ func SelfTailCallHitCountAddr() uint64 {
 	return uint64(uintptr(unsafe.Pointer(&SelfTailCallHitCount)))
 }
 
+// maxNativePC is the highest pc the exit-reason word holds (its pc field is 22 bits wide).
+// AnalyzeNative rejects a Proto with an instruction beyond it, so the pc a helper unpacks is
+// always the instruction's own.
+const maxNativePC = 1<<22 - 1
+
 // dispatchHelper handles a single ExitInlineHelper request from the
 // mmap segment. Returns true on success (segment can be re-entered
 // at resumeOff), false on error (host method raised → caller returns
