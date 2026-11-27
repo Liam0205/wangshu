@@ -822,7 +822,7 @@ STW §7.3)。本文只列 opt 字符串 → 行为映射(对齐 Lua 5.1):
 | `"setpause"` | 设 GCPAUSE（arg = 百分比），返回旧值 | number（旧值） | △ | 06 §8.3 GCPAUSE（每个 State 从 200 开始）；新值从下一次回收结束、计算下次触发阈值时起生效，与官方相同。返回值和参数转换与官方一致；**比例的含义不同**（见下面「`setpause` 的比例」） |
 | `"setstepmul"` | 设步长倍率,返回旧值 | number(旧值) | △ | P1 无增量,`setstepmul` 存值但不生效(记口径);默认 200 |
 | `"stop"` | 停止自动 GC | 0 | △ | P1:置 `gcEnabled=false`,Alloc 不主动触发(06 §8.2)。官方在 `stop` 之后的 `collectgarbage()` / `("step")` 会恢复自动回收,望舒要等 `restart`(存量缺陷 [#354](https://github.com/Liam0205/wangshu/issues/354)) |
-| `"restart"` | 重启自动 GC | 0 | ✅ | 置 `gcEnabled=true` |
+| `"restart"` | 重启自动 GC | 0 | ✅ | 置 `gcEnabled=true`。官方 `restart` 之后下一次分配就回收,望舒按原来的阈值继续,只是时机不同([#354](https://github.com/Liam0205/wangshu/issues/354)) |
 
 - **第二个参数**对所有 opt 都按官方的 `luaL_optint(L, 2, 0)` 读取：不给或给 nil 是 0，数字字符串可以，小数截断，超出 int 范围的按
   `double → lua_Integer → int` 收窄；给了又不是数字时报 `bad argument #2 ... (number expected, got X)`。所以 `collectgarbage("setpause")`
