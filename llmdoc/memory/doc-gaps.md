@@ -165,7 +165,7 @@
   （哈希部分、数组部分，amd64、arm64）补上「槽位现有的值不是 nil」和「要写入的值不是 nil」两项检查，与 #338 在同一个 PR 里。
   `test/difftest` 的 `TestTiered_SingleStoreTemplate` 固定。
 - **【已完成 2026-11-27，#338】遍历过程中把当前字段赋成 `nil` 会报 `invalid key to 'next'`** — 删除改为只清值、键留在节点里
-  （[01 §5.2](../../docs/design/p1-interpreter/01-value-object-model.md) 节点的三种状态），回收器负责不让留下的键使对象存活
+  （[01 §5.2](../../docs/design/p1-interpreter/01-value-object-model.md) 节点的三种状态），回收器负责不让留下的键使对象存活（脚本赋 nil 删掉的字符串键除外，它由节点保活，#352）
   （[06 §8.4](../../docs/design/p1-interpreter/06-memory-gc.md)）。过程见
   [[2026-11-27-issue338-deleted-key-stays-in-node]]。
 
