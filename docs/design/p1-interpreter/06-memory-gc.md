@@ -467,8 +467,10 @@ host function 签名(见 [10-stdlib](./10-stdlib.md))拿到一个执行上下文
   `table.create` 新建的表)在「写回 Lua 栈之前」处于 Go 栈持有窗口,**必须 `Push`/`defer Pop`**。
 - 一旦中间对象**写回到 Lua 栈槽 / 已存活的表 / 全局**,它就经 R5/R1 等可达,可从 shadow stack `Pop`(此后栈/表当根)。
 - **多步分配**:host 连续分配 A 再分配 B(分配 B 时可能触发 GC),A 必须先 Push,否则分配 B 触发的 GC 会回收 A。
-  分配本身只记账、不在分配处收集(§7.1),但两次分配之间回调了 Lua 函数 / `collectgarbage`、调用了会收集的公开 API
-  时都会收集，所以仍按「可能触发」来写。
+  分配本身只记账、不在分配处收集(§7.1)。host function 执行期间会收集的地方有三种:它回调了 `collectgarbage` 或调用了会收集的公开 API;
+  它回调的 Lua 函数(含元方法)自己执行到了安全点,即执行了 SETGLOBAL、SETTABLE、NEWTABLE、CONCAT、SETLIST、CLOSURE 之一,
+  或者在里面又调用了 host function(那次调用返回之后检查一次),P3 编译出的循环在跳回处还有一次检查;`coroutine.create` 在分配新协程之前检查一次。
+  只做比较和算术的回调(如 `function(a, b) return a < b end`)里没有安全点。写 host function 时仍按「可能触发」来写。
   规则简记:**「下一次可能触发 GC 的分配之前,所有已持有但未上 Lua 栈/表的 arena 引用都要在 shadow stack 上」**。
 
 > 这条约定是 stdlib 实现的**纪律**(类似写 C 扩展时管理 `lua_State` 栈的纪律)。差分测试不直接测它,
@@ -867,8 +869,8 @@ GC 主流程(§8.2)的两个终结相关步骤:
 - **GC 压力 fuzz**:打开 collector 的压力模式(每个安全点都 full GC,§8.3),反复跑同一程序,验证:
   ① 输出与「正常 pacing」byte-equal(GC 透明性);② 不崩溃(捕获「漏 push shadow stack(§6.3)/mark 漏扫字段(§5.2)」类 bug)。
   这是 §6.3 纪律、§5.2 完整性的**主要自动化防线**——这类 bug 在正常 pacing 下偶发难复现,高频 GC 下必现(漏 push 要求持有窗口里有安全点,
-  §6.3 列了这些安全点:host function 回调了 Lua 函数或 `collectgarbage`、调用了会收集的公开 API;它自己的分配只记账,
-  `coroutine.create` 除外,它在分配新协程之前检查一次,§7.1)。
+  §6.3 列了 host function 执行期间会收集的地方:回调了 `collectgarbage` 或调用了会收集的公开 API,回调的 Lua 函数自己执行到了安全点;
+  它自己的分配只记账,`coroutine.create` 除外,它在分配新协程之前检查一次,§7.1。回调里只有比较和算术时窗口里没有安全点,压力模式碰不到)。
 - **finalizer 顺序**:`__gc` 调用序(创建逆序,§10)若被测试观察(终结器打印),须与 Lua 5.1 一致——属差分用例。
 
 > 与 [01](./01-value-object-model.md) §8 / [02](./02-bytecode-isa.md) §10 的缺口呼应:`pairs` 是否逐字节一致是验收口径问题,

@@ -1024,7 +1024,7 @@ func TestGCStress(t *testing.T) {
 - **高频 GC 是测试钩子**:实现上是 collector 的压力模式(`SetStressMode`,公开入口 `State.SetGCStressMode`),打开之后每个安全点都做一次 full GC。只把 [06](./06-memory-gc.md) §8.3 的比例调小做不到这一点:`threshold = live * GCPAUSE / 100` 有 arena 容量 1/16 的下限,比例再小,两次回收之间也要分配够这么多字节。
 - **基线对照是关键**:不是「高频 GC 跑通就行」,而是「高频 GC 输出 == 正常 pacing 输出」。透明性(目标①)比不崩溃(目标②)更强——不崩溃只证明没 use-after-free,透明性还证明没「悄悄回收了不该回收的、导致输出错」。
 - **与三方差分叠加**:GC 压力 fuzz 主要是**望舒内部**的「高频 vs 正常 GC」对照(gopher-lua/官方的 GC 不可比)。但若高频 GC 下望舒输出变了,它同时也会偏离官方 → 三方差分也会抓到。GC 压力 fuzz 是「更早、更针对」的捕获。
-- **stdlib 分配类重点**([10](./10-stdlib.md) §13.3):`string.format`/`concat`/`rep`/`gsub`/`match` 这些 host function 内分配中间对象的([06](./06-memory-gc.md) §6.3 纪律对象),是 GC 压力 fuzz 的主要测试目标。压力模式必然发现的是持有窗口里有安全点的漏 Pin:host function 的分配本身只记账、不回收,窗口里的安全点是 [06](./06-memory-gc.md) §6.3 列的那几种(回调 Lua 函数,如 `gsub` 的替换函数、`sort` 的比较函数、元方法;调用 `collectgarbage` 或会收集的公开 API;`coroutine.create` 分配新协程之前的检查)。没有这些点的函数(`format`/`concat`/`rep`)内部的窗口,压力模式碰不到。
+- **stdlib 分配类重点**([10](./10-stdlib.md) §13.3):`string.format`/`concat`/`rep`/`gsub`/`match` 这些 host function 内分配中间对象的([06](./06-memory-gc.md) §6.3 纪律对象),是 GC 压力 fuzz 的主要测试目标。压力模式必然发现的是持有窗口里有安全点的漏 Pin:host function 的分配本身只记账、不回收,窗口里的安全点是 [06](./06-memory-gc.md) §6.3 列的那几种(回调的 Lua 函数自己执行到安全点,即 `gsub` 的替换函数、`sort` 的比较函数、元方法里执行了 SETGLOBAL、SETTABLE、NEWTABLE、CONCAT、SETLIST、CLOSURE 之一,或者又调用了 host function;回调 `collectgarbage` 或调用会收集的公开 API;`coroutine.create` 分配新协程之前的检查)。没有这些点的窗口,压力模式碰不到:`format`/`concat`/`rep` 内部的窗口是这样,回调只做比较和算术(如 `function(a, b) return a < b end`)时 `sort`、`gsub` 的窗口也是这样。
 
 ### 5.4 finalizer 顺序(承 06 §10/§11)
 
