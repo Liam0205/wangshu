@@ -122,8 +122,9 @@ func TestDeadKey_ReachableKeyStaysAndNextContinues(t *testing.T) {
 	}
 }
 
-// A string key of a DEAD node is the one kind the node does keep alive: an equal string could be
-// created again later, and it must find its old node whether or not a collection ran in between.
+// A string key of a DEAD node in a strong table is the one kind the node does keep alive: an equal
+// string could be created again later, and it must find its old node whether or not a collection
+// ran in between.
 func TestDeadKey_StringKeyIsKept(t *testing.T) {
 	st, th := gcTestState(t)
 	holder := newHashTable(st, 8)
@@ -226,6 +227,68 @@ func TestWeak_DeletedKeyIsReplacedWhenItsObjectDies(t *testing.T) {
 		}
 		if object.TableGen(st.arena, weak) == gen0 {
 			t.Errorf("mode %q: node %d changed its key but gen stayed %d", mode, idx, gen0)
+		}
+	}
+}
+
+// A weak table does not keep the string key of a DEAD node alive, as a strong table does
+// (TestDeadKey_StringKeyIsKept): the string goes with the first collection that finds it
+// unreferenced, and the key is replaced like that of any other dead object.
+func TestWeak_DeletedStringKeyIsNotKept(t *testing.T) {
+	for _, mode := range []string{"k", "v", "kv"} {
+		st, th := gcTestState(t)
+		weak := weakTable(st, th, mode)
+		key := value.MakeGC(value.TagString, st.gc.Intern([]byte("only-referenced-by-the-dead-node")))
+		_ = st.rawSet(weak, key, value.NumberValue(1))
+		idx := nodeOf(t, st, weak, key)
+		_ = st.rawSet(weak, key, value.Nil)
+		gen0 := object.TableGen(st.arena, weak)
+
+		st.gc.Collect()
+
+		if k := object.NodeKey(st.arena, weak, idx); k != object.DeadKey {
+			t.Errorf("mode %q: node %d holds %x after the deleted string died, want DeadKey", mode, idx, uint64(k))
+		}
+		if object.TableGen(st.arena, weak) == gen0 {
+			t.Errorf("mode %q: node %d changed its key but gen stayed %d", mode, idx, gen0)
+		}
+	}
+}
+
+// The entries the collector clears are the DEAD nodes a weak-valued table mostly has. The string
+// key of such an entry is a strong reference while the entry has its value, so it survives the
+// collection that clears the entry; from then on only its other references keep it. A cache with
+// string keys and weak values must not hold on to every key it ever had.
+func TestWeak_ClearedEntryDoesNotKeepItsStringKey(t *testing.T) {
+	for _, held := range []bool{false, true} {
+		st, th := gcTestState(t)
+		weak := weakTable(st, th, "v")
+		key := value.MakeGC(value.TagString, st.gc.Intern([]byte("key-of-a-cleared-entry")))
+		if held {
+			th.push(key)
+		}
+		_ = st.rawSet(weak, key, value.MakeGC(value.TagTable, st.allocTable(0, 0)))
+		idx := nodeOf(t, st, weak, key)
+
+		st.gc.Collect()
+		if v := object.NodeVal(st.arena, weak, idx); v != value.Nil {
+			t.Fatalf("held %v: the dead value was not cleared: %x", held, uint64(v))
+		}
+		if k := object.NodeKey(st.arena, weak, idx); k != key {
+			t.Fatalf("held %v: node %d holds %x right after its entry was cleared, want the key", held, idx, uint64(k))
+		}
+
+		st.gc.Collect()
+		k := object.NodeKey(st.arena, weak, idx)
+		if held {
+			if k != key {
+				t.Errorf("node %d holds %x; the key is still referenced and must stay", idx, uint64(k))
+			}
+			if _, _, _, e := st.rawNext(weak, key); e != nil {
+				t.Errorf("next from the still referenced key of a cleared entry: %v", e.Msg)
+			}
+		} else if k != object.DeadKey {
+			t.Errorf("node %d holds %x one collection after its entry was cleared, want DeadKey", idx, uint64(k))
 		}
 	}
 }
