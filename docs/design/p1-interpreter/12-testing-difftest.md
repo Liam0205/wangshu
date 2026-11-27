@@ -1019,12 +1019,12 @@ func TestGCStress(t *testing.T) {
 }
 
 // runWithGCPause:用测试 opts 把 collector 的 GCPAUSE 调到指定值(06 §8.3 的 threshold = live*GCPAUSE/100)。
-// pause=1 ⇒ threshold≈live*1% ⇒ 几乎每次分配都越阈值触发 full GC。
+// pause=1 在这段示意里表示「每个安全点都做一次 full GC」,实现上是 collector 的压力模式(见下面第一条要点)。
 // runWithGCPauseSafe:额外用 recover 兜底,把 panic 转成 err(否则崩溃测试无法继续)。
 ```
 
 要点:
-- **GCPAUSE 调小是测试钩子**:[06](./06-memory-gc.md) §8.3 的 `threshold = live * GCPAUSE / 100`,把 GCPAUSE 设 1 即「存活量 1% 增量就 GC」≈ 每次分配 GC。这需要 collector 暴露**测试可调的 GCPAUSE**(`testOpts` 注入)。
+- **高频 GC 是测试钩子**:实现上是 collector 的压力模式(`SetStressMode`,公开入口 `State.SetGCStressMode`),打开之后每个安全点都做一次 full GC。只把 [06](./06-memory-gc.md) §8.3 的比例调小做不到这一点:`threshold = live * GCPAUSE / 100` 有 arena 容量 1/16 的下限,比例再小,两次回收之间也要分配够这么多字节。上面示意代码里的「极小 GCPAUSE」指的就是压力模式。
 - **基线对照是关键**:不是「高频 GC 跑通就行」,而是「高频 GC 输出 == 正常 pacing 输出」。透明性(目标①)比不崩溃(目标②)更强——不崩溃只证明没 use-after-free,透明性还证明没「悄悄回收了不该回收的、导致输出错」。
 - **与三方差分叠加**:GC 压力 fuzz 主要是**望舒内部**的「高频 vs 正常 GC」对照(gopher-lua/官方的 GC 不可比)。但若高频 GC 下望舒输出变了,它同时也会偏离官方 → 三方差分也会抓到。GC 压力 fuzz 是「更早、更针对」的捕获。
 - **stdlib 分配类重点**([10](./10-stdlib.md) §13.3):`string.format`/`concat`/`rep`/`gsub`/`match` 这些 host function 内分配中间对象的([06](./06-memory-gc.md) §6.3 纪律对象),是 GC 压力 fuzz 的主要测试目标——它们的 shadow stack 漏 Pin 在高频 GC 下必现。

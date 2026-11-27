@@ -495,7 +495,7 @@ P1 [12 §5](../p1-interpreter/12-testing-difftest.md) 定的 GC 压力 fuzz = **
 
 为什么高频 GC 是必现手段(承 P1 [12 §5.2](../p1-interpreter/12-testing-difftest.md)):漏根/漏扫在正常 pacing 下偶发(GC 恰好在「对象被持有但未上根」窗口触发概率低),高频 GC **把概率拉到 1**——每次分配都 full GC,漏根的对象必被回收,后续用必崩/脏读。**把偶发 bug 变成确定 bug**。
 
-机制锚点(承 P1 [12 §5.3](../p1-interpreter/12-testing-difftest.md)):[06 §8.3](../p1-interpreter/06-memory-gc.md) 的 `threshold = live * GCPAUSE / 100`,GCPAUSE 设 1 即「存活量 1% 增量就 GC」≈ 每次分配 GC。这需要 collector 暴露测试可调的 GCPAUSE(`testOpts` 注入,P1 已建)。
+机制锚点(承 P1 [12 §5.3](../p1-interpreter/12-testing-difftest.md)):collector 的压力模式(`SetStressMode`,公开入口 `State.SetGCStressMode`,P1 已建),打开之后每个安全点都做一次 full GC。只把 [06 §8.3](../p1-interpreter/06-memory-gc.md) 的比例调小做不到:`threshold = live * GCPAUSE / 100` 有 arena 容量 1/16 的下限。下面示意代码里的「极小 GCPAUSE」指的就是压力模式。
 
 ### 3.2 在 gibbous 上跑相同模式——漏写回必现为脏值/误回收
 

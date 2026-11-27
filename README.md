@@ -181,7 +181,7 @@ for i := 0; i < 1000; i++ {
 | 增量 GC | `collectgarbage("step")` / `collectgarbage("setstepmul")` | GC 是 stop-the-world，没有增量步进：`step` 做一次完整回收并返回 `true`；`setstepmul` 的值会保存并在下次调用时返回，但不影响回收 |
 | GC 节奏 | `collectgarbage("setpause")` 的比例 | 返回值与官方相同，比例的含义不同：望舒按上次回收以来新分配的字节数算，官方按总字节数算，所以望舒的比例 `p` 大约相当于官方的 `p + 100`（[#353](https://github.com/Liam0205/wangshu/issues/353)）。`Options.GCPause` 是同一个量 |
 | 防挂起 | 模式匹配的灾难性回溯（如 `.*.+%A*x`） | 回溯超过 `1<<20` 步时报 `pattern too complex`，官方会一直算下去 |
-| C 未定义行为 | `string.char` 收到超出 int 范围的数（含 NaN、±inf）；`collectgarbage("setpause", n)` / `collectgarbage("setstepmul", n)` 的 `n` 超出 64 位整数范围 | 官方行为由 C 未定义行为决定，x86-64 与 arm64 结果不同；望舒固定采用 x86-64 的结果 |
+| C 未定义行为 | `string.char` 收到超出 int 范围的数（含 NaN、±inf）；`collectgarbage("setpause", n)` / `collectgarbage("setstepmul", n)` 的 `n` 大于 64 位整数的上限（含 +inf） | 官方行为由 C 未定义行为决定，x86-64 与 arm64 结果不同；望舒固定采用 x86-64 的结果 |
 | 时区 | `os.time{isdst=...}` 贴着夏令时切换点的少数输入 | 所有平台都按 glibc 的规则解释，所以各平台结果一致；在 macOS / BSD 上可能与本机编译的官方 Lua 不同 |
 
 按类别的说明在 `test/difftest/corners_test.go` 的 `exemptions`，可以用 `go test -v -run TestExemptions_Documented ./test/difftest/` 列出；逐个名字的清单是同一个文件里的 `stdlibAbsent`，`TestDiff_StdlibNames` 用它对着官方 `lua5.1` 检查。各函数的细节见 [10-stdlib](docs/design/p1-interpreter/10-stdlib.md)。
