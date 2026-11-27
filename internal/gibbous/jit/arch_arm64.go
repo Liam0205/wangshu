@@ -355,7 +355,7 @@ func archEmitSelfNodeHit(buf []byte, aReg, bReg uint8,
 // **vs the original panic placeholder** (retired): the old panic killed the entire
 // NoRet path when archSupportsFrameInline=true; this implementation replaces it so
 // SELF NodeHit is byte-equal to amd64's EmitSelfNodeHitNoRet in the useFrameInline
-// form (same 200 bytes, with the 4B RET swapped for a 4B B).
+// form (the same length as EmitSelfNodeHitArm64, with the 4B RET swapped for a 4B B).
 func archEmitSelfNodeHitNoRet(buf []byte, aReg, bReg uint8,
 	stableShape, stableIndex uint32, stableKey uint64,
 	arenaBaseOff int32, deoptCode uint64) []byte {

@@ -4458,7 +4458,7 @@ func (c *Compiler) Compile(proto *bytecode.Proto, feedback *bridge.TypeFeedback)
 		}
 		// **PJ4 SELF IC NodeHit shape**: `local m = obj:method` and other
 		// SELF+RETURN shapes where the method is a string ident → hits the hash
-		// section (the typical real-world obj:method() shape), 166-byte
+		// section (the typical real-world obj:method() shape). The
 		// template: R(A+1) := R(B) + NodeKey compare + NodeVal load → R(A); on
 		// failure falls through to host.GetTable byte-equal (R(A+1) already
 		// stored, same steps as the P1 SELF case).

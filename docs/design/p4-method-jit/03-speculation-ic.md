@@ -302,7 +302,7 @@ type PointFeedback struct {
 
 对应地,GETGLOBAL / SETGLOBAL NodeHit inline(§2.4)也做了类似简化:只留 gen-only guard + 编译期烧入的 node index。这**强化了对生产端的要求**:任何 key → slot 的重定位都必须 `BumpGen`,否则 inline 就会读到错的 slot。这个 producer-side 不变量已在 crescent `rawtable.go::insertNewKey` 上补齐(2026-07-02,fuzz seed 4b3d10ff 回归)。
 
-本 addendum 记录 addendum 时点的实际情况,不删除上文原设计文本——上文对 P2/P3 端的对偶描述仍字面成立;amd64 native path 的 ArrayHit / NodeHit inline 走了简化路线,单条表访问的模板实际检查的内容见下一段。arm64 端因 native 接受检查尚未接上 GETTABLE/SETTABLE(承 §14.5 分岔),上述 native path 的简化对 arm64 无影响。
+本 addendum 记录 addendum 时点的实际情况,不删除上文原设计文本——上文对 P2/P3 端的对偶描述仍字面成立;amd64 native path 的 ArrayHit / NodeHit inline 走了简化路线,单条表访问的模板实际检查的内容见下一段。addendum 时点 arm64 端的 native 接受检查还没有接上 GETTABLE/SETTABLE(承 §14.5 分岔);现在 arm64 的按指令翻译也内联这两条指令的 ArrayHit / NodeHit(`peroptranslator/emit_arm64.go` 的 `emitGETTABLEArm64`、`emitSETTABLEArm64`)。
 
 **单条表访问的模板实际检查的内容**（`internal/gibbous/jit/amd64/pj4_template.go`、`internal/gibbous/jit/arm64/pj4_template.go`，函数体只有一条 GETTABLE / SETTABLE / SELF 时使用）：这一组模板不比对 tableRef，所以同一个函数用在以同一种方式构造出来的许多张表上，都走内联路径。它们依次检查：
 

@@ -34,7 +34,7 @@ PJ0-PJ9 的设计是 **「按函数样子识别 + 写死字节级模板」**:`an
 - 表 IC ArrayHit / NodeHit(getter / setter / SELF method 六模板)
 - CALL void / TAILCALL / SELF + CALL spec template(0-7 参 × N=2-15 返值 × 双 receiver)
 
-每种形式对应一段手写汇编模板,长度 ~70-200 字节,Compile 时 mmap 一块可执行内存,把模板字节码拷进去,跳进去执行。
+每种形式对应一段手写汇编模板,长度 ~70-260 字节,Compile 时 mmap 一块可执行内存,把模板字节码拷进去,跳进去执行。
 
 **这套设计在自己适配的形式上很厉害**——V14 luajc 档实测 12.6× / 25.1× / 13.5× over gopher-lua,远超 4.4× 基线([implementation-progress §8](./implementation-progress.md)),完整兑现了 P4 立项动机([01-launch-judgment §4](./01-launch-judgment.md))。
 
