@@ -67,10 +67,9 @@ func baseFnCollectGarbage(st *crescent.State, args []value.Value) ([]value.Value
 	default:
 		return nil, crescent.NewArgError(1, "invalid option '"+opt+"'")
 	}
-	// PUC's luaB_collectgarbage reads arg 2 with luaL_optint unconditionally, so a
-	// non-number there raises even though this implementation has no incremental
-	// knobs to apply it to. Ignoring the argument entirely meant
-	// collectgarbage("count", "x") succeeded where PUC raises.
+	// PUC's luaB_collectgarbage reads arg 2 with luaL_optint for every option, so a
+	// non-number there raises whichever option it is: collectgarbage("count", "x")
+	// raises. Only setpause and setstepmul use the value.
 	ex := 0 // luaL_optint(L, 2, 0)
 	if len(args) >= 2 && args[1] != value.Nil {
 		f, ok := toNumberStr(st, args[1])
