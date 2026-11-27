@@ -729,11 +729,11 @@ nightly 的 go-fuzz（p1，`FuzzOracleDiff`）找到 `t={}table.unpack(t)`：官
 | 删 `table.unpack` | `internal/stdlib/stdlib.go` `OpenAll` | 不再注册 |
 | 迭代器私有化 | 同文件 `registerIterFactory` | `pairs` / `ipairs` 各自在注册时建好迭代器的宿主闭包，由工厂函数的 Go 闭包捕获，同时挂在工厂函数的 upvalue 上让 GC 保活；不再有 `__ipairs_iter`，`pairs` 不再读全局 `next` |
 | fuzz 的 prelude | `internal/oracle/prelude.go` | 原来靠包装全局 `__ipairs_iter` 来拦 `luaL_checkint` 的未定义行为区间，改成包装 `ipairs`、发放同一个带检查的迭代器 |
-| 行为测试 | `test/language/stdlib_names_test.go`（新增） | 24 个用例，期望值逐个在 lua5.1 5.1.5 上实际执行核对过 |
+| 行为测试 | `test/language/stdlib_names_test.go`（新增） | 27 个用例，期望值逐个在 lua5.1 5.1.5 上实际执行核对过 |
 | 分层测试 | `test/difftest/tiered_stdlib_names_test.go`（新增） | 九段脚本在 P3 / P4 的升层代码里执行，与解释器、与 `lua5.1` 比对（带文件名的 `io.lines` 一段是已登记的差异，与记录的文本比对）；断言 `GibbousEntries() > 0`（arm64 的 P4 上有一段例外，见 10 §12.3） |
 | 白盒探针 | `State.GibbousEntries()`（新增，testing-only） | 执行进入升层代码的次数；`PromotionCount()` 只说明编译过 |
 | 名字集合比对 | `test/difftest/corners_test.go` `TestDiff_StdlibNames`（新增） | 对着真实的 `lua5.1` 双向比对；望舒多出的名字一律失败，缺少的逐个登记在 `stdlibAbsent`（合入时 37 条）；清单里还包含哪些名字是同一个函数对象 |
-| 语料 | `test/fuzz/testdata/fuzz/FuzzOracleDiff/` | 加入 #329 的输入和六条回归语料；原来写着 `__ipairs_iter` 的两条改成经 `ipairs({})` 取迭代器 |
+| 语料 | `test/fuzz/testdata/fuzz/FuzzOracleDiff/` | 加入 #329 的输入和七条回归语料；原来写着 `__ipairs_iter` 的两条改成经 `ipairs({})` 取迭代器 |
 
 **对使用者的影响**（六项都是改成与官方 5.1 一致）：
 
@@ -951,11 +951,34 @@ reviewer 在跑 P4 全量测试时还撞到一次 `TestIssue177_StringLimitConte
 这一轮还发现一项与 #329 无关、此前没有登记的存量问题：`make test-trace`（trace 构建的全仓测试）在 master 上不能通过，
 两个包共 16 个测试失败。CI 和 `make all` 都不执行这个目标。记在 [#341](https://github.com/Liam0205/wangshu/issues/341)。
 
+第十八轮的 reviewer 复核第十七轮那次逐分支变异时，指出划分漏了一处：`ipairs` 迭代器里「给了第二个参数才去读控制值」
+这个条件。给了表而控制值缺失或者是 nil 时，官方报 `number expected, got no value` / `got nil`；把这两种情况当成 0 的
+变异在全部测试下通过。补了三处：
+
+- 行为测试加三个用例：控制值缺失、是 nil、是布尔值。
+- `TestTiered_StdlibNames` 的 `ipairs_iterator_argument_errors` 加两种：泛型 for 不写控制值（这时传给迭代器的是 nil）、
+  控制值是布尔值。
+- 差分 fuzz 的语料加一条 `r329h_ipairs_iter_no_control`。
+
+手工列分支已经漏了两次，所以改用脚本对本分支改写的三个函数（`registerIterFactory`、`ipairsIter`、`ioFnLines`）做机械变异：
+每个 `if` 强制为真、强制为假，`&&` / `||` 的每个操作数单独去掉，比较运算符取反，参数下标加一，报错文字改动，返回值个数改动，
+共 54 种，每一种在默认、P3、P4 三种构建下各跑 `test/language`、`test/api`、`test/difftest`、`test/tiering`。53 种在三种构建下
+都有测试失败。
+剩下的一种是等价变异：`ipairsIter` 里 `st.RawGet` 之后的 `if e != nil`，`RawGet` 不会返回错误，这个分支执行不到，
+这一行不是本分支写的，没有改。
+
+第十九轮独立审查（全范围，又一位 reviewer）没有阻塞问题和重要问题，两条小问题都是文字：
+
+| 审查意见 | 处理 |
+|---|---|
+| `engineering.md` 有一处还写「读 Markdown 的测试目前只有一个」，同一份文档的另一处已经列了两个 | 改成指向 `make check-readme` 执行的那几个测试，不再写个数 |
+| `table.setn` 的三处说明写成官方「就是一句 `luaL_error`」「直接报 `'setn' is obsolete`」。官方 `ltablib.c` 先检查第一个参数是表，再报这个错。实现一直是对的 | 函数头注释和 10 号文档的四处一起改成「先检查第一个参数是表，然后报错」。本分支新增的、描述官方 C 函数行为的注释逐条对着源码重读了一遍，没有其他不符 |
+
 验证：`make all` 与 `make fuzz-oracle` 通过。把 `internal/stdlib` 的 `stdlib.go` 和 `tablelib.go` 一起换回修复前的版本：
 行为测试 10 个用例失败，`test/api` 的 `io.lines` 用例 4 个失败，`TestTiered_StdlibNames` 在 P3、P4 两种构建下九段脚本里
 六段失败（剩下的三段修复前后结果相同：迭代器对坏参数的报错、带文件名的 `io.lines`、从升层代码里调用工厂函数，它们的作用是
 在升层路径上执行这几条路径），名字比对报出两个多余
-名字和一组缺少的别名，#329 的输入和四条回归语料失败。名字比对测试另做了两种变异（删一条登记、加一条过期登记），都会
+名字和一组缺少的别名，README 反方向的检查失败（README 写着不提供的 `table.unpack` 又有了），#329 的输入和四条回归语料失败。名字比对测试另做了两种变异（删一条登记、加一条过期登记），都会
 失败。去掉 prelude 里的检查，`TestIpairsIteratorGuard` 报 8 处、`TestIoLinesFilenameGuard` 报 5 处；`exemptions` 改一个
 条目名，`TestStdlibAbsentReasonsResolve` 失败；README 的逐名字删除见上面第三轮的表。
 
