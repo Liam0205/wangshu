@@ -102,11 +102,12 @@ type PerOpCode struct {
 	// shared field is safe today. If that invariant ever relaxes, split
 	// into `forLoopAfter` and `tforLoopAfter` before adding the new
 	// case — the field name misleadingly implies FORLOOP-only.
-	forLoopValid bool
-	forLoopA     uint8
-	forLoopPC    uint16
-	forLoopAfter int
-	bodyEffects  []sideEffect
+	forLoopValid  bool
+	forLoopA      uint8
+	forLoopPC     uint16
+	forLoopBackPC uint16
+	forLoopAfter  int
+	bodyEffects   []sideEffect
 
 	// TFORLOOP block (generic for): when tforLoopValid is true, the
 	// dispatcher calls host.TForLoop each iteration until it returns -2.
@@ -590,7 +591,7 @@ func (c *PerOpCode) runForLoop(base uint32) int32 {
 		// drains.
 		if c.jitCtx.LoopFuelTick() {
 			LoopFuelExitCount.Add(1)
-			if st := c.host.LoopPreempt(c.jitCtx, int32(base), int32(c.forLoopPC)); st != 0 {
+			if st := c.host.LoopPreempt(c.jitCtx, int32(base), int32(c.forLoopBackPC)); st != 0 {
 				return st
 			}
 		}
@@ -664,6 +665,7 @@ func TranslateProto(proto *bytecode.Proto, host jit.P4HostState) (bridge.Gibbous
 		forLoopValid:  info.forLoopValid,
 		forLoopA:      info.forLoopA,
 		forLoopPC:     info.forLoopPC,
+		forLoopBackPC: info.forLoopBackPC,
 		forLoopAfter:  info.forLoopAfter,
 		bodyEffects:   info.bodyEffects,
 		tforLoopValid: info.tforLoopValid,

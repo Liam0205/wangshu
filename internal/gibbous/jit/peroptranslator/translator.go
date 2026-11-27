@@ -86,11 +86,12 @@ type shapeInfo struct {
 	// Proto today. When forLoopValid is true, sideEffects contains only
 	// the preamble + post-loop ops; bodyEffects has the body ops that
 	// run once per iteration.
-	forLoopValid bool
-	forLoopA     uint8        // R(forLoopA..+2) holds init/limit/step
-	forLoopPC    uint16       // pc of the FORPREP instruction (for error pc anchoring)
-	forLoopAfter int          // index into sideEffects after which the FORLOOP block runs (0-based)
-	bodyEffects  []sideEffect // side effects executed once per iteration
+	forLoopValid  bool
+	forLoopA      uint8        // R(forLoopA..+2) holds init/limit/step
+	forLoopPC     uint16       // pc of the FORPREP instruction (for error pc anchoring)
+	forLoopBackPC uint16       // pc of the FORLOOP instruction: the back edge, where a preemption is reported
+	forLoopAfter  int          // index into sideEffects after which the FORLOOP block runs (0-based)
+	bodyEffects   []sideEffect // side effects executed once per iteration
 
 	// TFORLOOP block (generic for): at most one per Proto. Mutually
 	// exclusive with the numeric FORLOOP block.
@@ -1064,6 +1065,7 @@ func AnalyzeShape(proto *bytecode.Proto) shapeInfo {
 		info.forLoopValid = true
 		info.forLoopA = loop.forLoopA
 		info.forLoopPC = uint16(loop.forPrepPC)
+		info.forLoopBackPC = uint16(loop.forLoopPC)
 		info.forLoopAfter = forLoopAfter
 		info.bodyEffects = bodyEffects
 	}
