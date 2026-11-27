@@ -10,12 +10,6 @@
   差分 fuzz 的 prelude 用排序遍历，官方测试套件里测这件事的两段都在截断行之后，所以一直没被发现。见
   [#338](https://github.com/Liam0205/wangshu/issues/338)。
 
-- **【未修，产品缺陷】P4 升层后的报错里变量名不对** — 调用结果赋给两个以上局部变量的函数（`local a, b = u(t) return a, b`）
-  升层之后，被调用者的名字取自 CALL 后面的 MOVE：`attempt to call upvalue 'u'` 变成 `attempt to call local 'a'`，宿主函数的
-  参数错误也一样。原因是 `internal/gibbous/jit/code.go` 用 `retPC - 1` 当作 CALL 的位置，多结果的形式在两者之间隔着 MOVE。
-  amd64 上另有一种情况：索引值为 nil 的 upvalue 时名字丢失，原因没有查。见
-  [#339](https://github.com/Liam0205/wangshu/issues/339)。
-
 - **【未修，产品缺陷】多值展开构造的表里有 nil 时，`#t` 和 `unpack(t)` 可能与官方不同** — 表构造式以多值展开结尾
   （`{...}`、`{f()}`、`{1, f()}`），展开出来的值里有 nil 时（不论最后一个值是不是 nil），`#t`、`table.getn(t)` 和
   `unpack(t)` 给出的个数可能与官方不同：多数情况比官方小，也有比官方大的，还有一部分输入两侧恰好相同（例如
@@ -101,6 +95,10 @@
 - **【未做，等维护者决定】arm64 上望舒的 `%` 被编译成 FMA** — 与 amd64 结果不同，P3 与 P1/P4 之间也可能不同
   （后一条是从编译产物推出来的，没有在 arm64 机器上跑过）。见
   [#323](https://github.com/Liam0205/wangshu/issues/323)。改它会让 v0.3.0 的 30 天计时重新开始。
+
+- **【已完成 2026-11-27，#339】P4 升层后的报错里变量名和行号不对** — 两处把错误的指令位置传给了宿主的慢路径函数：多结果调用的
+  CALL 位置少减了中间的 MOVE；旧式逐指令路径重放表访问和全局变量访问时位置写成了 0。记录在
+  [P4 过程记录 §29](../../docs/design/p4-method-jit/implementation-progress.md)。
 
 - **【已完成 2026-10-05,#296 / #297】#290-#292 本地审查发现的两处存量差异** — 对账见
   `docs/design/p1-interpreter/implementation-progress.md` 的 #296 / #297 条目:LARGE 空闲块合并、顶部块退回 bump、

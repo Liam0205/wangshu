@@ -697,9 +697,12 @@ func (c *p4Code) Run(stack []uint64, base uint32) int32 {
 			// (0-arg shape, callArgCount=0) or MOVE/GETUPVAL+LOADK+CALL+RETURN void
 			// (1-K-arg shape, callArgCount=1).
 			//
-			// **pc argument**: CALL's own pc is computed from retPC-1 (0-arg shape
-			// retPC=2, 1-arg shape retPC=3, CALL is always the instruction before
-			// RETURN).
+			// **pc argument**: CALL's own pc. With no result or one result the
+			// RETURN follows the CALL directly, so it is retPC-1 (0-arg shape
+			// retPC=2, 1-arg shape retPC=3). With N >= 2 results luac puts N MOVEs
+			// between the two, so it is retPC-1-N. The host names the callee and
+			// takes the error's line from this pc; one that points at a MOVE names
+			// the MOVE's target local and reports the MOVE's line.
 			//
 			// **preprocessing — load the callee function into the R(callA) slot**:
 			// the MOVE/GETUPVAL that luac emitted is a dummy in the mmap segment and
@@ -716,7 +719,7 @@ func (c *p4Code) Run(stack []uint64, base uint32) int32 {
 			// + R(callA+1)=self; then load arguments starting at R(callA+2) (skipping
 			// the self slot) — byte-equal to the interpreter's SELF + CALL inline
 			// subset.
-			callPC := int32(c.retPC) - 1
+			callPC := int32(c.retPC) - 1 - int32(c.callMultiRet)
 			var srcVal uint64
 			if c.isCallUpval {
 				srcVal = c.host.GetUpval(int32(base), int32(c.preludeArg))

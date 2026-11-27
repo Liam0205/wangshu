@@ -401,11 +401,11 @@ func (c *PerOpCode) runEffect(base uint32, se sideEffect, stack []uint64) int32 
 	case sideEffectSetTable:
 		b := int32(se.imm >> 16)
 		cc := int32(se.imm & 0xffff)
-		if st := c.host.SetTable(int32(base), 0, int32(se.a), b, cc); st != 0 {
+		if st := c.host.SetTable(int32(base), int32(se.pc), int32(se.a), b, cc); st != 0 {
 			return st
 		}
 	case sideEffectSetGlobal:
-		if st := c.host.DoSetGlobal(int32(base), 0, int32(se.a), int32(se.imm)); st != 0 {
+		if st := c.host.DoSetGlobal(int32(base), int32(se.pc), int32(se.a), int32(se.imm)); st != 0 {
 			return st
 		}
 	case sideEffectCall:
@@ -442,7 +442,7 @@ func (c *PerOpCode) runEffect(base uint32, se sideEffect, stack []uint64) int32 
 			return st
 		}
 	case sideEffectSetList:
-		if st := c.host.SetList(int32(base), 0, int32(se.a), int32(se.b), int32(se.c)); st != 0 {
+		if st := c.host.SetList(int32(base), int32(se.pc), int32(se.a), int32(se.b), int32(se.c)); st != 0 {
 			return st
 		}
 	case sideEffectArith:
@@ -472,7 +472,7 @@ func (c *PerOpCode) runEffect(base uint32, se sideEffect, stack []uint64) int32 
 		}
 	case sideEffectClose:
 		// CLOSE A: close all upvalues with stack index >= base+A.
-		if st := c.host.Close(int32(base), 0, int32(se.a)); st != 0 {
+		if st := c.host.Close(int32(base), int32(se.pc), int32(se.a)); st != 0 {
 			return st
 		}
 	case sideEffectGetUpvalScratch:
@@ -480,17 +480,17 @@ func (c *PerOpCode) runEffect(base uint32, se sideEffect, stack []uint64) int32 
 		c.host.SetReg(int32(se.a), c.host.GetUpval(int32(base), int32(se.b)))
 	case sideEffectGetGlobalScratch:
 		// R(A) := Globals[K(Bx)] via host.DoGetGlobal; may raise.
-		if st := c.host.DoGetGlobal(int32(base), 0, int32(se.a), int32(se.imm)); st != 0 {
+		if st := c.host.DoGetGlobal(int32(base), int32(se.pc), int32(se.a), int32(se.imm)); st != 0 {
 			return st
 		}
 	case sideEffectGetTableScratch:
 		// R(A) := R(B)[RK(C)] via host.GetTable; may raise.
-		if st := c.host.GetTable(int32(base), 0, int32(se.a), int32(se.b), int32(se.imm)); st != 0 {
+		if st := c.host.GetTable(int32(base), int32(se.pc), int32(se.a), int32(se.b), int32(se.imm)); st != 0 {
 			return st
 		}
 	case sideEffectNewTableScratch:
 		// R(A) := new table via host.NewTable; never raises.
-		if st := c.host.NewTable(int32(base), 0, int32(se.a), int32(se.b), int32(se.c)); st != 0 {
+		if st := c.host.NewTable(int32(base), int32(se.pc), int32(se.a), int32(se.b), int32(se.c)); st != 0 {
 			return st
 		}
 	}
