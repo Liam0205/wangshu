@@ -2859,6 +2859,8 @@ P1 成功、P4 抬 `SETLIST: not a table`。**根因不在 JIT 里**,而在共�
   取长度、连接、比较都用它）、数值 for 的 FORPREP（`forLoopPC`）、泛型 for 的 TFORLOOP（`tforLoopPC`）和 RETURN（`retPC`）。出错的指令在
   pc 256 以后时，传给宿主的是 pc 的低 8 位，症状与 ② 相同：名字丢失，行号是前面某一行的。这些字段改成 16 位，与记录里的 `pc` 字段和
   算术记录在 `imm` 里的 pc 宽度一致；`AnalyzeShape` 不接受 RETURN 在 pc 65535 之后的函数（`maxShapePC`），所以 16 位放得下每一个记录的 pc。
+  原生翻译（amd64、arm64 两个后端）把 pc 放在 exit-reason 字的 22 位里，`AnalyzeNative` 原来不限制指令条数；现在不接受有指令在
+  pc 4194303 之后的函数（`maxNativePC`），`TestAnalyzeNative_PCLimit` 固定这个上限，两个后端都执行过。
 - **同一个文件里其余的 `retPC - 1`**逐个核对过：方法调用和尾调用两种形式里 `retPC` 就是 CALL / TAILCALL 的下一条，不带多结果；
   FORLOOP、单条表访问、比较折叠各自的注释里写明了位置的算法，没有问题。
 - **验证**：`test/difftest/tiered_error_names_test.go` 的 `TestTiered_ErrorNames`，十二种出错写法，内核都写成多行并保留行号比较，解释器、
@@ -2874,8 +2876,9 @@ P1 成功、P4 抬 `SETLIST: not a table`。**根因不在 JIT 里**,而在共�
   `Close` 根本不用传进来的 pc；`NewTable` 只把它记进 `ci.pc`，自己不报错、不访问内联缓存，之后只有末尾的安全点，那里能读到这一帧
   位置的只有终结器，而脚本造不出带 `__gc` 的对象。`analyzeCallVoidForm` 新加的检查由 `TestPJ5_AnalyzeCallVoidForm_Reject` 的一段手工字节码覆盖，
   撤掉检查这一段失败。
-  ③ 由 `TestTiered_ErrorNamesBeyondPC255` 验证：十二种出错写法，前面各垫 300 条赋值，出错的指令都在 pc 256 以后。修改前 amd64 的 P4 上
-  十种与解释器不同（调用和写 upvalue 两种的 pc 本来就是完整的）。逐个字段改回 8 位：`arithPC` 八段失败，`forLoopPC`、`tforLoopPC` 各一段失败，
+  ③ 由 `TestTiered_ErrorNamesBeyondPC255` 验证：十二种出错写法，前面各垫 300 条赋值，出错的指令都在 pc 256 以后。amd64 的 P4 上，
+  在整个修复之前的代码上十一种与解释器不同，只有调用一种相同（它的 pc 一直完整地放在 `imm` 里）；做了 ①② 而不加宽字段时十种不同，
+  多出来相同的一种是给 upvalue 的字段赋值，它用的是 ② 加的 16 位 `pc` 字段。逐个字段改回 8 位：`arithPC` 八段失败，`forLoopPC`、`tforLoopPC` 各一段失败，
   记录里的 `pc` 一段失败；`retPC` 改回 8 位和去掉 `maxShapePC` 的检查由 `peroptranslator` 的单元测试 `TestAnalyzeShape_ReturnPCLimit` 发现。
   arm64 的 P4 上没有这条路径，十二段里八段进入升层代码、四段不升层，结果都与解释器相同（`qemu-aarch64` 下执行过）。
 - **为什么长期没被发现**：`p4Corpus` 里出错的用例大多把内核直接放在 `pcall` 下面，升了层也不在升层代码里执行（#333）；比较报错文本的测试
