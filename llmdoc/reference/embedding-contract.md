@@ -75,7 +75,7 @@
 - `Options.InitialArenaBytes` / `Options.MaxArenaBytes`:`NewState` 时定制 arena 初始容量与 fail-fast 上限;
 - `Options.GCPause` / `Options.MaxCallDepth` / `Options.MaxCCalls`:字段存在,`NewState` 不读,设了不起作用(回收比例固定从 200 开始,两个深度上限是编译期常量 20000 和 200)。`test/api` 的 `TestOptions_FieldsNotRead` 固定这个现状,要不要接上见 [#356](https://github.com/Liam0205/wangshu/issues/356);
 - `State.GCCountKB() float64`:返回 arena 当前已用字节(bump 指针减去 freelist 上待复用的空闲块),随 Collect 回落;
-- `State.ArenaCapKB() float64`:返回 arena **backing slab 容量**,反映真实 Go 堆驻留。pool 层据此判 fat state 阈值(比 GCCountKB 准，后者被 sweep 隐藏了 latched high-water)。容量不够时翻倍;Collect 末尾的 arena `Compact` 按 GC 水位算出下次收集前预计要用的大小(`(live + 下次阈值) × 1.25`),当前容量超过它与 bump 中较大者的两倍时才缩到那个大小(#296,默认 build 与 P4 生效;P3 收养 wazero linear memory,不缩)。
+- `State.ArenaCapKB() float64`:返回 arena **backing slab 容量**,反映真实 Go 堆驻留。pool 层据此判 fat state 阈值(比 GCCountKB 准，后者被 sweep 隐藏了 latched high-water)。容量不够时翻倍;Collect 末尾的 arena `Compact` 按 GC 水位算出下次收集前预计要用的大小(`(live + live × 比例 / 100) × 1.25`,比例默认 200,脚本可以用 `collectgarbage("setpause", n)` 改),当前容量超过它与 bump 中较大者的两倍时才缩到那个大小(#296,默认 build 与 P4 生效;P3 收养 wazero linear memory,不缩)。
 
 **GC 节奏显式驱动**(issue #9):
 
