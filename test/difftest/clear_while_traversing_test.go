@@ -319,6 +319,40 @@ func TestDiff_NextFromFixedKeysOfClearedEntries(t *testing.T) {
 	}
 }
 
+// nextFromRuntimeHeldKeysOfClearedEntries is the same for strings the runtime itself refers to.
+// lua5.1's os table has the keys "execute" and "getenv" and its registry the key "_LOADED", so
+// those strings stay alive and next accepts them. wangshu provides os.getenv, and neither
+// os.execute nor a package library, so only "getenv" is alive there.
+const nextFromRuntimeHeldKeysOfClearedEntries = `
+local function count(build)
+  local ok = 0
+  for round = 1, 30 do
+    local w = setmetatable({}, {__mode = "v"})
+    for i = 1, 4 do w["pad" .. i .. "_" .. round] = true end
+    w[build()] = {}
+    collectgarbage() collectgarbage() collectgarbage()
+    if pcall(next, w, build()) then ok = ok + 1 end
+  end
+  return ok
+end
+return count(function() return "exec" .. "ute" end), count(function() return "_LOAD" .. "ED" end),
+  count(function() return "get" .. "env" end)`
+
+// TestDiff_NextFromRuntimeHeldKeysOfClearedEntries pins both sides of that.
+func TestDiff_NextFromRuntimeHeldKeysOfClearedEntries(t *testing.T) {
+	const wantWangshu, wantOracle = "0\t0\t30", "30\t30\t30"
+	for _, stress := range []bool{false, true} {
+		if got := runClearCase(t, nextFromRuntimeHeldKeysOfClearedEntries, stress); got != wantWangshu {
+			t.Errorf("wangshu (collecting at every safepoint: %v):\n  got:  %q\n  want: %q", stress, got, wantWangshu)
+		}
+	}
+	if oracle := findOracle(); oracle != "" {
+		if got := strings.TrimSuffix(runOracle(t, oracle, wrapForOracle(nextFromRuntimeHeldKeysOfClearedEntries)), "\n"); got != wantOracle {
+			t.Errorf("lua5.1 no longer answers as recorded:\n  got:      %q\n  recorded: %q", got, wantOracle)
+		}
+	}
+}
+
 // nextFromRemovedFixedKeys is the case of nextFromCollectedStringKey with keys lua5.1 never
 // collects: a reserved word, a metamethod name and "not enough memory", each built at run time,
 // stored in a table that is not weak and removed by a store of nil. lua5.1 does not collect such
@@ -422,20 +456,48 @@ hold = nil
 return (pcall(next, t, "A1"))`
 }
 
+// storesAfterTheTableWasMadeStrong lets the collector clear seven entries of a weak-valued table,
+// makes the table strong, removes a key and stores the seven keys again. With collect true a
+// collection runs before those stores. The cleared entries still carry the collector's mark, so
+// that collection does not keep their string keys alive: the keys are replaced, the strings
+// stored again are new keys, and the rehash they cause drops the node of the removed key. The
+// table is strong and all its keys are strings, and the answer still depends on the collection.
+// lua5.1 marked the keys dead when it cleared the entries, so it rehashes either way.
+func storesAfterTheTableWasMadeStrong(collect bool) string {
+	step := ""
+	if collect {
+		step = "collectgarbage()\n"
+	}
+	return `
+local t = setmetatable({}, {__mode = "v"})
+for i = 1, 7 do t["key" .. i] = {} end
+t.keep = 1
+collectgarbage()
+setmetatable(t, nil)
+t.keep = nil
+` + step + `for i = 1, 7 do t["key" .. i] = i end
+return (pcall(next, t, "keep"))`
+}
+
 // TestDiff_InsertionsAfterClearedEntries pins that a collection changes what next answers for a
-// key the script removed from a weak table, in wangshu as in lua5.1: the same script gives false
-// without the collection and true with it, and collecting at every safepoint gives true for both.
-// In a weak table, when the collector clears entries decides where later keys go.
+// key the script removed from a table the collector has cleared entries of, in wangshu as in
+// lua5.1 for the first script: it gives false without the collection and true with it, and
+// collecting at every safepoint gives true for both. When the collector clears entries decides
+// where later keys go. The second script shows the same for such a table after it was made
+// strong.
 func TestDiff_InsertionsAfterClearedEntries(t *testing.T) {
 	oracle := findOracle()
 	for _, c := range []struct {
+		script               func(bool) string
 		collect              bool
 		normal, stress, lua5 string
 	}{
-		{false, "false", "true", "false"},
-		{true, "true", "true", "true"},
+		{insertionsAfterClearedEntries, false, "false", "true", "false"},
+		{insertionsAfterClearedEntries, true, "true", "true", "true"},
+		{storesAfterTheTableWasMadeStrong, false, "true", "false", "false"},
+		{storesAfterTheTableWasMadeStrong, true, "false", "false", "false"},
 	} {
-		src := insertionsAfterClearedEntries(c.collect)
+		src := c.script(c.collect)
 		if got := runClearCase(t, src, false); got != c.normal {
 			t.Errorf("wangshu (explicit collection: %v):\n  got:  %q\n  want: %q", c.collect, got, c.normal)
 		}

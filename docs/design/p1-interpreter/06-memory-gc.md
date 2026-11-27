@@ -674,9 +674,10 @@ type Collector struct {
      `invalid key to 'next'`，分配到原地址上时成功（实测 216 种键长、键个数、回收次数的组合里成功 46 次、报错 170 次）。没有发生回收时
      两边相同。官方的结果取决于回收有没有在中间发生，与「普通回收和每个安全点都回收两种方式下结果相同」的测试要求不能同时满足。
      望舒做到的是：回收本身不改变已删除的字符串键能不能找回它的节点。节点还可能被后来插入的键接管，或者在 rehash 时被丢掉；
-     强表里插入的是字符串和数字时，这两件事与回收时机无关，插入的是对象（按地址取哈希）时有关。弱表里还有一种：回收器清掉的条目
-     也成了已删除的节点，之后插入的键是接管这样的节点、用掉空闲节点还是引起 rehash，取决于插入之前回收有没有发生，键全是字符串时
-     也一样，官方也一样（`TestDiff_InsertionsAfterClearedEntries`）。见 [01](./01-value-object-model.md) §5.2。
+     回收器从来没有清掉过条目的表里，插入的是字符串和数字时，这两件事与回收时机无关，插入的是对象（按地址取哈希）时有关。
+     回收器清掉过条目的表（弱表，或者后来用 `setmetatable` 变成强表的）还有一种：被清掉的条目也成了已删除的节点，之后插入的键是
+     接管这样的节点、用掉空闲节点还是引起 rehash，取决于插入之前回收有没有发生，键全是字符串时也一样，官方也一样
+     （`TestDiff_InsertionsAfterClearedEntries`）。见 [01](./01-value-object-model.md) §5.2。
    - **内存**：被删除的字符串键要等它的节点被接管或者所在的表 rehash 才能回收。表被原地清空（`for k in pairs(t) do t[k] = nil end`）之后，它放过的
      全部字符串键都还活着；下一次 rehash 要等到插入新键时找不到空闲节点，表闲置时不会发生。实测 10 万个约 105 字节的字符串键，清空并
      回收之后官方从 19878KB 降到 5402KB，望舒保持 15584KB 不变。主位置落在已删除节点上的新键会接管节点、释放那一个字符串。
@@ -687,7 +688,9 @@ type Collector struct {
    重新拼出来的字符串正好分配在原地址上时官方的 `next` 成功，望舒一律报错，`TestDiff_NextFromKeysOfClearedEntries` 固定望舒一侧的结果。
    官方有一类永远不回收的字符串：保留字、`ltm.c` 列的 17 个元方法名（没有 `__tostring` 和 `__metatable`）和 `"not enough memory"`（`llex.c`、`ltm.c`、`lstate.c` 里的 `luaS_fix`）。它们作键时，被清掉的条目的 dead key 一直指向
    还活着的对象，官方的 `next` 每次都成功；望舒不固定任何字符串：键没有别的引用时照常被回收，`next` 报错；另有引用时（`__index` 是字符串元表的键，`__mode` 是弱表自己元表的键）两边都成功。这一种两边的结果都是确定的，
-   `TestDiff_NextFromFixedKeysOfClearedEntries` 固定两边各自的结果。脚本用 `t[k] = nil` 删掉的键是这几种字符串时，官方不回收它、望舒由节点保活，
+   `TestDiff_NextFromFixedKeysOfClearedEntries` 固定两边各自的结果。运行时自己引用的字符串两边不一样多，效果相同：官方的库表、`package` 表和
+   注册表引用着 `execute`、`tmpname`、`path`、`_LOADED`、`FILE*` 这类名字，望舒没有提供对应的库或函数时就没有这个引用，这些字符串作键的条目
+   被清掉之后官方的 `next` 成功、望舒报错（`TestDiff_NextFromRuntimeHeldKeysOfClearedEntries`）。脚本用 `t[k] = nil` 删掉的键是这几种字符串时，官方不回收它、望舒由节点保活，
    两边的 `next` 都成功，`TestDiff_NextFromRemovedFixedKeys` 固定。
    同一个原则还带来一处差异：官方标记一张表时（`traversetable`；键和值都弱的表整张跳过，不在此列）对**每个**键可回收的已删除节点都执行
    `removeentry`，键指向的对象还活着也一样，键被改成 `LUA_TDEADKEY`

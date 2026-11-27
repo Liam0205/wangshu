@@ -1171,9 +1171,12 @@ arena 大小跟着比例变。`TestTiered_StdlibNames` 加一段
    结果可能不同（40 张表各删一个字符串键、再各插入两个新表作键：`TestNextOnRemovedKey_ObjectKeysInsertedAfterwards` 把这段脚本在普通回收和
    每个安全点都回收两种方式下各执行一遍并记录结果，40 个结果里有 3 个不同）。
    含对象键的表的遍历顺序修改前就随回收时机变化；`next(t, 已删除的键)` 修改前一律报错，现在跟着布局变。
-   弱表里还有一种随回收时机变化的情况，与对象键无关：回收器清掉的条目也成了已删除的节点，之后插入的键是接管这样的节点、用掉空闲节点
-   还是引起 rehash，取决于插入之前回收有没有发生，键全是字符串时也一样。官方同样如此，不是两边的差异；
+   回收器清掉过条目的表还有一种随回收时机变化的情况，与对象键无关：被清掉的条目也成了已删除的节点，之后插入的键是接管这样的节点、
+   用掉空闲节点还是引起 rehash，取决于插入之前回收有没有发生，键全是字符串时也一样。官方同样如此，不是两边的差异；
    `TestDiff_InsertionsAfterClearedEntries` 固定同一段脚本加不加一次回收的两种结果（两边都是不加得 `false`、加了得 `true`）。
+   这样的表后来变成强表也一样：被清掉的条目的节点带着回收器的标记，下一次回收不保活它的字符串键。同一个测试的第二组脚本先让回收器
+   清掉七个条目、再 `setmetatable(t, nil)`、删掉一个键、把那七个键写回去：望舒不加回收得 `true`、加了得 `false`，官方两种都是 `false`
+   （官方清条目时就把键标成了 dead key，属于第二个原因）。
    第五个原因修改前就有，修改前后望舒的结果相同（30 轮、每轮 200 个新表，官方接受 29 到 30 个，望舒是 0）。
    第三个原因本身修改前就有（`t.x = nil` 之后 `next(t, "x")`，官方成功、望舒报错）；修改前它引起 rehash 的那一半看不出来，因为那时
    望舒对已删除的键总是报错，现在能看出来了。
@@ -1188,10 +1191,13 @@ arena 大小跟着比例变。`TestTiered_StdlibNames` 加一段
   和每个安全点都回收两种方式下各执行一遍；`nextvar.lua` 的「erasing values」一段原样收在里面。`TestTiered_ClearWhileTraversing`，6 段
   脚本在 P3 / P4 下按「解释器预热、再强制升层」执行，断言进入了升层代码。`TestDiff_NextFromCollectedStringKey` 固定上面第 2 条里与官方
   不同的那一种情况（见下）。`TestDiff_NextFromKeysOfClearedEntries`、`TestRemovedStringKeysOfWeakValuedTable` 固定弱表上两种已删除节点
-  各自的结果，`TestDiff_InsertionsAfterClearedEntries` 固定「弱表里回收器清掉条目之后再插入新键，结果随回收时机变化，两边相同」。
-- `test/api`：`TestTableForEach_ClearingEntries`。
+  各自的结果，`TestDiff_InsertionsAfterClearedEntries` 固定「回收器清掉过条目的表里再插入新键，结果随回收时机变化」（弱表上两边相同；
+  变成强表之后望舒仍随回收变化），`TestDiff_NextFromRuntimeHeldKeysOfClearedEntries` 固定键是运行时自己引用的字符串时两边各自的结果。
+- `test/api`：`TestTableForEach_ClearingEntries`；`TestTableForeach_PanicInCallbackReleasesTheValue`（`table.foreach` 的回调里 arena 用尽，
+  之后同一个 State 上弱值表的那一条照常被清掉）。
 
-变异验证：32 处改动逐个撤掉或改坏，每一处都有测试失败（最后一处是 `table.foreach` 固定当前的值，撤掉之后 `table_foreach_keeps_the_current_value` 失败）。其中「接管时不 bump」由单元测试和 P3 下的
+变异验证：33 处改动逐个撤掉或改坏，每一处都有测试失败（最后两处是 `table.foreach` 固定当前的值，撤掉之后 `table_foreach_keeps_the_current_value` 失败；
+以及这个固定由 `defer` 释放，改回调用之后才释放时 `TestTableForeach_PanicInCallbackReleasesTheValue` 失败）。其中「接管时不 bump」由单元测试和 P3 下的
 `deleted_global_node_taken_over` 发现（P4 下没有分层用例能看到它：P4 的内联路径都不写入 nil，删除总是经过表操作、在删除时 bump）；
 「删除时不 bump」只由单元测试发现（现在没有哪个内联路径的正确性依赖这一次 bump，见下面 P4 模板一段）；P4 模板「不内联写入 nil」
 这一项只由模板的字节布局测试发现（去掉它之后槽位变成 nil，下一次赋值照样退回宿主，行为上没有差别）。把同一份 `TestDiff_ClearWhileTraversing` 放到修改前的 master 上，
