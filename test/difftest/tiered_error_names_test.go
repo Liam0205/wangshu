@@ -17,7 +17,9 @@ import (
 // Every kernel spans several lines with the faulting expression on the first, and the comparison
 // keeps the line number: only the chunk name is cut off the position prefix. The kernel is called
 // through a Lua wrapper that is not a tail call, and four times, because the call that compiles it
-// still runs in the interpreter (see tieredStdlibNameCases).
+// still runs in the interpreter (see tieredStdlibNameCases). A fifth call goes through xpcall with
+// debug.traceback, and the line the traceback gives for the kernel's frame is compared as well: it
+// is read from the same pc.
 //
 // pre runs before the kernel is defined and sets up the upvalue u.
 //
@@ -95,6 +97,8 @@ for i = 1, 4 do
   local ok, msg = pcall(call, {1, 2})
   out[#out + 1] = tostring(ok) .. " " .. tostring(msg):gsub("^.-:(%d+: )", "%1")
 end
+local _, tb = xpcall(function() return call({1, 2}) end, debug.traceback)
+out[#out + 1] = "kernel at line " .. tostring(tostring(tb):match("\n\t[^\n]-:(%d+): in function 'kernel'"))
 return table.concat(out, " / ")`
 }
 
