@@ -22,8 +22,9 @@ import (
 // pre runs before the kernel is defined and sets up the upvalue u.
 //
 // compiled says whether force-all runs the kernel compiled on this build, which the test asserts
-// in both directions. The kernels that call do on every build. The others read or store through a
-// table access whose inline cache never holds a hit: see errorNameIndexKernelsRunCompiled.
+// in both directions. The kernels that call do on every build. Each of the others has a table or
+// global access, the faulting one, whose inline cache never holds a hit: see
+// errorNameIndexKernelsRunCompiled.
 var tieredErrorNameCases = []struct {
 	name, pre, kernel string
 	compiled          bool
