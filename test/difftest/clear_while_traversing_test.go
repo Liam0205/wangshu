@@ -209,9 +209,10 @@ func TestDiff_ClearWhileTraversing(t *testing.T) {
 // hands next a string with the same contents. In wangshu a collection in between changes nothing
 // about the node: a node emptied by a store of nil keeps its string key alive, so the rebuilt
 // string finds it as long as no later insertion has taken the node over or rehashed the table
-// (06 §8.4). lua5.1 lets the string die and marks the node's key dead, after which next matches
-// that key by object address only: the call then fails unless the rebuilt string happens to be
-// allocated where the old one was. The difference is registered in exemptions (corners_test.go).
+// (06 §8.4). In lua5.1 the node does not keep the string alive: nothing else refers to it here, so
+// it dies and the node's key is marked dead, after which next matches that key by object address
+// only, and the call fails unless the rebuilt string happens to be allocated where the old one
+// was. The difference is registered in exemptions (corners_test.go).
 const nextFromCollectedStringKey = `
 local t = {}
 for i = 1, 5 do t["dyn" .. i] = i end
@@ -311,7 +312,9 @@ func TestRemovedStringKeysOfWeakValuedTable(t *testing.T) {
 //     part is not laid out like lua5.1's (#349);
 //   - collections: at each collection lua5.1 turns the key of every removed node into a dead key
 //     if it is collectable (a string, a table, a function; not a number or a boolean), whether or
-//     not the key's object is alive. next still finds such a node, a store does not, so the same
+//     not the key's object is alive. It does so while marking the table (traversetable), and a
+//     table whose keys and values are both weak is not traversed, so there a key the script
+//     removed stays as it is. next still finds a dead key's node, a store does not, so the same
 //     key stored again is inserted as a new key and can cause a rehash. wangshu puts a removed
 //     key back into its node as long as the key's object is alive, however many collections ran
 //     in between, and a string the script removed stays alive (06 §8.4);
@@ -355,6 +358,16 @@ for i = 1, 8 do t[K[i]] = nil end
 collectgarbage()
 for i = 1, 5 do t[K[i]] = i end
 return (pcall(next, t, K[6]))`, "true", "false"},
+	// The same in a table whose keys and values are both weak: lua5.1 does not turn the removed
+	// keys into dead keys there, so the five go back into their nodes and the two agree.
+	{"same_keys_stored_again_after_a_collection_weak_keys_and_values", `
+local K = {} for i = 1, 8 do K[i] = "key" .. i end
+local t = setmetatable({}, {__mode = "kv"})
+for i = 1, 8 do t[K[i]] = i end
+for i = 1, 8 do t[K[i]] = nil end
+collectgarbage()
+for i = 1, 5 do t[K[i]] = i end
+return (pcall(next, t, K[6]))`, "true", "true"},
 	// A nil stored to a key that was never there: lua5.1 has a node for it afterwards.
 	{"nil_stored_to_an_absent_key", `
 local t = {a = 1} t.x = nil
