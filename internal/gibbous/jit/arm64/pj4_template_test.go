@@ -206,7 +206,7 @@ func TestPJ8_EmitGetTableNodeHitArm64_DeoptBlock(t *testing.T) {
 }
 
 // TestPJ8_EmitSetTableArrayHitArm64_Length verifies the byte length of the PJ4
-// SETTABLE ArrayHit arm64 template (144 bytes).
+// SETTABLE ArrayHit arm64 template (180 bytes).
 func TestPJ8_EmitSetTableArrayHitArm64_Length(t *testing.T) {
 	var buf []byte
 	buf = EmitSetTableArrayHitArm64(buf,
@@ -217,7 +217,7 @@ func TestPJ8_EmitSetTableArrayHitArm64_Length(t *testing.T) {
 		16,         // arenaBaseOff
 		0xCAFEBABE, // deoptCode
 	)
-	const wantLen = 144
+	const wantLen = 180
 	if len(buf) != wantLen {
 		t.Errorf("总长度 = %d, want %d", len(buf), wantLen)
 	}
@@ -226,17 +226,66 @@ func TestPJ8_EmitSetTableArrayHitArm64_Length(t *testing.T) {
 	}
 }
 
-// TestPJ8_EmitSetTableArrayHitArm64_StoreOp verifies the key store section of
-// SETTABLE ArrayHit (value load + reverse store):
-//   - [100-103] LDR x0, [x2, #16]            (arrayRef word2)
-//   - [112-115] LDR x3, [x26 + C*8]          (load R(C) value)
-//   - [116-119] STR x3, [x2, #stableIndex*8] (reverse store)
-//   - [120-123] RET                          (setter has no R(A) write)
+// checkSetTableStoreArm64 verifies the instructions both SETTABLE templates put
+// between the last address computation and the deopt block. slotImm12 and
+// cImm12 are the scaled offsets of the slot from x2 and of R(C) from x26:
+//
+//	[start+0 ] LDR x0, [x2, #slot]     the slot's current value
+//	[start+4 ] MOV x3, nil imm64       16 bytes
+//	[start+20] CMP x0, x3
+//	[start+24] B.EQ deopt              the slot holds nil
+//	[start+28] LDR x0, [x26, #C*8]     the value to store
+//	[start+32] CMP x0, x3
+//	[start+36] B.EQ deopt              the value to store is nil
+//	[start+40] STR x0, [x2, #slot]
+//	[start+44] RET
+//	[start+48] deopt block
+func checkSetTableStoreArm64(t *testing.T, buf []byte, start int, slotImm12, cImm12 uint32) {
+	t.Helper()
+	deoptStart := start + 48
+	if len(buf) != deoptStart+20 {
+		t.Fatalf("template is %d bytes, want the deopt block at %d and %d bytes in all", len(buf), deoptStart, deoptStart+20)
+	}
+	insnAt := func(off int) uint32 { return binary.LittleEndian.Uint32(buf[off : off+4]) }
+	want := func(off int, insn uint32, what string) {
+		t.Helper()
+		if got := insnAt(off); got != insn {
+			t.Errorf("[%d] %s = 0x%08x, want 0x%08x", off, what, got, insn)
+		}
+	}
+	bEq := func(off int) uint32 {
+		return uint32(0x54000000) | uint32((deoptStart-off)/4)<<5 | uint32(CondEQ)
+	}
+	cmpX0X3 := uint32(0xEB00001F) | uint32(3)<<16
+
+	want(start, uint32(0xF9400000)|slotImm12<<10|uint32(2)<<5, "LDR x0, [x2, #slot]")
+	// MOV x3, nil: MOVZ + 3 MOVK, each with Rd = 3, the imm16 fields spelling value.Nil
+	nilImm16 := [4]uint32{0, 0, 0, 0xFFF8}
+	for i, imm := range nilImm16 {
+		insn := insnAt(start + 4 + i*4)
+		if insn&0x1F != 3 || (insn>>5)&0xFFFF != imm {
+			t.Errorf("[%d] MOV x3, nil part %d = 0x%08x, want Rd=3 imm16=0x%04x", start+4+i*4, i, insn, imm)
+		}
+	}
+	want(start+20, cmpX0X3, "CMP x0, x3 (the slot's current value)")
+	want(start+24, bEq(start+24), "B.EQ deopt (the slot holds nil)")
+	want(start+28, uint32(0xF9400000)|cImm12<<10|uint32(26)<<5, "LDR x0, [x26, #C*8]")
+	want(start+32, cmpX0X3, "CMP x0, x3 (the value to store)")
+	want(start+36, bEq(start+36), "B.EQ deopt (the value to store is nil)")
+	want(start+40, uint32(0xF9000000)|slotImm12<<10|uint32(2)<<5, "STR x0, [x2, #slot]")
+	want(start+44, 0xd65f03c0, "RET (setter has no R(A) write)")
+	want(deoptStart+16, 0xd65f03c0, "RET (deopt block)")
+}
+
+// TestPJ8_EmitSetTableArrayHitArm64_StoreOp verifies that the ArrayHit setter
+// stores inline only a non-nil value over a non-nil value:
+//   - [100-103] LDR x0, [x2, #16]   (arrayRef word2)
+//   - [112-159] the two nil checks, the store and RET (checkSetTableStoreArm64)
 func TestPJ8_EmitSetTableArrayHitArm64_StoreOp(t *testing.T) {
 	var buf []byte
 	buf = EmitSetTableArrayHitArm64(buf, 1, 2, 7, 3, 16, 0xCAFEBABE)
 
-	if len(buf) < 144 {
+	if len(buf) < 104 {
 		t.Fatalf("buf too short: %d", len(buf))
 	}
 
@@ -247,55 +296,36 @@ func TestPJ8_EmitSetTableArrayHitArm64_StoreOp(t *testing.T) {
 		t.Errorf("[100] LDR x0, [x2, #16] = 0x%08x, want 0x%08x", insn, wantLdr)
 	}
 
-	// [112-115] LDR x3, [x26 + 16] (C=2, byteOff=16, imm12=2)
-	insn = binary.LittleEndian.Uint32(buf[112:116])
-	wantLdrC := uint32(0xF9400000) | uint32(2)<<10 | uint32(26)<<5 | uint32(3)
-	if insn != wantLdrC {
-		t.Errorf("[112] LDR x3, [x26 + C*8] = 0x%08x, want 0x%08x", insn, wantLdrC)
-	}
-
-	// [116-119] STR x3, [x2, #stableIndex*8] = STR base 0xF9000000
-	// (Rt=3, Rn=2, byteOff=24, imm12=3)
-	insn = binary.LittleEndian.Uint32(buf[116:120])
-	wantStr := uint32(0xF9000000) | uint32(3)<<10 | uint32(2)<<5 | uint32(3)
-	if insn != wantStr {
-		t.Errorf("[116] STR x3, [x2, #stableIndex*8] = 0x%08x, want 0x%08x",
-			insn, wantStr)
-	}
-
-	// [120-123] RET
-	insn = binary.LittleEndian.Uint32(buf[120:124])
-	if insn != 0xd65f03c0 {
-		t.Errorf("[120] RET (no R(A) write) = 0x%08x, want 0xd65f03c0", insn)
-	}
+	// stableIndex=3 → slot imm12 = 3; C=2 → imm12 = 2
+	checkSetTableStoreArm64(t, buf, 112, 3, 2)
 }
 
-// TestPJ8_EmitSetTableArrayHitArm64_DeoptBlock verifies the deopt block (124-143).
+// TestPJ8_EmitSetTableArrayHitArm64_DeoptBlock verifies the deopt block (160-179).
 func TestPJ8_EmitSetTableArrayHitArm64_DeoptBlock(t *testing.T) {
 	const deoptCode uint64 = 0xDEAD_BEEF_CAFE_BABE
 	var buf []byte
 	buf = EmitSetTableArrayHitArm64(buf, 1, 2, 7, 3, 16, deoptCode)
 
-	if len(buf) < 144 {
+	if len(buf) < 180 {
 		t.Fatalf("buf too short: %d", len(buf))
 	}
 
-	// [124-127] MOVZ x0, deoptCode[15:0] = 0xBABE
-	insn := binary.LittleEndian.Uint32(buf[124:128])
+	// [160-163] MOVZ x0, deoptCode[15:0] = 0xBABE
+	insn := binary.LittleEndian.Uint32(buf[160:164])
 	imm0 := (insn >> 5) & 0xFFFF
 	if imm0 != 0xBABE {
-		t.Errorf("[124] MOVZ x0 imm[15:0] = 0x%04x, want 0xBABE", imm0)
+		t.Errorf("[160] MOVZ x0 imm[15:0] = 0x%04x, want 0xBABE", imm0)
 	}
 
-	// [140-143] RET
-	insn = binary.LittleEndian.Uint32(buf[140:144])
+	// [176-179] RET
+	insn = binary.LittleEndian.Uint32(buf[176:180])
 	if insn != 0xd65f03c0 {
-		t.Errorf("[140] RET = 0x%08x, want 0xd65f03c0", insn)
+		t.Errorf("[176] RET = 0x%08x, want 0xd65f03c0", insn)
 	}
 }
 
 // TestPJ8_EmitSetTableNodeHitArm64_Length verifies the byte length of the PJ4
-// SETTABLE NodeHit arm64 template (172 bytes).
+// SETTABLE NodeHit arm64 template (208 bytes).
 func TestPJ8_EmitSetTableNodeHitArm64_Length(t *testing.T) {
 	var buf []byte
 	buf = EmitSetTableNodeHitArm64(buf,
@@ -307,7 +337,7 @@ func TestPJ8_EmitSetTableNodeHitArm64_Length(t *testing.T) {
 		16,                 // arenaBaseOff
 		0xCAFEBABE,         // deoptCode
 	)
-	const wantLen = 172
+	const wantLen = 208
 	if len(buf) != wantLen {
 		t.Errorf("总长度 = %d, want %d", len(buf), wantLen)
 	}
@@ -316,65 +346,40 @@ func TestPJ8_EmitSetTableNodeHitArm64_Length(t *testing.T) {
 	}
 }
 
-// TestPJ8_EmitSetTableNodeHitArm64_StoreOp verifies the key store section of
-// SETTABLE NodeHit:
-//   - [140-143] LDR x3, [x26 + C*8]              (load R(C) value)
-//   - [144-147] STR x3, [x2, #stableIndex*24+8]  (reverse store NodeVal)
-//   - [148-151] RET                              (setter has no R(A) write)
+// TestPJ8_EmitSetTableNodeHitArm64_StoreOp verifies that the NodeHit setter
+// stores inline only a non-nil value over a non-nil value: [140-187] are the
+// two nil checks, the store and RET (checkSetTableStoreArm64).
 func TestPJ8_EmitSetTableNodeHitArm64_StoreOp(t *testing.T) {
 	var buf []byte
 	buf = EmitSetTableNodeHitArm64(buf, 1, 2, 7, 3, 0xFFFD000000000042,
 		16, 0xCAFEBABE)
 
-	if len(buf) < 172 {
-		t.Fatalf("buf too short: %d", len(buf))
-	}
-
-	// [140-143] LDR x3, [x26 + 16] (C=2, byteOff=16, imm12=2)
-	insn := binary.LittleEndian.Uint32(buf[140:144])
-	wantLdr := uint32(0xF9400000) | uint32(2)<<10 | uint32(26)<<5 | uint32(3)
-	if insn != wantLdr {
-		t.Errorf("[140] LDR x3, [x26 + C*8] = 0x%08x, want 0x%08x", insn, wantLdr)
-	}
-
-	// [144-147] STR x3, [x2, #stableIndex*24+8]
-	// = STR base 0xF9000000 | imm12=(3*24+8)/8=10 | Rn=2<<5 | Rt=3
-	insn = binary.LittleEndian.Uint32(buf[144:148])
-	wantStr := uint32(0xF9000000) | uint32(10)<<10 | uint32(2)<<5 | uint32(3)
-	if insn != wantStr {
-		t.Errorf("[144] STR x3, [x2, #stableIndex*24+8] = 0x%08x, want 0x%08x",
-			insn, wantStr)
-	}
-
-	// [148-151] RET (setter has no R(A) write)
-	insn = binary.LittleEndian.Uint32(buf[148:152])
-	if insn != 0xd65f03c0 {
-		t.Errorf("[148] RET = 0x%08x, want 0xd65f03c0", insn)
-	}
+	// stableIndex=3 → NodeVal imm12 = (3*24+8)/8 = 10; C=2 → imm12 = 2
+	checkSetTableStoreArm64(t, buf, 140, 10, 2)
 }
 
-// TestPJ8_EmitSetTableNodeHitArm64_DeoptBlock verifies the deopt block (152-171).
+// TestPJ8_EmitSetTableNodeHitArm64_DeoptBlock verifies the deopt block (188-207).
 func TestPJ8_EmitSetTableNodeHitArm64_DeoptBlock(t *testing.T) {
 	const deoptCode uint64 = 0xDEAD_BEEF_CAFE_BABE
 	var buf []byte
 	buf = EmitSetTableNodeHitArm64(buf, 1, 2, 7, 3, 0xFFFD000000000042,
 		16, deoptCode)
 
-	if len(buf) < 172 {
+	if len(buf) < 208 {
 		t.Fatalf("buf too short: %d", len(buf))
 	}
 
-	// [152-155] MOVZ x0, deoptCode[15:0] = 0xBABE
-	insn := binary.LittleEndian.Uint32(buf[152:156])
+	// [188-191] MOVZ x0, deoptCode[15:0] = 0xBABE
+	insn := binary.LittleEndian.Uint32(buf[188:192])
 	imm0 := (insn >> 5) & 0xFFFF
 	if imm0 != 0xBABE {
-		t.Errorf("[152] MOVZ x0 imm[15:0] = 0x%04x, want 0xBABE", imm0)
+		t.Errorf("[188] MOVZ x0 imm[15:0] = 0x%04x, want 0xBABE", imm0)
 	}
 
-	// [168-171] RET
-	insn = binary.LittleEndian.Uint32(buf[168:172])
+	// [204-207] RET
+	insn = binary.LittleEndian.Uint32(buf[204:208])
 	if insn != 0xd65f03c0 {
-		t.Errorf("[168] RET = 0x%08x, want 0xd65f03c0", insn)
+		t.Errorf("[204] RET = 0x%08x, want 0xd65f03c0", insn)
 	}
 }
 
@@ -956,30 +961,38 @@ func TestPJ8_EmitGetTableArrayHitArm64_StableIndexBurnedIn(t *testing.T) {
 }
 
 // TestPJ8_EmitSetTableArrayHitArm64_StableIndexBurnedIn verifies the imm12 field
-// in the SETTABLE ArrayHit reverse store section STR x3, [x2, #stableIndex*8].
+// of the two instructions that address the slot: the LDR of its current value
+// and the STR that writes it back.
 //
 // SET ArrayHit: guard 32 + re-load 36 + word5+LSR+stableShape+CMP+B.NE 32
-//   - arrayRef LDR+MOV+ADD 12 + LDR R(C) 4 = 116 → STR at [116-119].
+//   - arrayRef LDR+MOV+ADD 12 = 112 → LDR at [112-115], STR at [152-155].
 func TestPJ8_EmitSetTableArrayHitArm64_StableIndexBurnedIn(t *testing.T) {
 	const stableIndex uint32 = 35
 	var buf []byte
 	buf = EmitSetTableArrayHitArm64(buf, 1, 2, 7, stableIndex, 16, 0xCAFEBABE)
 
-	if len(buf) < 120 {
+	if len(buf) < 156 {
 		t.Fatalf("buf too short: %d", len(buf))
 	}
 
-	// [116-119] STR x3, [x2, #stableIndex*8]
-	insn := binary.LittleEndian.Uint32(buf[116:120])
+	// [112-115] LDR x0, [x2, #stableIndex*8]
+	insn := binary.LittleEndian.Uint32(buf[112:116])
+	wantLdr := uint32(0xF9400000) | stableIndex<<10 | uint32(2)<<5
+	if insn != wantLdr {
+		t.Errorf("[112] LDR x0, [x2, #stableIndex*8] = 0x%08x, want 0x%08x", insn, wantLdr)
+	}
+
+	// [152-155] STR x0, [x2, #stableIndex*8]
+	insn = binary.LittleEndian.Uint32(buf[152:156])
 	// STR base 0xF9000000 | imm12<<10 | Rn<<5 | Rt
-	wantStr := uint32(0xF9000000) | uint32(stableIndex)<<10 | uint32(2)<<5 | uint32(3)
+	wantStr := uint32(0xF9000000) | stableIndex<<10 | uint32(2)<<5
 	if insn != wantStr {
-		t.Errorf("[116] STR x3, [x2, #stableIndex*8] = 0x%08x, want 0x%08x", insn, wantStr)
+		t.Errorf("[152] STR x0, [x2, #stableIndex*8] = 0x%08x, want 0x%08x", insn, wantStr)
 	}
 
 	gotImm12 := (insn >> 10) & 0xFFF
 	if gotImm12 != stableIndex {
-		t.Errorf("[116] STR imm12 = %d, want %d (stableIndex)", gotImm12, stableIndex)
+		t.Errorf("[152] STR imm12 = %d, want %d (stableIndex)", gotImm12, stableIndex)
 	}
 }
 

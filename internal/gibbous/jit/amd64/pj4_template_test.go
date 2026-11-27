@@ -3,6 +3,7 @@
 package amd64
 
 import (
+	"bytes"
 	"testing"
 )
 
@@ -255,9 +256,8 @@ func TestPJ4_EmitGetTableNodeHit_KeyComparison(t *testing.T) {
 }
 
 // TestPJ4_EmitSetTableArrayHit_Length verifies the PJ4 SETTABLE ArrayHit
-// template byte-level length self-consistency. Expected ~122 bytes (getter
-// ArrayHit is 132 bytes but the nil check becomes load R(C)/reverse store +
-// no NodeKey comparison, dropping the nil mask load + cmp + je).
+// template's exact byte length (159, see the layout in the EmitSetTableArrayHit
+// godoc).
 func TestPJ4_EmitSetTableArrayHit_Length(t *testing.T) {
 	var buf []byte
 	buf = EmitSetTableArrayHit(buf,
@@ -268,14 +268,81 @@ func TestPJ4_EmitSetTableArrayHit_Length(t *testing.T) {
 		16,         // arenaBaseOff
 		0xCAFEBABE, // deoptCode
 	)
-	if len(buf) == 0 {
-		t.Fatal("EmitSetTableArrayHit returned empty buf")
+	const wantLen = 159
+	if len(buf) != wantLen {
+		t.Fatalf("EmitSetTableArrayHit emitted %d bytes, want %d", len(buf), wantLen)
 	}
-	t.Logf("EmitSetTableArrayHit emitted %d bytes", len(buf))
 	if buf[len(buf)-1] != 0xC3 {
 		t.Errorf("SetTable template should end with ret(0xC3), got 0x%02x",
 			buf[len(buf)-1])
 	}
+}
+
+// wantBytesAt reports a mismatch between buf[off:] and want.
+func wantBytesAt(t *testing.T, buf []byte, off int, want []byte, what string) {
+	t.Helper()
+	if off+len(want) > len(buf) {
+		t.Fatalf("%s: offset %d is past the end of the template (%d bytes)", what, off, len(buf))
+	}
+	if got := buf[off : off+len(want)]; !bytes.Equal(got, want) {
+		t.Errorf("%s at offset %d = % x, want % x", what, off, got, want)
+	}
+}
+
+// checkSetTableNilChecks verifies the bytes both SETTABLE templates put between
+// the last address computation and the deopt block, given the displacement of
+// the slot from r14+rcx and the displacement of R(C) from rbx: the slot's
+// current value is compared with nil, then the value to store is, either being
+// nil jumps to the deopt block at deoptStart, and the store and ret follow.
+// start is the offset of the first byte.
+func checkSetTableNilChecks(t *testing.T, buf []byte, start int, slotDisp, valDisp byte, deoptStart int) {
+	t.Helper()
+	nilImm := []byte{0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF8, 0xFF}
+	rel := func(jccEnd int) []byte {
+		d := uint32(deoptStart - jccEnd)
+		return []byte{byte(d), byte(d >> 8), byte(d >> 16), byte(d >> 24)}
+	}
+	off := start
+	// mov rax, [r14+rcx+slotDisp]
+	wantBytesAt(t, buf, off, []byte{0x49, 0x8B, 0x84, 0x0E, slotDisp, 0x00, 0x00, 0x00}, "load the slot's current value")
+	off += 8
+	// mov rdx, nil
+	wantBytesAt(t, buf, off, append([]byte{0x48, 0xBA}, nilImm...), "mov rdx, nil")
+	off += 10
+	// cmp rax, rdx; je deopt
+	wantBytesAt(t, buf, off, []byte{0x48, 0x39, 0xD0, 0x0F, 0x84}, "cmp + je (the slot holds nil)")
+	off += 5
+	wantBytesAt(t, buf, off, rel(off+4), "je target (the slot holds nil)")
+	off += 4
+	// mov rax, nil
+	wantBytesAt(t, buf, off, append([]byte{0x48, 0xB8}, nilImm...), "mov rax, nil")
+	off += 10
+	// mov rdx, [rbx+valDisp]
+	wantBytesAt(t, buf, off, []byte{0x48, 0x8B, 0x93, valDisp, 0x00, 0x00, 0x00}, "load R(C)")
+	off += 7
+	// cmp rax, rdx; je deopt
+	wantBytesAt(t, buf, off, []byte{0x48, 0x39, 0xD0, 0x0F, 0x84}, "cmp + je (the value to store is nil)")
+	off += 5
+	wantBytesAt(t, buf, off, rel(off+4), "je target (the value to store is nil)")
+	off += 4
+	// mov [r14+rcx+slotDisp], rdx; ret
+	wantBytesAt(t, buf, off, []byte{0x49, 0x89, 0x94, 0x0E, slotDisp, 0x00, 0x00, 0x00, 0xC3}, "store + ret")
+	off += 9
+	if off != deoptStart {
+		t.Errorf("the store ends at offset %d, the deopt block starts at %d", off, deoptStart)
+	}
+	// mov rax, deoptCode
+	wantBytesAt(t, buf, deoptStart, []byte{0x48, 0xB8}, "deopt block")
+}
+
+// TestPJ4_EmitSetTableArrayHit_NilChecks verifies that the ArrayHit setter
+// stores inline only a non-nil value over a non-nil value: a slot that holds
+// nil and a nil value to store both jump to the deopt block.
+func TestPJ4_EmitSetTableArrayHit_NilChecks(t *testing.T) {
+	var buf []byte
+	// stableIndex=3 → the slot is at r14+rcx+24; cReg=1 → R(C) is at rbx+8
+	buf = EmitSetTableArrayHit(buf, 0, 1, 7, 3, 16, 0xCAFEBABE)
+	checkSetTableNilChecks(t, buf, 86, 24, 8, 148)
 }
 
 // TestPJ4_EmitSetTableArrayHit_StrictIsTableGuard verifies the SETTABLE
@@ -335,18 +402,10 @@ func TestPJ4_EmitSetTableArrayHit_ReverseStore(t *testing.T) {
 	}
 	t.Logf("load rdx 在 offset %d 找到", found)
 
-	// what follows: reverse store mov [r14+rcx+stableIndex*8], rdx
+	// after the nil check on the loaded value (cmp 3 bytes + je 6 bytes):
+	// reverse store mov [r14+rcx+stableIndex*8], rdx
 	// stableIndex=3, *8 = 24 → 49 89 94 0E 18 00 00 00 (8 bytes)
-	wantStoreRdx := []byte{0x49, 0x89, 0x94, 0x0E, 0x18, 0x00, 0x00, 0x00}
-	if found+7+7 >= len(buf) {
-		t.Fatalf("反向 store 段越界")
-	}
-	for j, b := range wantStoreRdx {
-		if buf[found+7+j] != b {
-			t.Errorf("反向 store 字节[%d] = 0x%02x, want 0x%02x",
-				j, buf[found+7+j], b)
-		}
-	}
+	wantBytesAt(t, buf, found+7+9, []byte{0x49, 0x89, 0x94, 0x0E, 0x18, 0x00, 0x00, 0x00}, "reverse store")
 }
 
 // TestPJ4_EmitSelfArrayHit_Length verifies the PJ4 SELF ArrayHit template
@@ -402,8 +461,8 @@ func TestPJ4_EmitSelfArrayHit_SelfStore(t *testing.T) {
 }
 
 // TestPJ4_EmitSetTableNodeHit_Length verifies the SETTABLE NodeHit template
-// byte-level length self-consistency. Expected 140 bytes (GetTable NodeHit
-// 159 - getter segment 34 + setter segment 15).
+// byte-level length self-consistency. Expected 186 bytes (see the layout in
+// the EmitSetTableNodeHit godoc).
 //
 // **Exact length assertion** (per external review 🟢 feedback): locks down the
 // layout contract, preventing a future accidental change to the primitive that
@@ -420,7 +479,7 @@ func TestPJ4_EmitSetTableNodeHit_Length(t *testing.T) {
 		16,         // arenaBaseOff
 		0xCAFEBABE, // deoptCode
 	)
-	const wantLen = 140
+	const wantLen = 186
 	if len(buf) != wantLen {
 		t.Errorf("EmitSetTableNodeHit emitted %d bytes, want %d(精确长度契约)",
 			len(buf), wantLen)
@@ -505,38 +564,10 @@ func TestPJ4_EmitSetTableNodeHit_KeyCompareAndReverseStore(t *testing.T) {
 		t.Errorf("jne rel32 prefix 字节错位")
 	}
 
-	// right after the key comparison (9 bytes): load R(C) → rdx (7 bytes) + reverse store
-	// (8 bytes)
-	// load rdx segment: 48 8B 93 disp32 (cReg=1 → disp=8)
-	loadRdxOff := movRdxOff + 9 + 9 - 1 // starts after movRdx(10) + cmp(3) + jne(6) = 19 bytes
-	// actual: movRdx starts at movRdxOff, takes 10 bytes; cmp 3 bytes, jne 6 bytes
-	// the load R(C) → rdx segment is 19 bytes later
-	loadRdxStart := movRdxOff + 19
-	if loadRdxStart+6 >= len(buf) {
-		t.Fatal("load R(C) 段越界")
-	}
-	wantLoadRdx := []byte{0x48, 0x8B, 0x93, 0x08, 0x00, 0x00, 0x00}
-	for j, b := range wantLoadRdx {
-		if buf[loadRdxStart+j] != b {
-			t.Errorf("load R(C)→rdx 字节[%d] = 0x%02x, want 0x%02x at offset %d",
-				j, buf[loadRdxStart+j], b, loadRdxStart+j)
-		}
-	}
-
-	// right after load rdx (7 bytes): reverse store mov [r14+rcx+stableIndex*24+8], rdx
-	// stableIndex=2, 24*2+8=56 → 49 89 94 0E 38 00 00 00 (8 bytes)
-	storeStart := loadRdxStart + 7
-	wantStore := []byte{0x49, 0x89, 0x94, 0x0E, 0x38, 0x00, 0x00, 0x00}
-	if storeStart+7 >= len(buf) {
-		t.Fatal("反向 store 段越界")
-	}
-	for j, b := range wantStore {
-		if buf[storeStart+j] != b {
-			t.Errorf("反向 store 字节[%d] = 0x%02x, want 0x%02x at offset %d",
-				j, buf[storeStart+j], b, storeStart+j)
-		}
-	}
-	_ = loadRdxOff // kept for future extension, not verified currently
+	// right after the key comparison (mov rdx 10 + cmp 3 + jne 6 = 19 bytes):
+	// the two nil checks, the store and the deopt block.
+	// stableIndex=2 → NodeVal at r14+rcx+56; cReg=1 → R(C) at rbx+8
+	checkSetTableNilChecks(t, buf, movRdxOff+19, 56, 8, 175)
 }
 
 // TestPJ4_EmitSelfNodeHit_Length verifies the SELF NodeHit template byte-level

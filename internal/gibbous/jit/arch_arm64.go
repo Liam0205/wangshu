@@ -307,7 +307,7 @@ func archEmitGetTableNodeHit(buf []byte, aReg, bReg uint8,
 }
 
 // archEmitSetTableArrayHit is the arm64 PJ4 SETTABLE IC ArrayHit byte-level
-// reverse-write template (144 bytes).
+// reverse-write template (180 bytes).
 func archEmitSetTableArrayHit(buf []byte, aReg, cReg uint8,
 	stableShape, stableIndex uint32, arenaBaseOff int32, deoptCode uint64) []byte {
 	return jitarm64.EmitSetTableArrayHitArm64(buf, aReg, cReg,
@@ -323,7 +323,7 @@ func archEmitSelfArrayHit(buf []byte, aReg, bReg uint8,
 }
 
 // archEmitSetTableNodeHit is the arm64 PJ4 SETTABLE IC NodeHit byte-level
-// reverse-write template (172 bytes).
+// reverse-write template (208 bytes).
 func archEmitSetTableNodeHit(buf []byte, aReg, cReg uint8,
 	stableShape, stableIndex uint32, stableKey uint64,
 	arenaBaseOff int32, deoptCode uint64) []byte {

@@ -319,18 +319,14 @@ const EncodedGetTableNodeHitArm64Len = 196
 
 // EmitSetTableArrayHitArm64 assembles the arm64 PJ4 IC SETTABLE ArrayHit
 // byte-level inline write-back template (the arm64 mirror of the amd64
-// 113-byte EmitSetTableArrayHit).
+// EmitSetTableArrayHit).
 //
 // **Form**: `function(t, v) t[K] = v end`, where K is a numeric constant that
 // hits the array segment (luac emits SETTABLE A B C with A=R(t) / B=K idx>=256
 // / C=R(v)). When IC[0].Kind = ArrayHit and Shape/Index hit, it does a
 // byte-level inline write-back to array[stableIndex].
 //
-// **Byte layout** (144 bytes: GETTABLE ArrayHit 168, minus the 24-byte nil
-// check segment, plus a 0-byte write-back segment; in practice it drops the
-// LDR/MOV/CMP/B.EQ nil segment (24 bytes) but adds the load-R(C)-value +
-// write-back (8 bytes), net -16 → 24 bytes shorter than GETTABLE ArrayHit, so
-// 168 - 24 = 144):
+// **Byte layout** (180 bytes):
 //
 //	[ 0-31] IsTable guard                          ; 32 (same as GETTABLE ArrayHit)
 //	[32-67] re-load + payloadMask + AND + SIB base ; 36
@@ -338,22 +334,23 @@ const EncodedGetTableNodeHitArm64Len = 196
 //	[100-103] LDR x0, [x2, #16]                    ; 4 (table.arrayRef)
 //	[104-107] MOV x1, x0                           ; 4 (rcx = arrayRef offset)
 //	[108-111] ADD x2, x14, x1                      ; 4 (SIB substitute: base for array)
-//	[112-115] LDR x3, [x26 + C*8]                  ; 4 (load R(C) value → x3)
-//	[116-119] STR x3, [x2, #stableIndex*8]         ; 4 (write-back store array[idx])
-//	[120-123] RET                                  ; 4 (setter has no R(A) write)
-//	[124-139] MOV x0, deoptCode imm64              ; 16 (deopt block)
-//	[140-143] RET                                  ; 4
-//	——— total 144 bytes (amd64 113 + arm64 MOV imm64/SIB delta ~31 bytes) ———
+//	[112-115] LDR x0, [x2, #stableIndex*8]         ; 4 (the slot's current value)
+//	[116-131] MOV x3, qNanBoxNil imm64             ; 16
+//	[132-135] CMP x0, x3                           ; 4
+//	[136-139] B.EQ deopt                           ; 4 (the slot holds nil)
+//	[140-143] LDR x0, [x26 + C*8]                  ; 4 (load R(C) value → x0)
+//	[144-147] CMP x0, x3                           ; 4
+//	[148-151] B.EQ deopt                           ; 4 (the value to store is nil)
+//	[152-155] STR x0, [x2, #stableIndex*8]         ; 4 (write-back store array[idx])
+//	[156-159] RET                                  ; 4 (setter has no R(A) write)
+//	[160-175] MOV x0, deoptCode imm64              ; 16 (deopt block)
+//	[176-179] RET                                  ; 4
+//	——— total 180 bytes ———
 //
-// **Design simplifications** (same engineering boundary as amd64 SETTABLE
-// ArrayHit):
-//   - **does not verify the existing array[stableIndex] != nil** (the
-//     new-key path) — the P1 interpreter IC hit protocol itself requires
-//     that slot to be non-nil
-//   - **assumes no __newindex metatable** (meta-freeze assumption)
-//
-// The strict version (adding ~13 bytes to verify the existing nil + ~13 bytes
-// to verify __newindex) is deferred to PJ4+.
+// **What the inline path stores**: a non-nil value over a non-nil value, and
+// nothing else (same as amd64 EmitSetTableArrayHit). A slot that holds nil is
+// an absent field, whose store has to consult __newindex; a nil value is
+// stored by host.SetTable. Both take the deopt path.
 //
 // **Preconditions** (per 06 §4.2; the arm64 trampoline is deferred to PJ8+):
 //   - x26 = valueStackBase / x27 = jitContext / x14 = arena base
@@ -397,34 +394,46 @@ func EmitSetTableArrayHitArm64(buf []byte, aReg, cReg uint8,
 	buf = EmitMovXdFromXn(buf, 1, 0)
 	buf = EmitAddXdXnXm(buf, 2, 14, 1)
 
-	// 20. **setter branch**: load R(C) value → x3 (use x3 to avoid reusing x0)
-	buf = EmitLdrXtFromXnDisp(buf, 3, 26, uint16(cReg)*8)
+	// 20-23. the slot's current value → x0; nil means the field is absent → deopt
+	buf = EmitLdrXtFromXnDisp(buf, 0, 2, uint16(stableIndex*8))
+	buf = EmitMovXdImm64(buf, 3, qNanBoxNilImmArm64)
+	buf = EmitCmpXnXm(buf, 0, 3)
+	bEqAbsentOff := len(buf)
+	buf = EmitBCond(buf, CondEQ, 0)
 
-	// 21. write-back store: STR x3, [x2, #stableIndex*8]
-	buf = EmitStrXtToXnDisp(buf, 3, 2, uint16(stableIndex*8))
+	// 24-26. **setter branch**: load R(C) value → x0; a nil store → deopt
+	buf = EmitLdrXtFromXnDisp(buf, 0, 26, uint16(cReg)*8)
+	buf = EmitCmpXnXm(buf, 0, 3)
+	bEqNilValOff := len(buf)
+	buf = EmitBCond(buf, CondEQ, 0)
 
-	// 22. RET (setter has no R(A) write)
+	// 27. write-back store: STR x0, [x2, #stableIndex*8]
+	buf = EmitStrXtToXnDisp(buf, 0, 2, uint16(stableIndex*8))
+
+	// 28. RET (setter has no R(A) write)
 	buf = EmitRet(buf)
 
-	// 23. deopt block
+	// 29. deopt block
 	deoptStart := len(buf)
 	buf = EmitMovXdImm64(buf, 0, deoptCode)
 	buf = EmitRet(buf)
 
-	// 24. patch B.cond imm19
+	// 30. patch B.cond imm19
 	patchBCondImm19(buf, bNeTagOff, int32(deoptStart-bNeTagOff)/4)
 	patchBCondImm19(buf, bNeShapeOff, int32(deoptStart-bNeShapeOff)/4)
+	patchBCondImm19(buf, bEqAbsentOff, int32(deoptStart-bEqAbsentOff)/4)
+	patchBCondImm19(buf, bEqNilValOff, int32(deoptStart-bEqNilValOff)/4)
 
 	return buf
 }
 
 // EncodedSetTableArrayHitArm64Len is the byte count of the arm64 PJ4 SETTABLE
-// ArrayHit template (144).
-const EncodedSetTableArrayHitArm64Len = 144
+// ArrayHit template (180).
+const EncodedSetTableArrayHitArm64Len = 180
 
 // EmitSetTableNodeHitArm64 assembles the arm64 PJ4 IC SETTABLE NodeHit
 // byte-level inline write-back template (the arm64 mirror of the amd64
-// 140-byte EmitSetTableNodeHit).
+// EmitSetTableNodeHit).
 //
 // **Form**: `function(t, v) t[K] = v end`, where K is a string/arbitrary key
 // in the hash segment. When IC[0].Kind=NodeHit and Shape/Index/Key hit, it
@@ -434,26 +443,31 @@ const EncodedSetTableArrayHitArm64Len = 144
 //   - vs SETTABLE ArrayHit: reads word3=nodeRef (offset 24) instead of
 //     word2=arrayRef (offset 16), the node stride is 24 bytes, and there is
 //     an extra key comparison segment
-//   - vs GETTABLE NodeHit: drops NodeVal load + nil check + STR R(A), replaced
-//     by LDR R(C) value + write-back STR NodeVal
+//   - vs GETTABLE NodeHit: identical up to and including the NodeVal nil
+//     check; then it loads R(C), checks it and stores it into NodeVal instead
+//     of storing NodeVal into R(A)
 //
-// **Byte layout** (172 bytes: GETTABLE NodeHit 196 - NodeVal/nil/storeRA 24 +
-// store value 0; in practice GETTABLE NodeHit's 24 + STR R(A) 4 = 28, the SET
-// segment's LDR + STR = 8, net -20 → 196 - 24 = 172):
+// **Byte layout** (208 bytes):
 //
 //	[ 0-139] same as GETTABLE NodeHit up to B.NE key (IsTable + GCRef + SIB +
 //	         gen check + nodeRef + NodeKey + stableKey + CMP + B.NE) = 140
-//	[140-143] LDR x3, [x26 + C*8]              ; 4 (setter: load R(C) value → x3)
-//	[144-147] STR x3, [x2, #stableIndex*24+8]  ; 4 (write-back store NodeVal)
-//	[148-151] RET                              ; 4 (setter has no R(A) write)
-//	[152-167] MOV x0, deoptCode imm64          ; 16 (deopt block)
-//	[168-171] RET                              ; 4
-//	——— total 172 bytes ———
+//	[140-143] LDR x0, [x2, #stableIndex*24+8]  ; 4 (NodeVal)
+//	[144-159] MOV x3, qNanBoxNil imm64         ; 16
+//	[160-163] CMP x0, x3                       ; 4
+//	[164-167] B.EQ deopt                       ; 4 (the node holds no value)
+//	[168-171] LDR x0, [x26 + C*8]              ; 4 (setter: load R(C) value → x0)
+//	[172-175] CMP x0, x3                       ; 4
+//	[176-179] B.EQ deopt                       ; 4 (the value to store is nil)
+//	[180-183] STR x0, [x2, #stableIndex*24+8]  ; 4 (write-back store NodeVal)
+//	[184-187] RET                              ; 4 (setter has no R(A) write)
+//	[188-203] MOV x0, deoptCode imm64          ; 16 (deopt block)
+//	[204-207] RET                              ; 4
+//	——— total 208 bytes ———
 //
-// **Design simplifications** (same engineering boundary as amd64 SETTABLE
-// NodeHit / ArrayHit):
-//   - does not verify the existing NodeVal != nil (the new-key path)
-//   - assumes no __newindex metatable
+// **What the inline path stores**: a non-nil value over a non-nil value, and
+// nothing else (same as amd64 EmitSetTableNodeHit). A node that holds no value
+// is a deleted key, whose store has to consult __newindex; a nil value is a
+// deletion, which goes through rawSet. Both take the deopt path.
 //
 // **deopt path**: when the Run side sees x0==deoptCode it calls host.SetTable
 // byte-equal to P1 (P1 icSetTable handles NodeHit; via IC + hash + __newindex
@@ -500,29 +514,43 @@ func EmitSetTableNodeHitArm64(buf []byte, aReg, cReg uint8,
 	bNeKeyOff := len(buf)
 	buf = EmitBCond(buf, CondNE, 0)
 
-	// 24-25. **setter branch**: LDR R(C) value → x3 + write-back STR NodeVal
-	buf = EmitLdrXtFromXnDisp(buf, 3, 26, uint16(cReg)*8)
-	buf = EmitStrXtToXnDisp(buf, 3, 2, uint16(stableIndex*24+8))
+	// 24-27. NodeVal → x0; nil means the key is deleted → deopt
+	buf = EmitLdrXtFromXnDisp(buf, 0, 2, uint16(stableIndex*24+8))
+	buf = EmitMovXdImm64(buf, 3, qNanBoxNilImmArm64)
+	buf = EmitCmpXnXm(buf, 0, 3)
+	bEqAbsentOff := len(buf)
+	buf = EmitBCond(buf, CondEQ, 0)
 
-	// 26. RET (setter has no R(A) write)
+	// 28-30. **setter branch**: load R(C) value → x0; a nil store → deopt
+	buf = EmitLdrXtFromXnDisp(buf, 0, 26, uint16(cReg)*8)
+	buf = EmitCmpXnXm(buf, 0, 3)
+	bEqNilValOff := len(buf)
+	buf = EmitBCond(buf, CondEQ, 0)
+
+	// 31. write-back STR NodeVal
+	buf = EmitStrXtToXnDisp(buf, 0, 2, uint16(stableIndex*24+8))
+
+	// 32. RET (setter has no R(A) write)
 	buf = EmitRet(buf)
 
-	// 27. deopt block
+	// 33. deopt block
 	deoptStart := len(buf)
 	buf = EmitMovXdImm64(buf, 0, deoptCode)
 	buf = EmitRet(buf)
 
-	// 28. patch B.cond imm19
+	// 34. patch B.cond imm19
 	patchBCondImm19(buf, bNeTagOff, int32(deoptStart-bNeTagOff)/4)
 	patchBCondImm19(buf, bNeShapeOff, int32(deoptStart-bNeShapeOff)/4)
 	patchBCondImm19(buf, bNeKeyOff, int32(deoptStart-bNeKeyOff)/4)
+	patchBCondImm19(buf, bEqAbsentOff, int32(deoptStart-bEqAbsentOff)/4)
+	patchBCondImm19(buf, bEqNilValOff, int32(deoptStart-bEqNilValOff)/4)
 
 	return buf
 }
 
 // EncodedSetTableNodeHitArm64Len is the byte count of the arm64 PJ4 SETTABLE
-// NodeHit template (172).
-const EncodedSetTableNodeHitArm64Len = 172
+// NodeHit template (208).
+const EncodedSetTableNodeHitArm64Len = 208
 
 // EmitSelfArrayHitArm64 assembles the arm64 PJ4 IC SELF ArrayHit byte-level
 // inline template (the arm64 mirror of the amd64 139-byte EmitSelfArrayHit).
