@@ -647,7 +647,7 @@ type Collector struct {
 ```
 
 1. **mark 阶段登记**(修改 §5.2 Table 扫描行):`scanObject(Table)` 先经 `object.Table.WeakMode()`(07 §13.4 下沉的 object 侧 helper,读元表 `__mode` 解析 `'k'`/`'v'`)判定——非弱表照旧全扫;弱表**弱侧不标记**(weak value 不扫 val、weak key 不扫 key;P1 简化:weak key 表的 val 无条件标活,07 §13.5),并把该表 GCRef 登记进 `weakList`。metaRef 恒扫(元表自身是强引用)。
-2. **clearWeakTables 阶段**(§8.2 主流程,位于 separateFinalizers 之后、sweep 之前):遍历 `weakList`,对每表遍历全部 entry,移除「弱侧对象为本轮死白」的 entry(key 或 val 是 collectable 且 `colorOf == deadWhite()`)。移除即把值置 Nil(数组槽置 Nil;node 只清 val,key 和 next 保留,节点成为已删除状态,并在 word2 的第 32 位记下「值是回收器清掉的」,[01](./01-value-object-model.md) §5.2),**不**触发 rehash(GC 内不分配)。键本身指向本轮死白对象时,把键换成 `object.DeadKey`。该表有条目被清或有键被替换时 `BumpGen` 一次。
+2. **clearWeakTables 阶段**(§8.2 主流程,位于 separateFinalizers 之后、sweep 之前):遍历 `weakList`,对每表遍历全部 entry,移除「弱侧对象为本轮死白」的 entry(key 或 val 是 collectable 且 `colorOf == deadWhite()`)。移除即把值置 Nil(数组槽置 Nil;node 只清 val,key 和 next 保留,节点成为已删除状态,并在 word2 的第 32 位记下「值是回收器清掉的」,[01](./01-value-object-model.md) §5.2),**不**触发 rehash(GC 内不分配)。键本身指向本轮死白对象时,把键换成 `object.DeadKey`(这种节点第 32 位不置位:`SetNode` 写键时把高 32 位清掉,`DeadKey` 不可回收,标记时不看这一位;置位的只是键还活着、值被清掉的节点)。该表有条目被清或有键被替换时 `BumpGen` 一次。
    保留键是为了让正停在这个条目上的遍历能继续：`for k, v in pairs(weak) do ... collectgarbage() end` 里，回收清掉了当前条目的值，
    下一步 `next(weak, k)` 仍然要能找到 `k`。官方的 `cleartable` 清值之后用 `removeentry` 把可回收的键改成 `LUA_TDEADKEY`，键指向的对象还活着也一样；
    它的 `next` 按地址认得 dead key，遍历同样可以继续。望舒只在键指向的对象已死时才替换键，由此带来的差异见第 3 点末尾。
@@ -659,11 +659,11 @@ type Collector struct {
    因为中间发生过一次回收就被当成新键插到别处。
    回收器清掉条目留下的节点（第 2 点）不做这个例外，它的字符串键和其他对象一样不标记。这种节点什么时候出现本来就由回收决定，上面的理由
    在它身上不成立；照常标记的话，字符串作键、对象作值的弱值缓存会把用过的每一个键都留到节点被接管或者表 rehash 为止。两种来源靠节点
-   word2 的第 32 位区分：`clearWeakTables` 清值时置位（`object.ClearNodeValue`），之后任何一次写这个节点的键或值都清掉它（`SetNode`），只改
+   word2 的第 32 位区分：`clearWeakTables` 只清值、键还活着时置位（`object.ClearNodeValue`），之后任何一次写这个节点的键或值都清掉它（`SetNode`），只改
    链接不清（`SetNodeNext`）。对已经是已删除状态的键再赋 nil 不写节点，标记保持原样：回收器清掉的条目，脚本再执行一次 `t[k] = nil`，
    它的字符串键也不会因此被保活。弱值表（`__mode = "v"`）里，条目被清掉的那一轮，键是作为有值条目的强键标记的，所以它至少活过这一轮，
-   正停在这个条目上的遍历可以继续；从下一轮起只看它有没有别的引用。键也是弱引用的两种模式里，只被这张表引用的字符串键可能和值在同一轮
-   死亡（[#348](https://github.com/Liam0205/wangshu/issues/348)）。实测 10 万个约 105 字节的键、值全部死亡之后回收三次，剩 3084KB
+   正停在这个条目上的遍历可以继续；从下一轮起只看它有没有别的引用。键也是弱引用的两种模式里，只被这张表引用的字符串键可能在条目被清掉的
+   同一轮死亡（[#348](https://github.com/Liam0205/wangshu/issues/348)）。实测 10 万个约 105 字节的键、值全部死亡之后回收三次，剩 3084KB
    （官方约 5400KB）。`TestWeak_DeletedStringKeyIsKept`、`TestWeak_ClearedEntryDoesNotKeepItsStringKey`、
    `TestWeak_ClearedEntryStoredAgainIsAnOrdinaryNode`、`TestWeak_ClearedEntryAssignedNilKeepsItsMark`、`TestWeak_ClearedEntryKeepsItsMarkWhenRelinked`、
    `TestWeak_ClearedEntryInATableMadeStrong` 和 `weak_valued_cache_releases_its_string_keys` 断言。
