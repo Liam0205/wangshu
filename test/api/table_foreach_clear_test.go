@@ -1,6 +1,7 @@
 package api_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/Liam0205/wangshu"
@@ -45,5 +46,37 @@ tbl338 = {[{}] = 1, [{}] = 2, [{}] = 3, [1.5] = 4, x = 5, [true] = 6}`), "setup"
 	}
 	if left != 0 {
 		t.Fatalf("%d entries left after clearing", left)
+	}
+}
+
+// TestTableForeach_PanicInCallbackReleasesTheValue: table.foreach keeps the current value rooted
+// while its callback runs. When the callback ends in a Go panic that the embedding API turns into
+// an error (here the arena reaching MaxArenaBytes), that root is released too: the State stays
+// usable, and the entry of the weak-valued table is cleared by the next collection.
+func TestTableForeach_PanicInCallbackReleasesTheValue(t *testing.T) {
+	st := wangshu.NewState(wangshu.Options{MaxArenaBytes: 8 << 20})
+	overflow, err := wangshu.Compile([]byte(`
+W338 = setmetatable({}, {__mode = "v"})
+W338[1] = {}
+table.foreach(W338, function(k, v)
+  local t = {}
+  while true do t[#t + 1] = string.rep("x", 1000) .. #t end
+end)`), "overflow")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := overflow.Run(st); err == nil || !strings.Contains(err.Error(), "arena") {
+		t.Fatalf("the callback should have exhausted the arena, got %v", err)
+	}
+	check, err := wangshu.Compile([]byte(`collectgarbage() collectgarbage() return W338[1] ~= nil`), "check")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rs, err := check.Run(st)
+	if err != nil {
+		t.Fatalf("the State is not usable after the overflow: %v", err)
+	}
+	if len(rs) != 1 || rs[0].Bool() {
+		t.Errorf("the value of the weak entry is still rooted after the callback panicked")
 	}
 }

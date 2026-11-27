@@ -49,11 +49,16 @@ func tableFnForeach(st *crescent.State, args []value.Value) ([]value.Value, *cre
 	// then, and the value stays rooted while the callback runs: lua_next leaves both on the C
 	// stack, so a collection inside the callback does not clear the current entry of a
 	// weak-valued table.
-	var pin uint32
-	pinned := false
+	var pin, vpin uint32
+	pinned, vpinned := false, false
+	// Deferred, so that a Go panic inside the callback (the arena running out, which the
+	// embedding API turns into an error) does not leave either pin behind.
 	defer func() {
 		if pinned {
 			st.UnpinRef(pin)
+		}
+		if vpinned {
+			st.UnpinRef(vpin)
 		}
 	}()
 	for {
@@ -71,14 +76,13 @@ func tableFnForeach(st *crescent.State, args []value.Value) ([]value.Value, *cre
 		if value.IsCollectable(k) {
 			pin, pinned = st.PinRef(value.GCRefOf(k)), true
 		}
-		var vpin uint32
-		vpinned := value.IsCollectable(v)
-		if vpinned {
-			vpin = st.PinRef(value.GCRefOf(v))
+		if value.IsCollectable(v) {
+			vpin, vpinned = st.PinRef(value.GCRefOf(v)), true
 		}
 		rs, e := st.ProtectedCallDirect(args[1], []value.Value{k, v})
 		if vpinned {
 			st.UnpinRef(vpin)
+			vpinned = false
 		}
 		if e != nil {
 			return nil, e
