@@ -91,6 +91,24 @@ for i = 1, 6 do
   out[#out + 1] = tostring(B.x) .. tostring(M[2])
 end
 return table.concat(out, " ")`},
+	// The function is compiled from stores to one table and then called on an empty table with
+	// the same metatable: the slot it was compiled for lies outside that table, and the store is
+	// to an absent field.
+	{"array_slot_outside_another_table", `
+log347 = 0
+mt347 = {__newindex = function(t, k, v) log347 = log347 + 1 rawset(t, k, v) end}
+A347 = setmetatable({1, 2, 3}, mt347)
+function setter347(t, v) t[2] = v end
+for i = 1, 40 do setter347(A347, i) end`, `
+for i = 1, 5 do setter347(A347, i) end
+local total = 0
+for i = 1, 10 do
+  local B = setmetatable({}, mt347)
+  local neighbour = {11, 22, 33}
+  setter347(B, i)
+  total = total + rawget(B, 2) + neighbour[2]
+end
+return log347, total, A347[2]`},
 }
 
 // TestTiered_SingleStoreTemplate runs each case the four ways TestTiered_ClearWhileTraversing does
