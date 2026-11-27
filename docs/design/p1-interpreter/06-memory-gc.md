@@ -666,7 +666,8 @@ type Collector struct {
    `TestWeak_ClearedEntryStoredAgainIsAnOrdinaryNode`、`TestWeak_ClearedEntryKeepsItsMarkWhenRelinked`、
    `TestWeak_ClearedEntryInATableMadeStrong` 和 `weak_valued_cache_releases_its_string_keys` 断言。
    保活脚本删掉的字符串键与官方不同，是有意保留的差异，有两面：
-   - **`next` 的结果**：官方的 `removeentry` 不让已删除节点里的字符串键存活，回收之后 `next` 只按对象地址认这个键。所以 `t[k] = nil`、
+   - **`next` 的结果**：官方的 `removeentry` 不让已删除节点里的字符串键存活，这个字符串没有别的引用时就被回收，回收之后 `next` 只按对象地址
+     认这个键（另有引用时，比如它是某个函数的常量，它还活着，两边相同）。所以 `t[k] = nil`、
      回收、再用重新拼出来的同内容字符串调用 `next(t, k)`，望舒从原位置继续；官方在新字符串没有正好分配到原对象的地址上时报
      `invalid key to 'next'`，分配到原地址上时成功（实测 216 种键长、键个数、回收次数的组合里成功 46 次、报错 170 次）。没有发生回收时
      两边相同。官方的结果取决于回收有没有在中间发生，与「普通回收和每个安全点都回收两种方式下结果相同」的测试要求不能同时满足。
@@ -680,9 +681,11 @@ type Collector struct {
    登记在 `test/difftest/corners_test.go` 的 `exemptions` 和 README 的差异表里，`TestDiff_NextFromCollectedStringKey` 固定望舒一侧的结果
    （官方一侧取决于分配器，只记录、不断言）。回收器清掉的条目，两边都不让它的字符串键存活，剩下的差别只在官方按地址认已回收的键：
    重新拼出来的字符串正好分配在原地址上时官方的 `next` 成功，望舒一律报错，`TestDiff_NextFromKeysOfClearedEntries` 固定望舒一侧的结果。
-   同一个原则还带来一处差异：官方的 `removeentry` 对**每个**键可回收的已删除节点都执行，键指向的对象还活着也一样，键被改成 `LUA_TDEADKEY`
+   同一个原则还带来一处差异：官方标记一张表时（`traversetable`；键和值都弱的表整张跳过，不在此列）对**每个**键可回收的已删除节点都执行
+   `removeentry`，键指向的对象还活着也一样，键被改成 `LUA_TDEADKEY`
    之后，同一个键再次写入时找不到原节点、按新键插入（可能引起 rehash，丢掉其他已删除的键）。望舒只替换对象已死的键，活着的键不管
-   隔了几次回收都写回原节点。`TestDiff_NextOnRemovedKeyAfterStores` 的 `same_keys_stored_again_after_a_collection` 固定两边各自的结果。
+   隔了几次回收都写回原节点。`TestDiff_NextOnRemovedKeyAfterStores` 的 `same_keys_stored_again_after_a_collection` 固定两边各自的结果，
+   `…_weak_keys_and_values` 固定键和值都弱的表上两边相同。
    遍历过程中继续使用某个键的调用方（`next` 的调用者、`table.foreach`、公开 API 的 `Table.ForEach`）自己保证这个键可达。
 4. **可观察性**:cleartable 移除 entry 影响后续 `pairs`/`next` 产出,与 `pairs` 序、`tostring` 地址同类,纳入 §11 / [12](./12-testing-difftest.md) 的差分口径。
 
