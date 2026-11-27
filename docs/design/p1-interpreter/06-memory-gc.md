@@ -470,10 +470,10 @@ host function 签名(见 [10-stdlib](./10-stdlib.md))拿到一个执行上下文
   分配本身只记账、不在分配处收集(§7.1)。host function 执行期间会收集的地方有三种:它调用了另一个 host function(作回调、作元方法都算,如 `string.gsub(s, ".", string.upper)`、
   `pcall(string.rep, s, n)`;每次 host function 调用返回之后检查一次,`collectgarbage("collect")` 自己还直接回收)或调用了会收集的公开 API;
   它回调的 Lua 函数(含元方法)自己执行到了安全点,即执行了 SETGLOBAL、SETTABLE、NEWTABLE、CONCAT、SETLIST、CLOSURE 之一,
-  或者在里面又调用了 host function(那次调用返回之后检查一次),P3 编译出的循环在跳回处还有一次检查;`coroutine.create` 在分配新协程之前检查一次。
+  或者在里面又调用了 host function(那次调用返回之后检查一次);`coroutine.create` 在分配新协程之前检查一次。
   只做比较和算术的 Lua 回调(如 `function(a, b) return a < b end`)里没有安全点。这份清单说的是回调由解释器执行的情况;回调已经升层时,
   只有回到宿主助手的操作才有安全点:SETGLOBAL、SETTABLE 命中内联缓存时由编译代码直接写槽,P4 内联的 `math` 函数不调用 host function,
-  这几种都不检查。写 host function 时仍按「可能触发」来写。
+  这几种都不检查;另外 P3 编译出的循环在跳回处有一次检查,P4 的没有。写 host function 时仍按「可能触发」来写。
   规则简记:**「下一次可能触发 GC 的分配之前,所有已持有但未上 Lua 栈/表的 arena 引用都要在 shadow stack 上」**。
 
 > 这条约定是 stdlib 实现的**纪律**(类似写 C 扩展时管理 `lua_State` 栈的纪律)。差分测试不直接测它,
