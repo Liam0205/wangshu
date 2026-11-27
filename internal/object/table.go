@@ -19,8 +19,10 @@
 // next(t, key) still finds it). The key of a DEAD node is the deleted key, or
 // DeadKey once the collector has found the key's object dead. crescent's
 // rawtable.go owns the transitions. Bit 32 of word2 tells the two sources of a
-// DEAD node apart: it is set on a node whose value the collector cleared (an
-// entry of a weak table) and clear on one a store of nil made.
+// DEAD node apart while its key is still an object: it is set on a node whose
+// value the collector cleared (an entry of a weak table) and clear on one a
+// store of nil made. A node whose key the collector replaced with DeadKey has
+// the bit clear; nothing reads it there.
 //
 // Key point: the Table head is a 6-word head object; the array/node segments are
 // attached blocks without a GCHeader.
