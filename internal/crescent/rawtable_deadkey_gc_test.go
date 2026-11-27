@@ -330,6 +330,31 @@ func TestWeak_ClearedEntryStoredAgainIsAnOrdinaryNode(t *testing.T) {
 	}
 }
 
+// A store of nil to a key whose entry the collector cleared writes nothing: the node is DEAD
+// already, so it keeps its mark and still does not keep its string key alive.
+func TestWeak_ClearedEntryAssignedNilKeepsItsMark(t *testing.T) {
+	st, th := gcTestState(t)
+	weak := weakTable(st, th, "v")
+	key := value.MakeGC(value.TagString, st.gc.Intern([]byte("cleared-then-assigned-nil")))
+	_ = st.rawSet(weak, key, value.MakeGC(value.TagTable, st.allocTable(0, 0)))
+	idx := nodeOf(t, st, weak, key)
+	st.gc.Collect() // clears the entry; the key survives this round
+
+	gen := object.TableGen(st.arena, weak)
+	_ = st.rawSet(weak, key, value.Nil)
+	if !object.NodeClearedByCollector(st.arena, weak, idx) {
+		t.Fatalf("node %d lost its mark to a store of nil that had nothing to remove", idx)
+	}
+	if got := object.TableGen(st.arena, weak); got != gen {
+		t.Errorf("a store of nil to a removed key changed the generation from %d to %d", gen, got)
+	}
+
+	st.gc.Collect()
+	if k := object.NodeKey(st.arena, weak, idx); k != object.DeadKey {
+		t.Errorf("node %d holds %x one collection later, want DeadKey", idx, uint64(k))
+	}
+}
+
 // A cleared entry keeps its mark when another key's relocation rewrites its chain link: the node
 // is the predecessor of an entry that Brent's variation moves, and it must still not keep its
 // string key alive afterwards.
