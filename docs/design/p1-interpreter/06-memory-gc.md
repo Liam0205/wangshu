@@ -611,8 +611,8 @@ updatePacing():
   所以这里的比例 `p` 大约相当于官方的 `p + 100`。`Options.GCPause` 和脚本的 `collectgarbage("setpause")` 设置的都是这个量
   （[10](./10-stdlib.md) §4.6）；要不要改成官方的口径见 [#353](https://github.com/Liam0205/wangshu/issues/353)。
 - **首次触发**:`threshold` 初值 = 一个小常量(如 arena 初始容量,避免极早 GC)。
-- **下限**:每轮回收之后算出的 `threshold` 不低于 arena 容量的 1/16。所以比例再小(包括 0),两次自动回收之间也要分配这么多字节;
-  要让每个安全点都回收,用的是压力模式(`Collector.SetStressMode`,公开入口 `State.SetGCStressMode`,§11),不是把比例调小。
+- **下限**：每轮回收之后算出的 `threshold` 不低于 arena 容量的 1/16。所以比例再小（包括 0），两次自动回收之间也要分配这么多字节；
+  要让每个安全点都回收，用的是压力模式（`Collector.SetStressMode`，公开入口 `State.SetGCStressMode`，§11），不是把比例调小。
 - P1 **只做 full GC**(无增量步长 `GCstepmul`);threshold 是「下次 full GC 的分配水位」。增量步长是 P3+ 的事。
 - **存活量估计**:精确 live = sweep 时累加存活对象字节;或近似 = `bump - sum(freelist 空闲块)`。P1 用 sweep 时精确累加(简单准确)。
   协程的值栈和 CallInfo 段不属于任何对象的大小:存活协程的段字节由 `Roots.ReleaseThreads` 报给 pacing,在 sweep 之后
