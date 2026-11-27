@@ -1120,6 +1120,62 @@ reviewer 另外列了三处修改前就过期、本分支没有碰的文字：`t
 arena 大小跟着比例变。`TestTiered_StdlibNames` 加一段
 `collectgarbage_set_returns_previous`，在 P3 / P4 的升层代码里调用。
 
+## 2026-11-27：删除的键留在哈希节点里，遍历过程中可以清空字段（#338）
+
+`for k in pairs(t) do t[k] = nil end` 报 `invalid key to 'next'`，官方正常遍历完；只有落在数组部分的键不受影响。#329 的独立审查
+发现的，在 master 上三种构建相同。手册对 `next` 的说明明确允许遍历过程中清空已有字段。
+
+原因是 `rawSet` 删除时把哈希节点的键也清成了 Nil，`rawNext` 按键找不到它所在的节点。官方 `luaH_set` 只把值置成 nil，键留在节点里。
+
+| 改动 | 位置 | 说明 |
+|---|---|---|
+| 删除只清值，键和链接留在节点里 | `rawtable.go::rawSet` | 节点有三种状态：空闲、有值、已删除，见 [01 §5.2](./01-value-object-model.md) |
+| 同一个键再写入时回到原节点 | `rawSet` | 查找时按键命中已删除的节点，值写回原处 |
+| 主位置上已删除的节点可以被新键接管，保留链接 | `rawtable.go::insertNewKey` | 对应官方 `newkey` 的 `ttisnil(gval(mp))`；节点可能在别的冲突链中间，所以 `next` 不动 |
+| 找空闲节点时跳过已删除的节点 | `rawtable.go::findFreeNode` | 判断条件没有变（键为 Nil 才算空闲），变的是已删除的节点现在有键 |
+| 已删除的节点没有 IC 位置 | `ic.go::rawGetWithLoc` | 返回 `locNone`，IC 不会回填到没有值的节点上 |
+| 已删除节点里的键不让对象存活，字符串除外 | `gc/mark.go::scanTable` | 对应官方 `traversetable` 的 `removeentry` |
+| 对象已死的键在 sweep 之前换成 `object.DeadKey` | `gc/sweep.go::clearDeadKeys`、`clearWeakTables` | 强表登记在 `deadKeyList`；节点仍然是已删除状态，见 [06 §8.4](./06-memory-gc.md) |
+| 弱表清项只清值，键保留 | `gc/sweep.go::clearWeakTables` | 遍历弱表时回收清掉了当前条目，遍历可以继续 |
+| `table.foreach` 和公开 API 的 `Table.ForEach` 在回调期间固定当前的键 | `stdlib/tablelib.go`、`table.go` | 回调清掉条目、丢掉键再回收时，下一步仍然要从这个键继续；官方的 `lua_next` 把键留在 C 栈上 |
+
+**gen 约定的变化**（完整的表在 [05 §6.5](./05-interpreter-loop.md) 和
+[design-claims-vs-codebase-physics](../../../llmdoc/guides/design-claims-vs-codebase-physics.md) §2.1）：
+
+- 删除仍然 `BumpGen`，每次「有值 → 已删除」一次；对已删除的键再赋 nil 不 bump。
+- 新键接管已删除的节点时 `BumpGen`。P3 的 `emitSetGlobal` 内联写 nil，不经过 `rawSet`，所以节点换键的这一刻是读方快照唯一的失效点。
+- 回收器替换键、清弱表条目时 `BumpGen`，每张表一次。
+
+**脚本能观察到的行为变化**：
+
+1. 遍历过程中把字段赋成 nil 不再报错（哈希部分的键；`pairs`、`next`、`table.foreach` 都是）。
+2. `next(t, k)` 接受一个已经从表里删掉、但节点还在的键，从它的位置继续；从来不在表里的键仍然报 `invalid key to 'next'`。
+3. 删除之后再插入新键的遍历顺序变了：已删除的节点不再被任意新键占用。顺序本身与官方仍然不同（[#349](https://github.com/Liam0205/wangshu/issues/349)）。
+4. 遍历弱表时发生回收、当前条目被清掉，遍历可以继续。
+5. 作为键被删除的字符串会多存活到所在的表下一次 rehash。
+
+**测试**：
+
+- `internal/crescent`：`TestRawTable_DeleteKeepsKeyAndNode`、`TestRawTable_DeadNodeTakeoverBumpsGen`、
+  `TestRawTable_DeadNodeIsNotAFreeNode`、`TestRawTable_TakeoverKeepsChain`、`TestRawTable_RehashDropsDeadNodes`、
+  `TestRawNext_ContinuesFromDeletedKey`，回收器一侧的 `TestDeadKey_*` 和 `TestWeak_*`，以及随机模型比对
+  `TestRawTable_ModelCheck`（40 个种子，每个 3000 步，每一步与 Go map 比较并检查哈希链的结构）。
+- `test/difftest`：`TestDiff_ClearWhileTraversing`，15 段结果与遍历顺序无关的脚本，不经过 prelude，直接与 `lua5.1` 比较，在普通回收
+  和每个安全点都回收两种方式下各执行一遍；`nextvar.lua` 的「erasing values」一段原样收在里面。`TestTiered_ClearWhileTraversing`，6 段
+  脚本在 P3 / P4 下按「解释器预热、再强制升层」执行，断言进入了升层代码。
+- `test/api`：`TestTableForEach_ClearingEntries`。
+
+变异验证：20 处改动逐个撤掉或改坏，每一处都有测试失败。其中「接管时不 bump」由单元测试、P3 下的
+`deleted_global_node_taken_over` 和 P4 下的 `deleted_global_node_taken_over_single_store` 发现；「删除时不 bump」由单元测试和 P4 下的
+`single_store_function_after_delete_elsewhere` 发现。把同一份 `TestDiff_ClearWhileTraversing` 放到修改前的 master 上，15 段里 12 段失败
+（剩下的 3 段修改前后结果相同：数组部分的键、被删除的键不让对象存活、删除之后隔着回收再写回）。
+
+**这一轮没有修、另外登记的存量差异**：P4 单条 SETTABLE 的模板在字段被赋成 nil 再赋值时跳过 `__newindex`
+（[#347](https://github.com/Liam0205/wangshu/issues/347)）；弱表会清掉字符串（[#348](https://github.com/Liam0205/wangshu/issues/348)）；
+哈希部分的遍历顺序与官方不同（[#349](https://github.com/Liam0205/wangshu/issues/349)）。
+
+过程记录见 [#338 复盘](../../../llmdoc/memory/reflections/2026-11-27-issue338-deleted-key-stays-in-node.md)。
+
 ## 相关
 
 [00-overview](./00-overview.md) · [../engineering](../engineering.md) ·

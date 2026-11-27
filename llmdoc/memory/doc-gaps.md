@@ -5,10 +5,20 @@
 
 ## 当前缺口
 
-- **【未修，产品缺陷】遍历过程中把当前字段赋成 `nil` 会报 `invalid key to 'next'`** — `for k in pairs(t) do t[k] = nil end`
-  官方正常遍历完，望舒报错（数组部分的键除外）。`rawSet` 删除时把哈希节点的键也清掉了，`rawNext` 找不到它；官方保留键（dead key）。
-  差分 fuzz 的 prelude 用排序遍历，官方测试套件里测这件事的两段都在截断行之后，所以一直没被发现。见
-  [#338](https://github.com/Liam0205/wangshu/issues/338)。
+- **【未修，产品缺陷】P4：单条 SETTABLE 的函数升层后，字段被赋成 nil 再赋值会跳过 `__newindex`** — 函数体只有一条赋值
+  （`function(t, v) t.x = v end`、`t[2] = v`）时 P4 用专用模板编译，模板不检查槽位现有的值是不是 nil，也不检查要写入的值是不是 nil。
+  用这个函数把字段赋成 nil、再赋一个值，第二次赋值直接写进槽位，不查 `__newindex`。amd64 实测；arm64 的模板有同样的省略，没有实测。
+  按指令翻译的 SETTABLE 快路径两项检查都有，不受影响。见 [#347](https://github.com/Liam0205/wangshu/issues/347)。
+
+- **【未修，产品缺陷】弱表会清掉字符串键和字符串值** — 官方的 `iscleared` 对字符串单独处理（把它标活、条目保留），望舒的
+  `clearWeakTables` 把字符串和其他可回收对象同样对待，只被弱表引用的字符串连同条目一起被清掉。用弱值表缓存拼接出来的字符串的脚本，
+  每次回收之后缓存都是空的。07 §13 把 string 列在受弱引用影响的类型里，与官方不符。见
+  [#348](https://github.com/Liam0205/wangshu/issues/348)。
+
+- **【未做，等维护者决定】哈希部分的遍历顺序与官方不同，键集合确定的表也是** — 12 §4.1 定的口径是键集合确定时逐字节比较，理由是 node
+  布局应当与官方一致；实测 20 个字符串键、6 个非整数键、混合键三种表的顺序都不同。已经看到的实现差别有两处（rehash 取的哈希部分大小比
+  官方多留一个空位；重新插入的顺序相反），各自贡献多少没有验证。差分 fuzz 用排序遍历，看不到。见
+  [#349](https://github.com/Liam0205/wangshu/issues/349)。
 
 - **【未修，产品缺陷】多值展开构造的表里有 nil 时，`#t` 和 `unpack(t)` 可能与官方不同** — 表构造式以多值展开结尾
   （`{...}`、`{f()}`、`{1, f()}`），展开出来的值里有 nil 时（不论最后一个值是不是 nil），`#t`、`table.getn(t)` 和
@@ -128,6 +138,11 @@
   借用者不带参数的 `io.stdout.close()` 会按 `x` 检查）。两件事的可选做法写在
   [#353](https://github.com/Liam0205/wangshu/issues/353)；现状登记在 README 的差异表、`exemptions` 和
   [10 §4.6](../../docs/design/p1-interpreter/10-stdlib.md)。
+
+- **【已完成 2026-11-27，#338】遍历过程中把当前字段赋成 `nil` 会报 `invalid key to 'next'`** — 删除改为只清值、键留在节点里
+  （[01 §5.2](../../docs/design/p1-interpreter/01-value-object-model.md) 节点的三种状态），回收器负责不让留下的键使对象存活
+  （[06 §8.4](../../docs/design/p1-interpreter/06-memory-gc.md)）。过程见
+  [[2026-11-27-issue338-deleted-key-stays-in-node]]。
 
 - **【已完成 2026-10-05,#296 / #297】#290-#292 本地审查发现的两处存量差异** — 对账见
   `docs/design/p1-interpreter/implementation-progress.md` 的 #296 / #297 条目:LARGE 空闲块合并、顶部块退回 bump、

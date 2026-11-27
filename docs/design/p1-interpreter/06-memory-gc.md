@@ -368,7 +368,7 @@ mark 的核心是「从一个对象出发,找出它引用的所有子 arena 对�
 | otype | 要扫的字段(承 [01](./01-value-object-model.md) §5 布局) | 说明 |
 |---|---|---|
 | **String** | **无** | 字符串是叶子,内容是字节,不引用任何对象。标黑即止 |
-| **Table** | ① array 段 `Value[asize]` 每槽(若 `IsCollectable`)② node 段每 Node 的 `key`、`val`(若 `IsCollectable`)③ `metaRef`(若非 0)。**弱表例外**:先经 `WeakMode()` 判 `__mode`,弱侧不标记并登记 weakList(§8.4,承 07 §13) | array/node 是附属块(§1.3),由表头顺带遍历;遍历 node 全部 `nsize` 槽(含空槽,空槽 key/val 为 Nil 不可回收,跳过) |
+| **Table** | ① array 段 `Value[asize]` 每槽(若 `IsCollectable`)② node 段每 Node 的 `key`、`val`(若 `IsCollectable`);已删除的节点(val 为 Nil,[01](./01-value-object-model.md) §5.2)只标记字符串键,其他可回收的键不标记,并把该表登记进 deadKeyList(§8.4)③ `metaRef`(若非 0)。**弱表例外**:先经 `WeakMode()` 判 `__mode`,弱侧不标记并登记 weakList(§8.4,承 07 §13) | array/node 是附属块(§1.3),由表头顺带遍历;遍历 node 全部 `nsize` 槽(含空槽,空槽 key/val 为 Nil 不可回收,跳过) |
 | **Closure(Lua)** | `upvalRef[nupvals]` 每个(指向 Upvalue 对象) | flags bit0=0;protoID 是整数 ID,**不扫** |
 | **Closure(Host)** | `upval[nupvals]` 每个(是 Value,若 `IsCollectable`) | flags bit0=1;hostFnID 是整数 ID,**不扫**;host upvalue 是直接 Value 非 Upvalue 对象 |
 | **Upvalue** | ① `value`(word2,关闭态存值;若 `IsCollectable`)② 开放态:标记所属线程栈槽 `thread.stack[idx]` 里的值(经 `Roots.OpenUpvalue`;槽在所属线程 top 之上时不标记) | 所属线程可能是没有引用的挂起协程，它的栈不会被扫，而共享这个 upvalue 的闭包还活着，所以在 upvalue 处标记(同 `lgc.c` `reallymarkobject`,#291);该协程回收前先关闭这些 upvalue,见 [08](./08-coroutines.md) §6.1 |
@@ -582,13 +582,14 @@ func (c *Collector) collect() {              // STW full GC,一趟跑完
     c.markAll()                              // §5.3:gray stack 跑空,存活全黑;弱表弱侧不标记并登记 weakList(§8.4)
     c.separateFinalizers()                   // §10:把待终结 userdata 从死白中分出,标记其可达图(复活)
     c.clearWeakTables()                      // §8.4:遍历 weakList,移除弱侧已死的 entry(承 07 §13 弱表语义)
+    c.clearDeadKeys()                        // §8.4:遍历 deadKeyList,替换已删除节点里对象已死的键
     c.sweep()                                // §8.1:回收死白,存活翻当前白,flipWhite
     c.runFinalizers()                        // §10:在安全点逐个调 __gc(创建逆序)
     c.updatePacing()                         // §8.3:据本轮存活量设下次触发阈值
 }
 ```
 
-> **阶段顺序定稿(承 [07](./07-metatables-metamethods.md) §13.4)**:`mark → separateFinalizers(复活)→ clearWeakTables → sweep → runFinalizers`。cleartable 在 separateFinalizers **之后**——finalizer 复活的对象已被重新标活,不会被弱表误清;在 sweep **之前**——entry 移除必须发生在弱侧对象内存被回收前(清的是「本轮判死」的引用)。
+> **阶段顺序定稿(承 [07](./07-metatables-metamethods.md) §13.4)**:`mark → separateFinalizers(复活)→ clearWeakTables → clearDeadKeys → sweep → runFinalizers`。cleartable 在 separateFinalizers **之后**——finalizer 复活的对象已被重新标活,不会被弱表误清;在 sweep **之前**——entry 移除必须发生在弱侧对象内存被回收前(清的是「本轮判死」的引用)。
 
 ```go
 // 检查点的触发判断(Collector.MaybeCollect,在 §7.1 的检查点调用,不在 Arena 分配函数里):
@@ -641,12 +642,22 @@ updatePacing():
 type Collector struct {
     // ...(§4.3 字段)
     weakList []value.GCRef   // 本轮 mark 中发现的弱表登记(每轮 GC 重建)
+    deadKeyList []value.GCRef // 本轮 mark 中发现的、含有「已删除且键可回收」节点的强表(每轮 GC 重建)
 }
 ```
 
 1. **mark 阶段登记**(修改 §5.2 Table 扫描行):`scanObject(Table)` 先经 `object.Table.WeakMode()`(07 §13.4 下沉的 object 侧 helper,读元表 `__mode` 解析 `'k'`/`'v'`)判定——非弱表照旧全扫;弱表**弱侧不标记**(weak value 不扫 val、weak key 不扫 key;P1 简化:weak key 表的 val 无条件标活,07 §13.5),并把该表 GCRef 登记进 `weakList`。metaRef 恒扫(元表自身是强引用)。
-2. **clearWeakTables 阶段**(§8.2 主流程,位于 separateFinalizers 之后、sweep 之前):遍历 `weakList`,对每表遍历全部 entry,移除「弱侧对象为本轮死白」的 entry(key 或 val 是 collectable 且 `colorOf == deadWhite()`)。移除即把槽置空(node 的 key/val 置 Nil,数组槽置 Nil),**不**触发 rehash(GC 内不分配)。
-3. **可观察性**:cleartable 移除 entry 影响后续 `pairs`/`next` 产出,与 `pairs` 序、`tostring` 地址同类,纳入 §11 / [12](./12-testing-difftest.md) 的差分口径。
+2. **clearWeakTables 阶段**(§8.2 主流程,位于 separateFinalizers 之后、sweep 之前):遍历 `weakList`,对每表遍历全部 entry,移除「弱侧对象为本轮死白」的 entry(key 或 val 是 collectable 且 `colorOf == deadWhite()`)。移除即把值置 Nil(数组槽置 Nil;node 只清 val,key 和 next 保留,节点成为已删除状态,[01](./01-value-object-model.md) §5.2),**不**触发 rehash(GC 内不分配)。键本身指向本轮死白对象时,把键换成 `object.DeadKey`。该表有条目被清或有键被替换时 `BumpGen` 一次。
+   保留键是为了让正停在这个条目上的遍历能继续：`for k, v in pairs(weak) do ... collectgarbage() end` 里，回收清掉了当前条目的值，
+   下一步 `next(weak, k)` 仍然要能找到 `k`（官方 `cleartable` 的 `removeentry` 也只清值）。
+3. **已删除节点里的键（clearDeadKeys）**：脚本用 `t[k] = nil` 删除的键留在节点里（[01](./01-value-object-model.md) §5.2），但节点不该让键指向的
+   对象一直存活。mark 阶段遇到已删除的节点时不标记它的键（字符串除外），并把表登记进 `deadKeyList`；`clearDeadKeys` 在 sweep 之前遍历
+   这些表，把指向死白对象的键换成 `object.DeadKey` 并 `BumpGen`。弱表里已删除的节点由 `clearWeakTables` 用同样的办法处理。
+   换成占位值而不是清成空闲节点，是因为空闲节点可以分给任何新键：那样一来新键落在哪个节点（也就是遍历顺序）会取决于回收发生的时机。
+   字符串键照常标记，原因是内容相同的字符串在原对象被回收之后还能重新创建，它应该找回原来的节点，而不是因为中间发生过一次回收就被当成
+   新键插到别处；代价是每个已删除的节点让一个字符串多存活到下一次 rehash。
+   遍历过程中继续使用某个键的调用方（`next` 的调用者、`table.foreach`、公开 API 的 `Table.ForEach`）自己保证这个键可达。
+4. **可观察性**:cleartable 移除 entry 影响后续 `pairs`/`next` 产出,与 `pairs` 序、`tostring` 地址同类,纳入 §11 / [12](./12-testing-difftest.md) 的差分口径。
 
 > `WeakMode()` 在 mark 期间读元表是安全的:STW 下对象图静止;helper 下沉到 `internal/object` 避免 gc 包反向依赖 crescent(07 §13.4 第 3 项)。
 

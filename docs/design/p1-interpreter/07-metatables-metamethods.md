@@ -1024,7 +1024,7 @@ cleartable 阶段(mark 完成后、sweep 前,原子):
       dead_k := isCollectable(k) && colorOf(k) == deadWhite  // 键所指对象本轮将被回收
       dead_v := isCollectable(v) && colorOf(v) == deadWhite
       if (weak_key && dead_k) || (weak_value && dead_v):
-        从 table 移除该 entry(rawset k → nil,或标记槽为死)
+        从 table 移除该 entry:清掉值、保留键(节点成为已删除状态,06 §8.4);键所指对象已死时把键换成占位值
         // 移除可能影响 pairs 序 → 可观察(06 §11)
 
 sweep 阶段(06 §8):
