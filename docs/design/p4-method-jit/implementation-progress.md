@@ -2861,6 +2861,11 @@ P1 成功、P4 抬 `SETLIST: not a table`。**根因不在 JIT 里**,而在共�
   算术记录在 `imm` 里的 pc 宽度一致；`AnalyzeShape` 不接受 RETURN 在 pc 65535 之后的函数（`maxShapePC`），所以 16 位放得下每一个记录的 pc。
   原生翻译（amd64、arm64 两个后端）把 pc 放在 exit-reason 字的 22 位里，`AnalyzeNative` 原来不限制指令条数；现在不接受有指令在
   pc 4194303 之后的函数（`maxNativePC`），`TestAnalyzeNative_PCLimit` 固定这个上限，两个后端都执行过。
+  `maxShapePC`、`maxNativePC` 和 16 位的字段是翻译器自己的保证：现在可编译性检查把函数限制在 2000 条指令以内
+  （`bridge.MaxCompilableInsns`），更大的函数不升层，所以实际会碰到的只有 pc 256 到 1999 这一段的截断。
+  ④ 重放路径的数值 for 在循环跳回处检查步数预算和取消（`LoopPreempt`）时，传的是 FORPREP 的 pc，解释器在 FORLOOP 上检查。luac 把 FORPREP
+  记在 `do` 那一行、FORLOOP 记在 `for` 那一行，所以循环头跨行时 `instruction budget exceeded` 的行号差一行。记录里加上 FORLOOP 的 pc
+  （`forLoopBackPC`），`LoopPreempt` 用它；`ForPrep` 仍用 FORPREP 的 pc。
 - **同一个文件里其余的 `retPC - 1`**逐个核对过：方法调用和尾调用两种形式里 `retPC` 就是 CALL / TAILCALL 的下一条，不带多结果；
   FORLOOP、单条表访问、比较折叠各自的注释里写明了位置的算法，没有问题。
 - **验证**：`test/difftest/tiered_error_names_test.go` 的 `TestTiered_ErrorNames`，十二种出错写法，内核都写成多行并保留行号比较（报错文本里的行号，以及 `debug.traceback` 给内核那一帧的行号），解释器、
@@ -2881,5 +2886,7 @@ P1 成功、P4 抬 `SETLIST: not a table`。**根因不在 JIT 里**,而在共�
   多出来相同的一种是给 upvalue 的字段赋值，它用的是 ② 加的 16 位 `pc` 字段。逐个字段改回 8 位：`arithPC` 八段失败，`forLoopPC`、`tforLoopPC` 各一段失败，
   记录里的 `pc` 一段失败；`retPC` 改回 8 位和去掉 `maxShapePC` 的检查由 `peroptranslator` 的单元测试 `TestAnalyzeShape_ReturnPCLimit` 发现。
   arm64 的 P4 上没有这条路径，十二段里八段进入升层代码、四段不升层，结果都与解释器相同（`qemu-aarch64` 下执行过）。
+  ④ 由 `TestTiered_StepBudgetLineInNumericFor`（只在 P4 构建）验证：循环头跨两行的数值 for，一段短内核走原生翻译，一段垫了 300 条赋值的在
+  amd64 上走重放，步数预算用完时的报错和栈回溯与解释器逐字相同；把 `LoopPreempt` 的 pc 改回 FORPREP，垫过的那段失败。arm64 上执行过。
 - **为什么长期没被发现**：`p4Corpus` 里出错的用例大多把内核直接放在 `pcall` 下面，升了层也不在升层代码里执行（#333）；比较报错文本的测试
   又常把整段位置前缀去掉，行号错了看不出来；用例的内核都只有几条指令，到不了 pc 256。
