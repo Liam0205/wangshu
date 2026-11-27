@@ -989,7 +989,7 @@ GC 压力 fuzz = **打开 collector 的压力模式(每个安全点都 full GC),
 | 目标 | 验证什么 | 抓什么 bug |
 |---|---|---|
 | **① GC 透明性** | 同一脚本在「正常 pacing」与「极高频 GC」下,**可观察输出 byte-equal** | GC 改变了可观察行为(违反 [06](./06-memory-gc.md) §11「GC 不应改变可观察行为」)——通常是 mark 漏扫某字段([06](./06-memory-gc.md) §5.2)导致对象内容被错误回收/复用 |
-| **② 不崩溃** | 极高频 GC 下脚本跑完不 panic / 不脏读 | 漏 push shadow stack([06](./06-memory-gc.md) §6.3)——host 持有的中间对象在分配窗口被回收;mark 漏扫([06](./06-memory-gc.md) §5.2)——某类对象的某 GCRef 字段没被遍历,被误回收 |
+| **② 不崩溃** | 极高频 GC 下脚本跑完不 panic / 不脏读 | 漏 push shadow stack([06](./06-memory-gc.md) §6.3)——host 持有的中间对象在持有窗口里的安全点被回收;mark 漏扫([06](./06-memory-gc.md) §5.2)——某类对象的某 GCRef 字段没被遍历,被误回收 |
 
 ### 5.2 为什么高频 GC 是这类 bug 的「必现」手段
 
