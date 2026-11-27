@@ -1073,7 +1073,9 @@ reviewer 另外列了三处修改前就过期、本分支没有碰的文字：`t
 修改前三种构建相同，只影响报错文字。
 
 官方的句柄方法 `close` 就是 `liolib.c` 的 `io_close`：没有参数时先 `lua_rawgeti(L, LUA_ENVIRONINDEX, IO_OUTPUT)`，再检查第一个参数是
-不是文件。句柄方法是在 `luaopen_io` 换上私有环境之前注册的，环境是全局表（官方里 `getfenv(io.stdout.close) == _G`），`IO_OUTPUT` 是 2，
+不是文件。句柄方法是在 `luaopen_io` 换上私有环境之前注册的（`createmeta` 在 `lua_replace(L, LUA_ENVIRONINDEX)` 之前），环境是全局表
+（官方里实测：`rawset(_G, 2, io.open("/dev/null"))` 之后 `io.stdout.close()` 返回 true，那个文件变成 `closed file`；`getfenv` 对任何 C 函数
+都返回全局表，不能用来判断），`IO_OUTPUT` 是 2，
 所以压进去的是全局表的原始字段 `[2]`：通常是 nil，报 `got nil`；脚本往 `_G[2]` 放过值时按那个值检查（数字报 `got number`，标准流则返回
 `(nil, "cannot close standard file")`）。`fileFnClose` 在没有参数时读全局表的 `[2]`（不经过元方法）再检查。
 `flush`、`read`、`write`、`lines` 在官方实现里没有这一步，不带参数时两侧都报 `got no value`，没有改。
