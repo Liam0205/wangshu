@@ -16,6 +16,17 @@
   amd64 上另有一种情况：索引值为 nil 的 upvalue 时名字丢失，原因没有查。见
   [#339](https://github.com/Liam0205/wangshu/issues/339)。
 
+- **【未修，产品缺陷】多值展开构造的表中间有 nil 时，`#t` 和 `unpack(t)` 与官方不同** — `{...}`、`{f()}` 展开出来的值
+  中间有 nil 时，官方的 `#t` 是值的总个数，望舒停在第一个 nil 之前；`local args = {...}` 之后 `f(unpack(args))` 会丢掉 nil
+  之后的参数。写死个数的字面量不受影响。原因是 `doSetList` 在个数取到栈顶为止时逐个写入，没有像官方 `OP_SETLIST` 那样
+  先把数组段一次开到最终大小。差分 fuzz 能直接看到。见
+  [#342](https://github.com/Liam0205/wangshu/issues/342)。
+
+- **【未修】文件句柄的 `close` 不传句柄时报错文字不同** — `io.stdout.close()` 官方报 `FILE* expected, got nil`，望舒报
+  `got no value`：官方的 `io_close` 在没有参数时先压入默认输出（句柄方法的环境里没有，所以是 nil）再检查。其余句柄方法
+  两侧相同。差分 fuzz 能直接看到。见
+  [#343](https://github.com/Liam0205/wangshu/issues/343)。
+
 - **【未修】`make test-trace` 在 master 上不能通过** — trace 构建（`-tags wangshu_trace`）的全仓测试有两个包共 16 个测试失败：
   `test/language` 的零分配断言在这种构建下不成立；`test/regression` 里抓取脚本标准输出的测试抓到了跟踪行。CI 和 `make all`
   都不执行这个目标。全仓跑一次的输出约 10 GB，不要重定向到空间有限的地方。见
