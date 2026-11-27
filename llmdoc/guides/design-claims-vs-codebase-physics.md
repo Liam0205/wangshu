@@ -109,7 +109,7 @@ job 87% 时长的是另一个从没被怀疑过的步骤,因为它的表面参�
 
 把内部缓冲区切片直接返回省分配、或让加速层持有指向共享 arena 的值时,**根可达性不能靠推理下结论,必须 stress 实测**。本码库的物理事实:值切片指向复用栈/arena,持有者复位后,槽位值只有在仍被某条根链覆盖时才可达。`Call` 返回后 `runningThread` 复位为 nil,**主线程的栈此时不是根**(根集合只扫 `runningThread` 和 resume 链),所以 `callOnStack` 返回的切片只在下次进入 VM 或宿主触发收集(`Collect()`,或越过阈值的 `MaybeCollectNow()`)之前有效。
 
-**实例(issue8 教训 2)**:`CallInto` 零分配直切 `th.stack[:nret]`,用 `SetGCStressMode(true)`(每分配点触发 GC)+ 复用 dst 循环 + string 返回值(经 arena)500 轮读出仍正确;配套覆写约定(返回值下次进 VM 前被覆写,godoc ⚠️ 标注)。门面层的 `CallInto` 在返回前就把值转换完，所以安全。但当时据此写下的「`mainTh` 仍是同级常驻根」是错的(#292 一轮订正):压力模式只在 VM 内部的分配点收集，覆盖不到「两次调用之间由宿主 `Collect()`」,这个错误说法因此一直没被测出来，#292 正是这条路径上的悬空引用。
+**实例(issue8 教训 2)**:`CallInto` 零分配直切 `th.stack[:nret]`,用 `SetGCStressMode(true)`(每个安全点触发 GC)+ 复用 dst 循环 + string 返回值(经 arena)500 轮读出仍正确;配套覆写约定(返回值下次进 VM 前被覆写,godoc ⚠️ 标注)。门面层的 `CallInto` 在返回前就把值转换完，所以安全。但当时据此写下的「`mainTh` 仍是同级常驻根」是错的(#292 一轮订正):压力模式只在 VM 内部的安全点收集，覆盖不到「两次调用之间由宿主 `Collect()`」,这个错误说法因此一直没被测出来，#292 正是这条路径上的悬空引用。
 
 **判据**:任何「返回内部缓冲区切片以省分配」或「加速层持有共享 arena 值」的优化,GC stress 实测 + 覆写约定测试是上线前必做项,不是可选;**另外要单独测宿主在两次调用之间 `Collect()` / `MaybeCollectNow()` 的情况**,压力模式测不到它。与 `feedback_arena_view_aliasing` 同物理基础。
 

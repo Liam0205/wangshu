@@ -611,6 +611,8 @@ updatePacing():
   所以这里的比例 `p` 大约相当于官方的 `p + 100`。`Options.GCPause` 和脚本的 `collectgarbage("setpause")` 设置的都是这个量
   （[10](./10-stdlib.md) §4.6）；要不要改成官方的口径见 [#353](https://github.com/Liam0205/wangshu/issues/353)。
 - **首次触发**:`threshold` 初值 = 一个小常量(如 arena 初始容量,避免极早 GC)。
+- **下限**:每轮回收之后算出的 `threshold` 不低于 arena 容量的 1/16。所以比例再小(包括 0),两次自动回收之间也要分配这么多字节;
+  要让每个安全点都回收,用的是压力模式(`Collector.SetStressMode`,公开入口 `State.SetGCStressMode`,§11),不是把比例调小。
 - P1 **只做 full GC**(无增量步长 `GCstepmul`);threshold 是「下次 full GC 的分配水位」。增量步长是 P3+ 的事。
 - **存活量估计**:精确 live = sweep 时累加存活对象字节;或近似 = `bump - sum(freelist 空闲块)`。P1 用 sweep 时精确累加(简单准确)。
   协程的值栈和 CallInfo 段不属于任何对象的大小:存活协程的段字节由 `Roots.ReleaseThreads` 报给 pacing,在 sweep 之后
@@ -618,8 +620,8 @@ updatePacing():
   算进 `totalbytes` 一样，详见 [08](./08-coroutines.md) §6.1。
 
 > pacing 影响 GC **频率**,不影响**正确性**(§11):无论何时 GC,存活对象不变、`pairs` 序不变。脚本能看到回收时机的地方只有弱表条目何时被清、终结器何时执行和 `collectgarbage("count")` 的数值。
-> 但 GC 频率影响**性能**与**捕获 bug 的概率**——[12](./12-testing-difftest.md) 的「高频 GC 模式」(把 GCPAUSE 设到极小,
-> 每次分配都 GC)是逼出「漏 push shadow stack / mark 漏字段」类 bug 的压力测试手段(§11)。
+> 但 GC 频率影响**性能**与**捕获 bug 的概率**——[12](./12-testing-difftest.md) 的「高频 GC 模式」(collector 的压力模式,
+> 每个安全点都做一次 full GC;只把 GCPAUSE 调小做不到,阈值有上面说的下限)是逼出「漏 push shadow stack / mark 漏字段」类 bug 的压力测试手段(§11)。
 
 ### 8.4 弱表(`__mode`)的 GC 协作(承 [07](./07-metatables-metamethods.md) §13 回填请求)
 
@@ -862,7 +864,7 @@ GC 主流程(§8.2)的两个终结相关步骤:
 
 - **`pairs`/`next` 序的口径**:逐字节严格 vs 排序后比较。本文(§9.3)已把哈希环对齐官方,使「严格口径」有可能;
   最终口径由 12 在跑通差分后定。**无论哪种口径,JSHash + 对齐的 rehash/Brent 都是占优选择**。
-- **GC 压力 fuzz**:把 `GCPAUSE` 设到极小(每次/每几次分配就 full GC),反复跑同一程序,验证:
+- **GC 压力 fuzz**:打开 collector 的压力模式(每个安全点都 full GC,§8.3),反复跑同一程序,验证:
   ① 输出与「正常 pacing」byte-equal(GC 透明性);② 不崩溃(捕获「漏 push shadow stack(§6.3)/mark 漏扫字段(§5.2)」类 bug)。
   这是 §6.3 纪律、§5.2 完整性的**主要自动化防线**——这类 bug 在正常 pacing 下偶发难复现,高频 GC 下必现。
 - **finalizer 顺序**:`__gc` 调用序(创建逆序,§10)若被测试观察(终结器打印),须与 Lua 5.1 一致——属差分用例。

@@ -830,7 +830,7 @@ jobs:
 
 **JIT 持 arena base 跨 safepoint 的潜在 bug**:① arena base 缓存进 jitContext 寄存器(如 r15),JIT 内某操作触发 arena 扩容(helper 内分配),返回后 r15 仍是旧 base 再 load/store 是 UAF;② back edge 检查点 + GC 触发,gcPending 被设但 r15 未刷新,GC 后续读 r15 看到旧 arena 是脏读;③ trampoline 出 JIT 调 helper 期间 arena 可能 grow,trampoline 回来未从 jitContext 重载 r15。
 
-**P4 GC 压力 fuzz 必须验**:强制 arena 频繁扩容(SetArenaCap 设小值 + 高频分配脚本)+ 高频 GC(GCPAUSE=1)+ force-all-jit;期望每次 JIT 帧返回后 arena base 重载,无 UAF,正常 pacing 与压力下输出 byte-equal。
+**P4 GC 压力 fuzz 必须验**:强制 arena 频繁扩容(SetArenaCap 设小值 + 高频分配脚本)+ 高频 GC(压力模式 `SetGCStressMode`)+ force-all-jit;期望每次 JIT 帧返回后 arena base 重载,无 UAF,正常 pacing 与压力下输出 byte-equal。
 
 ### 7.3 专打「back edge 检查点漏布」(05 §6)
 
@@ -846,7 +846,7 @@ jobs:
 
 **物化期 GC 触发的 bug 形式**:① OSR exit 物化序列内若有「未上根的临时分配」(违反 §3.7 不变式)——高频 GC 期内必然触发,临时分配被回收 → 物化写到陈旧栈槽 → exit 后 crescent 读栈槽脏值;② 物化序列内寄存器写回到栈槽期间触发 GC——若写回未完成 GC 扫描看到部分新部分旧的栈槽,根可见性不一致。
 
-**联合验形式**:每条 guard kind ∈ {IsNumberB, tableRef, gen, globalsGen} × 每条 alloc-heavy OSR 脚本 × 正常 pacing 与 GCPAUSE=1 双档对照——任一档 != crescent oracle 即 V19+V13 物化期 GC 触发破透明性 / 物化序列 unsafe。
+**联合验形式**:每条 guard kind ∈ {IsNumberB, tableRef, gen, globalsGen} × 每条 alloc-heavy OSR 脚本 × 正常 pacing 与压力模式(`SetGCStressMode`)双档对照——任一档 != crescent oracle 即 V19+V13 物化期 GC 触发破透明性 / 物化序列 unsafe。
 
 ### 7.5 GC 压力下双架构差分(amd64/arm64 各跑)
 

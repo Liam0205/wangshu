@@ -135,7 +135,7 @@ memory-resident 的「访存比 locals 慢若干 ns」代价,在「消灭 dispat
 
 ### 2.4 写回纪律(若启用 §2.3 优化)
 
-缓存进 Wasm locals 的值对 GC 与解释器都不可见 ⇒ **任何 safepoint、任何跨层调用、任何可能读栈的助手调用之前,缓存的 locals 必须写回 memory 栈槽**。漏写回 = GC 误根 / 解释器读脏值,GC 压力 fuzz([../p1-interpreter/12](../p1-interpreter/12-testing-difftest.md) 「每分配即 full GC」模式)是主防线。
+缓存进 Wasm locals 的值对 GC 与解释器都不可见 ⇒ **任何 safepoint、任何跨层调用、任何可能读栈的助手调用之前,缓存的 locals 必须写回 memory 栈槽**。漏写回 = GC 误根 / 解释器读脏值,GC 压力 fuzz([../p1-interpreter/12](../p1-interpreter/12-testing-difftest.md) 「每个安全点都 full GC」的压力模式)是主防线。
 
 写回点由编译器**静态插入**,人工定位算法:
 

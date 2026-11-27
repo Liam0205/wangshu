@@ -5,7 +5,7 @@
 > 上游约定(P1):
 > [06-memory-gc](../p1-interpreter/06-memory-gc.md) §5.1(GC 根 R1..R9 完整枚举)、§5.2(各对象类型扫的 GCRef 字段)、§7(safepoint 哲学:分配点 + 层边界)、§8.2(GC 主流程 STW 单趟)、§9.4(写屏障 P1 空实现 + 增量 GC 预留)、§12(跨层 safepoint 缺口——本文要解决的对象);
 > [05-interpreter-loop](../p1-interpreter/05-interpreter-loop.md) §5.1(布点原则:受控位置才允许 runtime 介入)、§5.2(分配点 opcode 清单)、§5.3(opcode 末尾 safepoint 检查机制 + gcPending);
-> [12-testing-difftest](../p1-interpreter/12-testing-difftest.md)(GC 压力 fuzz「每分配即 full GC」模式)。
+> [12-testing-difftest](../p1-interpreter/12-testing-difftest.md)(GC 压力 fuzz「每个安全点都 full GC」的压力模式)。
 > 上游约定(P3 内部):
 > [02-translation](./02-translation.md) §2A(基线 memory-resident 寄存器映射 = locals 写回纪律的源)、§2.2B(locals 缓存优化的纪律)、§3.5(FORLOOP back edge gcPending 检查 WAT)、§4(pc 物化);
 > [03-memory-model](./03-memory-model.md)(arena 收养 wazero memory:GC 根与寄存器同一块物理内存的物理基础);
@@ -635,7 +635,7 @@ helper 返回后:gibbous 用 $cache_5 访问那个 Table ⇒ 悬垂 GCRef
 
 漏写回 bug 的不确定性(§4.4.3)使它**无法靠常规测试可靠捕获**——必须用 GC 压力 fuzz 强制把「恰好该点触发 GC」这个条件变成「每个点都触发 GC」:
 
-- **GC 压力模式**([12](../p1-interpreter/12-testing-difftest.md) 的「每分配即 full GC」模式):把 GC 触发阈值降到最低(每次 Alloc 都 collect),使**每个 helper 调用、每个 back edge 都触发一次 full GC**。
+- **GC 压力模式**([12](../p1-interpreter/12-testing-difftest.md) 的压力模式):`MaybeCollect` 不看阈值、每次都回收,使**每个会分配的 helper 调用、每个 back edge 都触发一次 full GC**。
 - **效果**:漏写回的「恰好触发 GC」条件被满足在**每一个 GC 边界**——若某点漏写回了一个活 GCRef,这个模式下该点的 GC 必然误回收它,后续访问必然炸/脏。**把偶发 bug 变成必现 bug。**
 - **配合强制全升模式**([08 §2](./08-testing-strategy.md)):所有 CompCompilable 的 Proto 强制编译为 gibbous,使所有可能的 gibbous 帧都被 GC 压力覆盖,消除「热度时序导致哪些函数被编译」的不确定性。
 
@@ -763,11 +763,11 @@ func (c *Collector) writeBarrier(parent value.GCRef, child value.Value) {
 
 ### 6.2 验证机制要点(详见 08)
 
-- **每分配即 full GC 模式**([12](../p1-interpreter/12-testing-difftest.md)):把「恰好触发 GC」变成「每个 GC 边界都触发」,把偶发 bug 变必现(§4.5)。
+- **每个安全点都 full GC 的压力模式**([12](../p1-interpreter/12-testing-difftest.md)):把「恰好触发 GC」变成「每个 GC 边界都触发」,把偶发 bug 变必现(§4.5)。
 - **crescent vs gibbous 逐字节差分**([08 §2](./08-testing-strategy.md)):同一 Proto 在 crescent 和强制 gibbous 下跑同样的 GC 压力负载,输出逐字节比对——任何根缺漏导致的误回收/读脏都会使输出偏离(或崩溃),差分必炸。
 - **强制全升模式**([08 §2](./08-testing-strategy.md)):所有 CompCompilable Proto 强制编译,使所有可能的 gibbous 帧都被 GC 压力覆盖。
 
-**转交声明**:**本节只声明「GC 压力下验 gibbous 的两类缺漏 + 用每分配即 full GC 模式逼出」;V 编号验收项、fuzz 种子策略、断言形式在 [08-testing-strategy](./08-testing-strategy.md) 定稿。** 本文 §3.4.4 / §4.5 已分别给出基线根等价性、locals 写回的验证锚点指向。
+**转交声明**:**本节只声明「GC 压力下验 gibbous 的两类缺漏 + 用每个安全点都 full GC 的压力模式逼出」;V 编号验收项、fuzz 种子策略、断言形式在 [08-testing-strategy](./08-testing-strategy.md) 定稿。** 本文 §3.4.4 / §4.5 已分别给出基线根等价性、locals 写回的验证锚点指向。
 
 ---
 

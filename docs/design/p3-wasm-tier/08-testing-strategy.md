@@ -129,7 +129,7 @@ benchmarks/realworld/              ← P3 性能门(本文 §5)
 | **V2** | PW3 算术快路径 | 双 number 算术(ADD/SUB/MUL/DIV/MOD/POW/UNM)直发 f64 指令 + NaN 规范化([01 §3.4](../p1-interpreter/01-value-object-model.md) canonicalizeNaN)与解释器**逐字节一致**(含 `-0.0`/`inf`/`0/0`) | `conformance/p3_test.go::TestArithFastPathByteEqual`(笛卡尔积浮点边界 × op) | `difftest/p3_test.go` 算术密集脚本 | crescent vs gibbous byte-equal;NaN 位型固定 `0x7FF8…`([02 §2.3](./02-translation.md) ADD 示例) |
 | **V3** | PW3 算术慢路径 | 算术慢路径(string coercion / `__add` 等元方法)走 imported 助手(`$h_arith`)仍 **byte-equal**;status 链错误位置(pc 物化)逐字节一致 | `conformance/p3_test.go::TestArithSlowPathByteEqual`(混合类型 + 元表) | `difftest/p3_test.go` 混合类型算术 | 慢路径助手回 Go 得正确结果([02 §2.3](./02-translation.md) else 分支 `$h_arith`) |
 | **V4** | PW4 数值 for | 数值 for 循环(FORPREP/FORLOOP)编译后跑结果 **byte-equal**(含 step<0 反向、step=0 错误形式、limit 非 number 错误) | `conformance/p3_test.go::TestNumForByteEqual`(正/反向 + 边界 step) | `difftest/p3_test.go` for 循环脚本 | crescent vs gibbous byte-equal([02 §2.3](./02-translation.md) FORLOOP 示例) |
-| **V5** | PW4 循环回跳(back edge)上的 GC | back edge safepoint(`gcPending` 检查)触发 GC 时 **byte-equal**(GC 压力模式:每分配即 full GC) | `difftest/gcfuzz.go::TestGCStressGibbous`(本文 §3.2) | GC 压力 fuzz 上 gibbous | 高频 GC 下 gibbous 输出 == 正常 pacing gibbous 输出([05 §3](./05-safepoint-gc.md)) |
+| **V5** | PW4 循环回跳(back edge)上的 GC | back edge safepoint(`gcPending` 检查)触发 GC 时 **byte-equal**(GC 压力模式:每个安全点都 full GC) | `difftest/gcfuzz.go::TestGCStressGibbous`(本文 §3.2) | GC 压力 fuzz 上 gibbous | 高频 GC 下 gibbous 输出 == 正常 pacing gibbous 输出([05 §3](./05-safepoint-gc.md)) |
 | **V6** | PW5 表 IC 命中 | 表 IC 单态命中(同表同代次)**跳过哈希查找**,与解释器 **byte-equal** | `conformance/p3_test.go::TestTableICHitByteEqual`(单态表访问) | `difftest/p3_test.go` 表访问脚本 | gibbous 快路径直达槽 vs crescent 解释 byte-equal([02 §2.3](./02-translation.md) GETTABLE 示例 then 分支) |
 | **V7** | PW5 表 IC 失效 | 表 IC 失效(gen bump)走助手(`$h_gettable`)仍 **byte-equal**(含 `setmetatable` 触发的失效) | `conformance/p3_test.go::TestTableICMissByteEqual`(gen bump + setmetatable) | `difftest/p3_test.go` 表形状变化脚本 | 快照永久 miss 后每次走助手仍正确([06 §1](./06-ic-feedback-consume.md) 失效自然降级) |
 | **V8** | PW6 跨层 CALL 链 | 跨层调用链(crescent → gibbous → crescent → host → ...)错误冒泡 **byte-equal**(错误穿越 gibbous 帧) | `conformance/p3_test.go::TestCrossTierCallByteEqual`(深嵌套混合层) | `difftest/p3_test.go` 多层调用脚本 | status 链冒泡([04 §3/§4](./04-trampoline.md))与 crescent 显式错误返回同构 byte-equal |
@@ -489,13 +489,13 @@ func FuzzCrescentVsGibbous(f *testing.F) {
 
 ### 3.1 GC 压力模式回顾(承 P1 12 §5)
 
-P1 [12 §5](../p1-interpreter/12-testing-difftest.md) 定的 GC 压力 fuzz = **把 GCPAUSE 设到极小(每次/每几次分配就 full GC),反复跑同一程序**,验证两件事:
+P1 [12 §5](../p1-interpreter/12-testing-difftest.md) 定的 GC 压力 fuzz = **打开 collector 的压力模式(每个安全点都 full GC),反复跑同一程序**,验证两件事:
 - **GC 透明性**:同一脚本在「正常 pacing」与「极高频 GC」下可观察输出 byte-equal。
 - **不崩溃**:极高频 GC 下脚本跑完不 panic / 不脏读。
 
-为什么高频 GC 是必现手段(承 P1 [12 §5.2](../p1-interpreter/12-testing-difftest.md)):漏根/漏扫在正常 pacing 下偶发(GC 恰好在「对象被持有但未上根」窗口触发概率低),高频 GC **把概率拉到 1**——每次分配都 full GC,漏根的对象必被回收,后续用必崩/脏读。**把偶发 bug 变成确定 bug**。
+为什么高频 GC 是必现手段(承 P1 [12 §5.2](../p1-interpreter/12-testing-difftest.md)):漏根/漏扫在正常 pacing 下偶发(GC 恰好在「对象被持有但未上根」窗口触发概率低),高频 GC **把概率拉到 1**——每个安全点都 full GC,漏根的对象必被回收,后续用必崩/脏读。**把偶发 bug 变成确定 bug**。
 
-机制锚点(承 P1 [12 §5.3](../p1-interpreter/12-testing-difftest.md)):collector 的压力模式(`SetStressMode`,公开入口 `State.SetGCStressMode`,P1 已建),打开之后每个安全点都做一次 full GC。只把 [06 §8.3](../p1-interpreter/06-memory-gc.md) 的比例调小做不到:`threshold = live * GCPAUSE / 100` 有 arena 容量 1/16 的下限。下面示意代码里的「极小 GCPAUSE」指的就是压力模式。
+机制锚点(承 P1 [12 §5.3](../p1-interpreter/12-testing-difftest.md)):collector 的压力模式(`SetStressMode`,公开入口 `State.SetGCStressMode`,P1 已建),打开之后每个安全点都做一次 full GC。只把 [06 §8.3](../p1-interpreter/06-memory-gc.md) 的比例调小做不到:`threshold = live * GCPAUSE / 100` 有 arena 容量 1/16 的下限。
 
 ### 3.2 在 gibbous 上跑相同模式——漏写回必现为脏值/误回收
 
@@ -503,7 +503,7 @@ P3 把 GC 压力模式套到 gibbous 执行层。**靶标从 P1 的「crescent s
 
 | gibbous 特有漏根 | 来源 | 高频 GC 如何必现 |
 |---|---|---|
-| **locals 缓存写回遗漏** | 若 [PW9](./00-overview.md) 启用 [§2.2B](./02-translation.md) locals 缓存优化:缓存进 Wasm locals 的值对 GC 不可见,任何 safepoint/助手调用前必须写回栈槽([05 §4](./05-safepoint-gc.md))。**漏写回** = GC 扫到的栈槽是陈旧值 → 缓存的活对象未被根登记 → 被误回收 | 每分配即 GC ⇒ 缓存活对象期间的任一分配点必然触发 GC ⇒ 漏写回的对象必被回收 ⇒ 后续读栈槽是脏值/已回收 → 输出错(透明性破)或崩溃 |
+| **locals 缓存写回遗漏** | 若 [PW9](./00-overview.md) 启用 [§2.2B](./02-translation.md) locals 缓存优化:缓存进 Wasm locals 的值对 GC 不可见,任何 safepoint/助手调用前必须写回栈槽([05 §4](./05-safepoint-gc.md))。**漏写回** = GC 扫到的栈槽是陈旧值 → 缓存的活对象未被根登记 → 被误回收 | 每个安全点都 GC ⇒ 缓存活对象期间的任一安全点必然触发 GC ⇒ 漏写回的对象必被回收 ⇒ 后续读栈槽是脏值/已回收 → 输出错(透明性破)或崩溃 |
 | **助手内根登记缺漏** | imported 助手(`$h_call`/`$h_gettable`/`$h_arith`)内分配中间对象时,若漏 push shadow stack([06 §6.3](../p1-interpreter/06-memory-gc.md)),分配窗口内被回收 | 助手内分配触发 GC ⇒ 漏 Pin 的中间对象必被回收 ⇒ 助手返回后用必崩 |
 
 ```go
@@ -515,17 +515,15 @@ func TestGCStressGibbous(t *testing.T) {
     // 强制全升,使分配密集 Proto 都走 gibbous
     for _, script := range allocHeavyCompilableScripts(t) {
         // 基线:gibbous 正常 pacing 跑一次
-        baseOut := runGibbousWithGCPause(t, script, /*GCPAUSE=*/200)   // 默认 2.0x(06 §8.3)
-        // 压力:gibbous + 极小 GCPAUSE 反复跑
-        for _, pause := range []int{1 /*每分配即 GC*/, 2, 5} {
-            stressOut, err := runGibbousWithGCPauseSafe(t, script, pause)
-            if err != nil {
-                t.Errorf("GIBBOUS GC stress CRASH @pause=%d %s: %v", pause, script, err)  // 漏根崩溃
-            }
-            if !bytes.Equal(stressOut, baseOut) {
-                t.Errorf("GIBBOUS GC NOT transparent @pause=%d %s\nbase:%s\nstress:%s",   // 漏写回脏值
-                    pause, script, baseOut, stressOut)
-            }
+        baseOut, _ := runGibbousWithStress(t, script, false)
+        // 压力:gibbous + 每个安全点都 full GC
+        stressOut, err := runGibbousWithStress(t, script, true)
+        if err != nil {
+            t.Errorf("GIBBOUS GC stress CRASH %s: %v", script, err)  // 漏根崩溃
+        }
+        if !bytes.Equal(stressOut, baseOut) {
+            t.Errorf("GIBBOUS GC NOT transparent %s\nbase:%s\nstress:%s",   // 漏写回脏值
+                script, baseOut, stressOut)
         }
     }
 }
@@ -799,14 +797,14 @@ V16 边界往返口径:gibbous 的边界往返(crescent → gibbous 空 Proto �
 | 维度 | 正确性差分(V1-V13) | 性能基准(V14-V16) |
 |---|---|---|
 | 运行模式 | `go test`(单测 + fuzz) | `go test -bench`(benchmark) |
-| GC 设置 | 含 GC 压力档(GCPAUSE=1) | 默认 pacing(GCPAUSE=200,[06 §8.3](../p1-interpreter/06-memory-gc.md)) |
+| GC 设置 | 含 GC 压力档(压力模式 `SetGCStressMode`) | 默认 pacing(GCPAUSE=200,[06 §8.3](../p1-interpreter/06-memory-gc.md)) |
 | 输出捕获 | 捕获 O1-O5 逐字节比对 | 只测 ns/op,不捕获输出 |
 | -race | V18 开 `-race` | **基准不开 -race**(race detector 拖慢,污染 ns/op) |
 | 进 PR check | ✅(短 fuzz + 形状级) | ❌(放 nightly + release 前,§4.2.1) |
 
 **为什么必须隔离**:
 - **race detector 污染基准**:`-race` 让程序慢 2-10 倍,若性能基准在 `-race` 下跑,测出的 ns/op 毫无意义(V14 的 ≥2x 会被 race 开销淹没)。所以 V18(`-race`)与 V14-V16(基准)**永不同进程跑**。
-- **GC 压力污染基准**:正确性差分的 GC 压力档(GCPAUSE=1,每分配即 full GC)是为「逼出漏根」设计的,它让程序慢几个数量级。性能基准必须用默认 pacing(GCPAUSE=200),否则测的是「GC 开销」而非「gibbous 加速」。
+- **GC 压力污染基准**:正确性差分的 GC 压力档(压力模式,每个安全点都 full GC)是为「逼出漏根」设计的,它让程序慢几个数量级。性能基准必须用默认 pacing(GCPAUSE=200),否则测的是「GC 开销」而非「gibbous 加速」。
 - **输出捕获污染基准**:正确性差分捕获 stdout 到 buffer 逐字节比,这个捕获 + 比对开销不应计入性能 ns/op。性能基准的脚本应**最小化可观察输出**(纯计算,不 print),只测执行速度。
 
 > **隔离的工程后果**:`make test-p3`(正确性)与 `make test-p3-bench`(性能)是**两个独立目标**(§6.7),分别在不同 CI 阶段跑(正确性进 PR check,性能进 nightly)。**双轴验收(§6.8)是两套独立测量的 AND**——不存在「一次跑既验正确又验性能」的混合运行。这与 P1 [12](../p1-interpreter/12-testing-difftest.md) 把「差分套」与「基准套」分目录(`test/difftest` vs `benchmarks/baseline`)同一哲学:**正确性与性能是正交维度,测量配置必须隔离**。
