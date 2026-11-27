@@ -504,13 +504,16 @@ GC 只在 mutator 主动到达检查点(分配 opcode 结束时的 `safepoint`�
 
 | opcode([02](./02-bytecode-isa.md) §4) | 分配什么 | GC 触发点 |
 |---|---|---|
-| `NEWTABLE` | Table 头 + array 段 + node 段(3 次 Alloc) | 是 |
-| `CLOSURE` | Lua Closure 对象(+ 可能新建 Upvalue) | 是 |
-| `CONCAT` | 拼接结果新字符串(可能多个中间串) | 是 |
-| `CALL`/`TAILCALL`(host 被调) | host 内部可能分配(见 §6) | 是(host 返回后，§7.1) |
-| 产生新字符串的算术/转换(如 `tostring`、数字→串) | 新字符串 | 是 |
-| `SETLIST` | 可能触发表 array 段扩容(rehash → 新 array 段) | 是(扩容时) |
-| `SETTABLE`/`SETGLOBAL`(触发 rehash) | 新 array/node 段(rehash) | 是(rehash 时) |
+| `NEWTABLE` | Table 头 + array 段 + node 段(3 次 Alloc) | 是,执行完检查一次 |
+| `CLOSURE` | Lua Closure 对象(+ 可能新建 Upvalue) | 是,执行完检查一次 |
+| `CONCAT` | 拼接结果新字符串(可能多个中间串;数字操作数转成的字符串也在这里分配) | 是,执行完检查一次 |
+| `SETLIST` | 可能触发表 array 段扩容(rehash → 新 array 段) | 是,执行完检查一次(这一次有没有扩容都检查) |
+| `SETTABLE`/`SETGLOBAL` | 插入新键时可能 rehash(新 array/node 段) | 是,执行完检查一次(这一次有没有 rehash 都检查) |
+| `CALL`/`TAILCALL`/`TFORLOOP`(被调的是 host function) | host 内部可能分配(见 §6) | 是(host 返回后，§7.1) |
+
+其余 opcode 都不检查。Lua 函数之间的调用和返回(`CALL`/`TAILCALL`/`RETURN`)不是触发点;`VARARG` 和建帧时的值栈扩容只经 `Collector.Account` 记账,
+也不是。`GETTABLE`、算术、比较这些 opcode 自己不检查,它们走元方法时,元方法是 host function 就在它返回之后检查一次,是 Lua 函数就看它自己
+执行到哪些触发点。`tostring` 这类转换是 host function,归在上表最后一行。包括 `coroutine.create` / `coroutine.wrap` 和升层代码在内的完整清单见 §6.3。
 
 **关键不变式:GC 触发时,解释器寄存器/栈必须处于一致状态(所有活跃 Value 可达)。** 实现约束:
 

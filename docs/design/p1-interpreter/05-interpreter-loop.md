@@ -387,7 +387,7 @@ doConcat(f, i):  // B..C 是一段连续寄存器
 roadmap §3 / 前提四锁定:**safepoint 限定在分配点与层边界,根放 shadow stack**。具体到解释器主循环,GC 只可能在**两类边界**介入:
 
 1. **分配指令**:执行后可能触发一次堆分配(arena bump 越过阈值)→ 该 opcode 末尾是 safepoint。
-2. **调用边界**:CALL/TAILCALL/RETURN 进出帧——天然是「层边界」,也是 GC 安全检查的自然位置。
+2. **调用 host function 的边界**:host function 自己分配时只记账,它返回、结果写回栈槽之后检查一次。Lua 函数之间的 CALL/TAILCALL/RETURN 只切帧,不检查。
 
 **为什么不能每条指令都设 safepoint**:① 多数指令(MOVE/算术/比较/跳转)不分配,设了是纯开销;② safepoint 要求把活跃寄存器作为 GC 根可见——若每指令都暴露根,代价极高。限定在分配点意味着「只有可能制造垃圾的地方才需要可能回收」,这是精确且省的。
 
@@ -398,13 +398,12 @@ roadmap §3 / 前提四锁定:**safepoint 限定在分配点与层边界,根放 
 | `NEWTABLE` | 新建 Table(array+hash 区) | 分配后检查 GC;**重载 stk** |
 | `CONCAT` | 新建结果 String | 同上 |
 | `CLOSURE` | 新建 Closure(+ 可能新建 Upvalue) | 同上 |
-| `SETLIST` | 可能触发表 rehash(array 扩容) | 同上 |
-| `SETTABLE`/`SETGLOBAL` | 插入新键可能 rehash | 同上 |
-| `GETTABLE`/算术/比较/CONCAT 的**元方法慢路径** | 元方法可能分配/调用 | 走 §7 调用边界 safepoint |
-| `CALL`/`TAILCALL`/`RETURN` | 帧切换 = 层边界 | 调用边界 safepoint(§7) |
-| `VARARG` | 拷贝不分配,但 `B=0` 到 top 可能 ensureStack 扩容 | 扩容点检查 |
+| `SETLIST` | 可能触发表 rehash(array 扩容) | 同上(这一次有没有扩容都检查) |
+| `SETTABLE`/`SETGLOBAL` | 插入新键可能 rehash | 同上(这一次有没有 rehash 都检查) |
+| `CALL`/`TAILCALL`/`TFORLOOP`,被调的是 host function | host function 内部可能分配(只记账) | host function 返回之后检查一次;**重载 stk** |
+| `GETTABLE`/算术/比较/CONCAT 的**元方法慢路径** | 元方法可能分配/调用 | opcode 自己不检查:元方法是 host function 时在它返回之后检查一次,是 Lua 函数时看它自己执行到哪些 safepoint |
 
-非分配指令(MOVE/LOADK/LOADBOOL/LOADNIL/GETUPVAL/SETUPVAL/UNM/NOT/LEN-on-existing/JMP/比较/TEST/FORLOOP/FORPREP 的快路径)**不设 safepoint**。
+非分配指令(MOVE/LOADK/LOADBOOL/LOADNIL/GETUPVAL/SETUPVAL/UNM/NOT/LEN-on-existing/JMP/比较/TEST/FORLOOP/FORPREP 的快路径)**不设 safepoint**。Lua 函数之间的 `CALL`/`TAILCALL`/`RETURN` 只切帧,也不设;`VARARG`(`B=0` 时可能 ensureStack 扩容)和建帧时的值栈扩容只记账(`Collector.Account`),不检查。包括协程创建和升层代码在内的完整清单见 [06](./06-memory-gc.md) §6.3。
 
 ### 5.3 safepoint 的实现机制
 
@@ -419,7 +418,7 @@ if vm.gcPending {
 }
 ```
 
-- **shadow stack 根**:GC 的根集合是 Thread 的值栈活跃区 + 所有 CallInfo + 全局表 + Proto 注册表常量(见 [01](./01-value-object-model.md) §1「Proto 常量 GCRef 是 GC 根」)+ 当前在途的 Go 局部里持有的 GCRef(如 CONCAT 半成品)。详尽根枚举与 mark/sweep 算法见 [06-memory-gc](./06-memory-gc.md);**本文只声明「解释器在分配 opcode 末尾与调用边界把 frame 暴露为根并允许 Collect」**。
+- **shadow stack 根**:GC 的根集合是 Thread 的值栈活跃区 + 所有 CallInfo + 全局表 + Proto 注册表常量(见 [01](./01-value-object-model.md) §1「Proto 常量 GCRef 是 GC 根」)+ 当前在途的 Go 局部里持有的 GCRef(如 CONCAT 半成品)。详尽根枚举与 mark/sweep 算法见 [06-memory-gc](./06-memory-gc.md);**本文只声明「解释器在分配 opcode 末尾与 host function 返回之后把 frame 暴露为根并允许 Collect」**。
 - **P1 是 STW**:主循环在 safepoint 同步 Collect,无并发,无写屏障复杂度(写屏障接口预留给增量 GC,P1 不启用)。这把 GC 正确性的难度压到最低,符合 roadmap §5 原则 3「每阶段独立交付」。
 
 > 与编译层的对照:roadmap §2 要求「JIT 代码在循环 back edge 插抢占检查点」。解释器**没有异步抢占问题**(它就是 Go 代码,Go 调度器在函数调用处可抢占),所以 P1 不需要 back edge 抢占点;但**它的 safepoint 布点哲学(分配点 + 层边界)与未来 JIT 的 back edge 检查点同源**,都是「受控位置才允许 runtime 介入」。FORLOOP back edge 在 P1 不是 safepoint(循环体若不分配就一路跑),但它是 P2 热度计数采样点([02](./02-bytecode-isa.md) §4「热点 back edge」)——两件事不要混。
@@ -1167,10 +1166,10 @@ func (vm *VM) execute(th *Thread) (err *LuaError) {
         case bytecode.TEST, bytecode.TESTSET:          /* §4.5 */
         case bytecode.FORLOOP, bytecode.FORPREP:       /* §10.1,快路径不分配 */
 
-        // —— 算术:快路径不分配;慢路径(元方法)经调用边界 safepoint ——
+        // —— 算术:快路径不分配;慢路径(元方法)里的 safepoint 见 §5.2 ——
         case bytecode.ADD, bytecode.SUB, bytecode.MUL, bytecode.DIV, bytecode.MOD, bytecode.POW:
             if e := vm.doArith(f, i, arithOpOf(i)); e != nil { return vm.throw(f, e) }
-            // doArith 快路径无分配;慢路径内部走 §7 调用(自带 safepoint)+ 重载 stk
+            // doArith 快路径无分配;慢路径内部走 §7 调用(元方法是 host function 时返回后检查)+ 重载 stk
 
         // —— 可能分配 → 末尾 safepoint + 重载 stk ——
         case bytecode.NEWTABLE: /* §11.1 */ ; vm.safepoint(f)
@@ -1185,18 +1184,17 @@ func (vm *VM) execute(th *Thread) (err *LuaError) {
         case bytecode.SETGLOBAL:if e := vm.doSetGlobal(f, i); e != nil { return vm.throw(f, e) }; vm.safepoint(f)
         case bytecode.SELF:     if e := vm.doSelf(f, i); e != nil { return vm.throw(f, e) }
 
-        // —— 调用边界:reentry / host / 退帧;天然层边界 safepoint ——
+        // —— 调用边界:reentry / host / 退帧;被调的是 host function 时,它返回之后是 safepoint ——
         case bytecode.CALL:
             switch vm.doCall(f, i) {
             case callEnteredLua:  code = f.proto.Code   // reentry,重载指令流
-            case callReturnedHost: /* host 已同步执行完 */
+            case callReturnedHost: vm.safepoint(f)      // host 已同步执行完,返回之后检查
             case callError:       return vm.throw(f, vm.pendingErr)
             }
-            vm.safepoint(f)
         case bytecode.TAILCALL:
             switch vm.doTailCall(f, i) {
             case callEnteredLua:  code = f.proto.Code
-            case callReturnedHost: /* host 尾调用结果即本帧返回 → 退帧 */
+            case callReturnedHost: vm.safepoint(f)      // host 尾调用结果即本帧返回 → 检查后退帧
             case callError:       return vm.throw(f, vm.pendingErr)
             }
         case bytecode.RETURN:
@@ -1205,15 +1203,14 @@ func (vm *VM) execute(th *Thread) (err *LuaError) {
             case returnTerminate: return nil            // 退到 entryCi 之下 → execute 结束
             }
         case bytecode.TFORLOOP:
-            if e := vm.doTForLoop(f, i); e != nil { return vm.throw(f, e) }
-            vm.safepoint(f)
+            if e := vm.doTForLoop(f, i); e != nil { return vm.throw(f, e) } // 迭代器是 host function 时返回后检查,同 CALL
 
-        case bytecode.VARARG:   /* §8.5 */ ; vm.safepoint(f) // B=0 可能扩容
+        case bytecode.VARARG:   /* §8.5 */ // B=0 可能扩容值栈;扩容只记账,不是 safepoint
         }
     }
 }
 
-// safepoint helper(§5.3):仅在分配 opcode 末尾调用。
+// safepoint helper(§5.3):在分配 opcode 末尾和 host function 返回之后调用。
 func (vm *VM) safepoint(f *frame) {
     if vm.gcPending {
         vm.pushShadowRoots(f); vm.gc.Collect(); vm.popShadowRoots()
