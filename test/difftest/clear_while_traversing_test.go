@@ -264,6 +264,41 @@ func TestDiff_NextFromKeysOfClearedEntries(t *testing.T) {
 	}
 }
 
+// nextFromFixedKeysOfClearedEntries is the same with keys lua5.1 never collects: it fixes the
+// reserved words and the metamethod names (luaS_fix in llex.c and ltm.c), so there the dead key of
+// a cleared entry goes on pointing at a live string and next accepts it every time. wangshu has
+// no such strings: the key goes like any other, and next raises. The script counts the calls
+// that succeed in 30 rounds, for a metamethod name and for a reserved word.
+const nextFromFixedKeysOfClearedEntries = `
+local function count(build)
+  local ok = 0
+  for round = 1, 30 do
+    local w = setmetatable({}, {__mode = "v"})
+    for i = 1, 4 do w["pad" .. i .. "_" .. round] = true end
+    w[build()] = {}
+    collectgarbage() collectgarbage() collectgarbage()
+    if pcall(next, w, build()) then ok = ok + 1 end
+  end
+  return ok
+end
+return count(function() return "__ca" .. "ll" end), count(function() return "whi" .. "le" end)`
+
+// TestDiff_NextFromFixedKeysOfClearedEntries pins both sides of that: neither depends on where
+// the allocator puts anything.
+func TestDiff_NextFromFixedKeysOfClearedEntries(t *testing.T) {
+	const wantWangshu, wantOracle = "0\t0", "30\t30"
+	for _, stress := range []bool{false, true} {
+		if got := runClearCase(t, nextFromFixedKeysOfClearedEntries, stress); got != wantWangshu {
+			t.Errorf("wangshu (collecting at every safepoint: %v):\n  got:  %q\n  want: %q", stress, got, wantWangshu)
+		}
+	}
+	if oracle := findOracle(); oracle != "" {
+		if got := strings.TrimSuffix(runOracle(t, oracle, wrapForOracle(nextFromFixedKeysOfClearedEntries)), "\n"); got != wantOracle {
+			t.Errorf("lua5.1 no longer answers as recorded:\n  got:      %q\n  recorded: %q", got, wantOracle)
+		}
+	}
+}
+
 // removedStringKeysOfWeakValuedTable removes string keys built at run time from a weak-valued
 // table and from a strong one, collects (or not), and stores the keys again. A key the script
 // removed is kept alive whether or not the table is weak, so it goes back into its node: the
