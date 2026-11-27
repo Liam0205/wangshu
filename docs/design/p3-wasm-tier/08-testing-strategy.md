@@ -495,7 +495,7 @@ P1 [12 §5](../p1-interpreter/12-testing-difftest.md) 定的 GC 压力 fuzz = **
 
 为什么高频 GC 是必现手段(承 P1 [12 §5.2](../p1-interpreter/12-testing-difftest.md)):漏根/漏扫在正常 pacing 下偶发(GC 恰好在「对象被持有但未上根」窗口触发概率低),高频 GC **把概率拉到 1**——每个安全点都 full GC,漏根的对象必被回收,后续用必崩/脏读。**把偶发 bug 变成确定 bug**。
 
-机制锚点(承 P1 [12 §5.3](../p1-interpreter/12-testing-difftest.md)):collector 的压力模式(`SetStressMode`,公开入口 `State.SetGCStressMode`,P1 已建),打开之后每个安全点都做一次 full GC。只把 [06 §8.3](../p1-interpreter/06-memory-gc.md) 的比例调小做不到:`threshold = live * GCPAUSE / 100` 有 arena 容量 1/16 的下限。
+机制锚点(承 P1 [12 §5.3](../p1-interpreter/12-testing-difftest.md)):collector 的压力模式(`SetStressMode`,公开入口 `State.SetGCStressMode`,P1 已建),打开之后每个安全点都做一次 full GC(脚本执行过 `collectgarbage("stop")` 之后除外)。只把 [06 §8.3](../p1-interpreter/06-memory-gc.md) 的比例调小做不到:`threshold = live * GCPAUSE / 100` 有 arena 容量 1/16 的下限。
 
 ### 3.2 在 gibbous 上跑相同模式——漏写回必现为脏值/误回收
 
@@ -504,7 +504,7 @@ P3 把 GC 压力模式套到 gibbous 执行层。**靶标从 P1 的「crescent s
 | gibbous 特有漏根 | 来源 | 高频 GC 如何必现 |
 |---|---|---|
 | **locals 缓存写回遗漏** | 若 [PW9](./00-overview.md) 启用 [§2.2B](./02-translation.md) locals 缓存优化:缓存进 Wasm locals 的值对 GC 不可见,任何 safepoint/助手调用前必须写回栈槽([05 §4](./05-safepoint-gc.md))。**漏写回** = GC 扫到的栈槽是陈旧值 → 缓存的活对象未被根登记 → 被误回收 | 每个安全点都 GC ⇒ 缓存活对象期间的任一安全点必然触发 GC ⇒ 漏写回的对象必被回收 ⇒ 后续读栈槽是脏值/已回收 → 输出错(透明性破)或崩溃 |
-| **助手内根登记缺漏** | imported 助手(`$h_call`/`$h_gettable`/`$h_arith`)内分配中间对象时,若漏 push shadow stack([06 §6.3](../p1-interpreter/06-memory-gc.md)),分配窗口内被回收 | 助手里的安全点都触发 GC:`Concat`、`SetTable`、`DoSetGlobal`、`NewTable`、`SetList`、`Closure` 这几个助手末尾各有一个,`$h_call` 调用的是 host function 时在它返回之后有一个,助手回调的 Lua 函数或元方法自己执行到安全点时也有([06 §6.3](../p1-interpreter/06-memory-gc.md)) ⇒ 跨这些点持有而漏 Pin 的中间对象必被回收 ⇒ 之后用必崩。助手自己的分配只记账,没有这些点的一段里漏 Pin 碰不到 |
+| **助手内根登记缺漏** | imported 助手(`$h_call`/`$h_gettable`/`$h_arith`)内分配中间对象时,若漏 push shadow stack([06 §6.3](../p1-interpreter/06-memory-gc.md)),分配窗口内被回收 | 助手里的安全点都触发 GC:`Concat`、`SetTable`、`DoSetGlobal`、`NewTable`、`SetList`、`Closure` 这几个助手末尾各有一个,`$h_call` 调用的是 host function 时在它返回之后有一个,助手分派的元方法是 host function 时同样在它返回之后有一个,助手回调的 Lua 函数或元方法自己执行到安全点时也有([06 §6.3](../p1-interpreter/06-memory-gc.md)) ⇒ 跨这些点持有而漏 Pin 的中间对象必被回收 ⇒ 之后用必崩。助手自己的分配只记账,没有这些点的一段里漏 Pin 碰不到 |
 
 ```go
 //go:build wangshu_p3
