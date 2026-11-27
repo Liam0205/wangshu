@@ -106,6 +106,11 @@
   `setpause` 接到了回收器的 pause 比例上，`setstepmul` 只存值。比例的含义与官方差 100（见下一条）。`step` 仍然是做一次完整回收并返回 `true`，
   这是登记过的差异。说明在 [10 §4.6](../../docs/design/p1-interpreter/10-stdlib.md)。
 
+- **【未修，产品缺陷】`collectgarbage("stop")` 之后的 `collectgarbage()` / `("step")` 不恢复自动回收** — 官方没有「停止」这个状态，
+  `stop` 只是把阈值设成最大值，一次完整回收或者 step 之后阈值就重新算过；望舒有独立的 `stopped` 标志，只有 `restart` 清它。在官方上
+  写 `stop … collectgarbage()` 就够的脚本，到望舒上自动回收从此关闭。`restart` 之后官方下一次分配就开始回收、望舒按原阈值继续，
+  是时机上的差别。见 [#354](https://github.com/Liam0205/wangshu/issues/354)。
+
 - **【未做，等维护者决定】GC 的 pause 比例与官方差 100 个百分点；池化复用时回收器的设置不恢复** — 望舒按上次回收以来新分配的字节数
   算阈值，官方按总字节数算，比例 `p` 大约相当于官方的 `p + 100`；`Options.GCPause` 和 `collectgarbage("setpause")` 是同一个量。
   `ResetGlobalsToBaseline` 不恢复脚本改过的比例和 `stop` 状态，也不恢复全局表的非字符串键（脚本 `rawset(_G, 2, x)` 之后，下一个

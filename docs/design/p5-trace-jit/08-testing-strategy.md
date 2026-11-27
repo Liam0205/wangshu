@@ -350,17 +350,17 @@ followup。P4 靠 e2e 自然覆盖侥幸没出事,但 spec 的深度验证从未
 
 ### 3.6 GC 压力联合验证(依据 P4 08 §7.4)
 
-deopt 期间 unsink 会分配(§5 P5 host 扩展 `UnsinkAlloc`)——若配合高频 GC(GCPAUSE=1),unsink 中途触
+deopt 期间 unsink 会分配(§5 P5 host 扩展 `UnsinkAlloc`)——若配合高频 GC(压力模式 `SetGCStressMode`),unsink 中途触
 发 GC:
 
 ```go
 func TestDeoptGCStress(t *testing.T) {
     for _, sc := range allocHeavyDeoptCorpus() {
-        for _, pause := range []int{1, 2, 5, 200} {
-            base := runWithPauseAndInjection(sc.src, /*inject=*/false, pause)
-            inj  := runWithPauseAndInjection(sc.src, /*inject=*/true, pause)
+        for _, stress := range []bool{true, false} { // SetGCStressMode
+            base := runWithStressAndInjection(sc.src, /*inject=*/false, stress)
+            inj  := runWithStressAndInjection(sc.src, /*inject=*/true, stress)
             if !bytes.Equal(base, inj) {
-                t.Fatalf("GC + deopt breaks transparency @pause=%d %s", pause, sc.name)
+                t.Fatalf("GC + deopt breaks transparency @stress=%v %s", stress, sc.name)
             }
         }
     }

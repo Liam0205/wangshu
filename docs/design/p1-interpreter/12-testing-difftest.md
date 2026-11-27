@@ -197,7 +197,7 @@ Lua 5.1 官方发行带一套测试脚本(`test/` 目录:`attrib.lua`/`calls.lua
 | `error_wording` | 各类型错误的精确措辞 + traceback 行号 | [09](./09-errors-pcall.md) §9.3、§9.4 |
 | `metamethod_51only` | 5.1 有的元方法生效、5.2+ 的(table `__len`/`__pairs`)**不**生效 | [07](./07-metatables-metamethods.md) §11 |
 | `stdlib_existence` | 5.1 全标准库函数名存在、5.2+ 函数名为 nil | [10](./10-stdlib.md) §12.3 |
-| `gc_transparency` | 同脚本在「正常 pacing」与「每次分配 GC」下输出 byte-equal | [06](./06-memory-gc.md) §11、§6 本文 |
+| `gc_transparency` | 同脚本在「正常 pacing」与「每个安全点都 GC」下输出 byte-equal | [06](./06-memory-gc.md) §11、§6 本文 |
 | `embedding_dropin` | per-item API 与 gopher-lua 形状兼容、同脚本同输出 | [11](./11-embedding-arena-abi.md) §9 |
 
 ### 2.3 组织:按特性分组
@@ -984,7 +984,7 @@ Lua 5.1 的 `a % b` 是 `a - floor(a/b)*b`（`luaconf.h` 的 `luai_nummod`）。
 
 ### 5.1 两个验证目标
 
-GC 压力 fuzz = **把 GCPAUSE 设到极小(每次 / 每几次分配就 full GC),反复跑同一程序**,验证两件事:
+GC 压力 fuzz = **打开 collector 的压力模式(每个安全点都 full GC),反复跑同一程序**,验证两件事:
 
 | 目标 | 验证什么 | 抓什么 bug |
 |---|---|---|
@@ -993,7 +993,7 @@ GC 压力 fuzz = **把 GCPAUSE 设到极小(每次 / 每几次分配就 full GC)
 
 ### 5.2 为什么高频 GC 是这类 bug 的「必现」手段
 
-[06](./06-memory-gc.md) §6.3 点破:漏 push shadow stack / mark 漏扫**在正常 pacing 下偶发**——GC 恰好在「对象被持有但未上根」的窗口触发的概率很低,bug 偶现、极难复现、是「最难调的 bug 类」。**高频 GC 把概率拉到 1**:若每次分配都 full GC,那么「分配 B 时 A 还在 Go 局部未上根」的窗口**必然遇上一次 GC**——漏 push 的 A 必被回收,后续用 A 必崩(或脏读)。同理 mark 漏扫的字段,每轮 GC 都重新标记,漏扫的对象**每次**都成死白被回收。**把偶发 bug 变成确定 bug**,这是 GC 压力 fuzz 的全部价值。
+[06](./06-memory-gc.md) §6.3 点破:漏 push shadow stack / mark 漏扫**在正常 pacing 下偶发**——GC 恰好在「对象被持有但未上根」的窗口触发的概率很低,bug 偶现、极难复现、是「最难调的 bug 类」。**高频 GC 把概率拉到 1**:若每个安全点都 full GC,那么「A 还在 Go 局部未上根」的窗口里只要有一个安全点,就**必然遇上一次 GC**——漏 push 的 A 必被回收,后续用 A 必崩(或脏读)。同理 mark 漏扫的字段,每轮 GC 都重新标记,漏扫的对象**每次**都成死白被回收。**把偶发 bug 变成确定 bug**,这是 GC 压力 fuzz 的全部价值。
 
 ### 5.3 机制
 
@@ -1003,28 +1003,25 @@ func TestGCStress(t *testing.T) {
     // 用分配密集的脚本(生成器 §3.7 偏向 table/concat/closure,或 conformance 分配密集用例)
     for _, script := range allocHeavyScripts(t) {
         // 基线:正常 pacing 跑一次,取输出
-        baseOut := runWithGCPause(t, script, /*GCPAUSE=*/200)   // 默认 2.0x(06 §8.3)
-        // 压力:极小 GCPAUSE 反复跑
-        for _, pause := range []int{1 /*每分配即 GC*/, 2, 5} {
-            stressOut, err := runWithGCPauseSafe(t, script, pause)
-            if err != nil {
-                t.Errorf("GC stress CRASH @pause=%d %s: %v", pause, script, err)  // 目标②:崩溃
-            }
-            if stressOut != baseOut {
-                t.Errorf("GC NOT transparent @pause=%d %s\nbase:%s\nstress:%s",   // 目标①:透明性
-                    pause, script, baseOut, stressOut)
-            }
+        baseOut, _ := runWithStress(t, script, false)
+        // 压力:每个安全点都 full GC
+        stressOut, err := runWithStress(t, script, true)
+        if err != nil {
+            t.Errorf("GC stress CRASH %s: %v", script, err)  // 目标②:崩溃
+        }
+        if stressOut != baseOut {
+            t.Errorf("GC NOT transparent %s\nbase:%s\nstress:%s",   // 目标①:透明性
+                script, baseOut, stressOut)
         }
     }
 }
 
-// runWithGCPause:用测试 opts 把 collector 的 GCPAUSE 调到指定值(06 §8.3 的 threshold = live*GCPAUSE/100)。
-// pause=1 在这段示意里表示「每个安全点都做一次 full GC」,实现上是 collector 的压力模式(见下面第一条要点)。
-// runWithGCPauseSafe:额外用 recover 兜底,把 panic 转成 err(否则崩溃测试无法继续)。
+// runWithStress:新建 State,按第三个参数调 State.SetGCStressMode,执行脚本并取输出;
+// 用 recover 把 panic 转成 err(否则崩溃测试无法继续)。
 ```
 
 要点:
-- **高频 GC 是测试钩子**:实现上是 collector 的压力模式(`SetStressMode`,公开入口 `State.SetGCStressMode`),打开之后每个安全点都做一次 full GC。只把 [06](./06-memory-gc.md) §8.3 的比例调小做不到这一点:`threshold = live * GCPAUSE / 100` 有 arena 容量 1/16 的下限,比例再小,两次回收之间也要分配够这么多字节。上面示意代码里的「极小 GCPAUSE」指的就是压力模式。
+- **高频 GC 是测试钩子**:实现上是 collector 的压力模式(`SetStressMode`,公开入口 `State.SetGCStressMode`),打开之后每个安全点都做一次 full GC。只把 [06](./06-memory-gc.md) §8.3 的比例调小做不到这一点:`threshold = live * GCPAUSE / 100` 有 arena 容量 1/16 的下限,比例再小,两次回收之间也要分配够这么多字节。
 - **基线对照是关键**:不是「高频 GC 跑通就行」,而是「高频 GC 输出 == 正常 pacing 输出」。透明性(目标①)比不崩溃(目标②)更强——不崩溃只证明没 use-after-free,透明性还证明没「悄悄回收了不该回收的、导致输出错」。
 - **与三方差分叠加**:GC 压力 fuzz 主要是**望舒内部**的「高频 vs 正常 GC」对照(gopher-lua/官方的 GC 不可比)。但若高频 GC 下望舒输出变了,它同时也会偏离官方 → 三方差分也会抓到。GC 压力 fuzz 是「更早、更针对」的捕获。
 - **stdlib 分配类重点**([10](./10-stdlib.md) §13.3):`string.format`/`concat`/`rep`/`gsub`/`match` 这些 host function 内分配中间对象的([06](./06-memory-gc.md) §6.3 纪律对象),是 GC 压力 fuzz 的主要测试目标——它们的 shadow stack 漏 Pin 在高频 GC 下必现。
@@ -1295,7 +1292,7 @@ timeout 只覆盖被点名的那一条。
 | 8 | **错误措辞**(冠词/单复数/标点/got no value) | 09 §9.3/§862、03 §11、04 §9、07 §1127、08 §189、10 §13.1 | **P1 目标逐字节对齐官方**(移植 5.1 消息模板);本质不可控项(libc 文本/gopher 偏差)进豁免清单 | 措辞对齐是「真正移植了 5.1 语义」的强信号 + 真实脚本用 match 错误做控制流(§4.7) |
 | 9 | **错误类型 / 位置 / traceback 行号** | 09 §314/§673、08 §894 | **严格一致**(类型) + **严格逐字节**(位置/行号/`[C]:`/`(tail call): ?`) | 类型是语义、位置是 5.1 明确行为;多行脚本锁定行号(§4.7) |
 | 10 | **GC 透明性**(GC 改不改可观察行为) | 06 §11 | **必须 byte-equal**:同脚本「正常 pacing vs 高频 GC」输出一致 | GC 是内部状态,不得泄漏可观察面;GC 压力 fuzz 验证(§5) |
-| 11 | **GC 压力 fuzz**(漏 push shadow stack / mark 漏扫) | 06 §11/§6.3/§5.2、10 §13.3 | **定稿机制**:GCPAUSE 设极小(每分配即 GC)反复跑,验①透明②不崩 | 把偶发 bug 变确定 bug(高频 GC 必然碰上持有窗口);stdlib 分配类重点测试(§5) |
+| 11 | **GC 压力 fuzz**(漏 push shadow stack / mark 漏扫) | 06 §11/§6.3/§5.2、10 §13.3 | **定稿机制**:压力模式(每个安全点都 GC)反复跑,验①透明②不崩 | 把偶发 bug 变确定 bug(高频 GC 必然碰上持有窗口);stdlib 分配类重点测试(§5) |
 | 12 | **finalizer 顺序** | 06 §10/§11 | **严格**(创建逆序)差分测试官方;多次终结依赖项标 P1 限制豁免 | 确定性用例 print 标识断言顺序(§5.4) |
 | 13 | **寄存器分配是否与官方 luac 同构** | 04 §1.1/§10、02 §8 | **黄金字节码单元测试**锁定(对官方 luac);与 gopher 运行期差分**不要求** Proto 同 | codegen 偏差在单元层提前暴露;gopher opcode 不同只比最终输出(§2.5) |
 | 14 | **常量折叠边界**(`1/0`/`0/0`/`2^63` 折叠 vs 运行期) | 03 §11、04 §13 | **逐字节同结果**:折叠走与解释器同一 `value.NumberValue`(含 canonicalize) | 同一函数只此一份,折叠与运行期都调它,天然一致(§4.2) |

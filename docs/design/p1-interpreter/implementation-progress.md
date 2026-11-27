@@ -1111,8 +1111,8 @@ reviewer 另外列了三处修改前就过期、本分支没有碰的文字：`t
 `step` 没有改：仍然做一次完整回收并返回 `true`，官方返回的是这一步有没有结束一轮回收。这是登记过的差异（README「增量 GC」一行、
 `exemptions`），两处的文字从「只返回占位值」改成了现在的实际行为。
 
-测试：`test/difftest` 的 `cornerProbes` 加 10 条 `corner_gc_*`，直接与 `lua5.1` 比较（差分 fuzz 的 prelude 把 `collectgarbage` 换成了桩，
-看不到它）：返回旧值（两条）、不带值、各种数值转换、参数不是数字时的报错、选项和第二个参数都不合法时先报哪一个、设置的比例在回收之后
+测试：`test/difftest` 的 `cornerProbes` 加 11 条 `corner_gc_*`，直接与 `lua5.1` 比较（差分 fuzz 的 prelude 把 `collectgarbage` 换成了桩，
+看不到它）：返回旧值（两条）、不带值、各种数值转换（两条，其中一条是超出 int32、仍在 int64 之内的数）、参数不是数字时的报错、选项和第二个参数都不合法时先报哪一个、设置的比例在回收之后
 仍然读得到、其余选项仍返回 0，一条验证比例确实生效的（比例为 0 时只被弱表引用的对象在分配过程中被回收，比例为最大值时没有被回收），
 以及一条在两边结果相同的中间取值上比较的。`TestDiff_GCPauseMeaning` 固定两边在比例含义上的不同。`internal/gc` 的 `TestSetPauseDrivesTheThreshold` 直接断言阈值，`TestCollect_CompactFollowsThePauseRatio` 断言回收之后保留的
 arena 大小跟着比例变。`TestTiered_StdlibNames` 加一段
