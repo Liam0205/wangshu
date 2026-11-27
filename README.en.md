@@ -292,7 +292,7 @@ Issues and PRs are welcome. Basic steps:
 **Common make targets**:
 
 ```bash
-make all              # full local pre-submit check: fmt + lint + build-all + test-all + fuzz-all + conformance + difftest-all
+make all              # full local pre-submit check: fmt + lint + test-scripts + check-readme + build-all + test-all + fuzz-all + conformance + difftest-all
 make test-p4          # run the P4 build test suite only
 make test-p3          # run the P3 build test suite only
 make difftest         # differential tests across three builds x three platforms

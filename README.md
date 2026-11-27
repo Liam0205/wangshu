@@ -292,7 +292,7 @@ Issue 与 PR 都欢迎。基本步骤：
 **常用 make 目标**：
 
 ```bash
-make all              # 提交前本地全检：fmt + lint + build-all + test-all + fuzz-all + conformance + difftest-all
+make all              # 提交前本地全检：fmt + lint + test-scripts + check-readme + build-all + test-all + fuzz-all + conformance + difftest-all
 make test-p4          # 单独跑 P4 build 全套测试
 make test-p3          # 单独跑 P3 build
 make difftest         # 三档 × 三平台差分测试
