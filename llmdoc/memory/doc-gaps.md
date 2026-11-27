@@ -103,7 +103,7 @@
   [10 §10.3](../../docs/design/p1-interpreter/10-stdlib.md) 的「IO 错误转 Lua 错误」一条里。
 
 - **【已完成 2026-11-27，#345】`collectgarbage("setpause")` / `("setstepmul")` 固定返回 0** — 两个选项现在都返回设置之前的值；
-  `setpause` 接到了回收器的 pause 比例上，`setstepmul` 只存值。比例的含义与官方差 100（见下一条）。`step` 仍然是做一次完整回收并返回 `true`，
+  `setpause` 接到了回收器的 pause 比例上，`setstepmul` 只存值。比例的含义与官方差 100（见下面「GC 的 pause 比例与官方差 100 个百分点」一条，[#353](https://github.com/Liam0205/wangshu/issues/353)）。`step` 仍然是做一次完整回收并返回 `true`，
   这是登记过的差异。说明在 [10 §4.6](../../docs/design/p1-interpreter/10-stdlib.md)。
 
 - **【未修，产品缺陷】`collectgarbage("stop")` 之后的 `collectgarbage()` / `("step")` 不恢复自动回收** — 官方没有「停止」这个状态，
