@@ -46,7 +46,7 @@ type Collector struct {
 
 	// pacing (06 §8.3).
 	threshold           uint64 // allocation-byte threshold that triggers the next GC
-	gcPauseRatio        int    // GCPAUSE, default 200 (2.0x); set by Options.GCPause and collectgarbage("setpause")
+	gcPauseRatio        int    // GCPAUSE, default 200 (2.0x); set by this package's Options.GCPause and by collectgarbage("setpause")
 	gcStepMul           int    // GCMUL, default 200: kept for collectgarbage("setstepmul") to return, not used (the collector is not incremental)
 	bytesAllocSince     uint64 // cumulative allocation since last GC (including bytes already swept)
 	liveBytesAfterSweep uint64 // live bytes at the end of this round's sweep (accumulated by sweep)
