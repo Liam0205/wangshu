@@ -996,7 +996,8 @@ reviewer 在跑 P4 全量测试时还撞到一次 `TestIssue177_StringLimitConte
 `factories_called_from_compiled_code` 一段有 `viaIpairs`、`viaPairs` 两个内核，断言只要求进入升层代码的次数大于 0。
 把其中一个内核改成不升层的写法，进入次数从 78 降到 39，这一段照常通过，那一半的覆盖就没有了。这一段拆成
 `ipairs_called_from_compiled_code` 和 `pairs_called_from_compiled_code` 两段，各一个内核；同样的变异现在让对应的一段在
-P3、P4 下失败。拆开后的十段在 amd64 和 linux/arm64（qemu）的 P3、P4 上通过。其余八段本来就各只有一个会升层的函数。
+P3、P4 下失败。拆开后的十段在 amd64 和 linux/arm64（qemu）的 P3、P4 上通过。其余八段本来就各只有一个会进入升层代码的函数
+（出错的五段里包装函数 `call` 也被编译了，但它只被 `pcall` 调用，不进入升层代码）。
 
 第二十二轮独立审查（全范围，又一位 reviewer）在当时的提交上没有任何问题。审查期间我按第二十一轮 reviewer 的复核意见
 改写了 #342 的说明，把这个提交并进第二十二轮的范围之后，reviewer 指出改写的文字有两处不对：
@@ -1017,6 +1018,17 @@ reviewer 同时说明，doc-gaps 里其余几个 issue 的说明它只读过、�
 段错误）、#336（键集合相同，顺序不同）、#337（重置之后 `math.floor` 仍是 nil）、#331（独立解释器一侧的栈回溯末行）。
 这一次没有重新执行的有四项，依据是前几轮的结果：#341 的 trace 构建（输出约 10 GB）、#340 的 lint 条数、
 #333 的 12 个用例、#331 里参照实现内嵌用法一侧的输出。
+
+第二十三轮独立审查（全范围，又一位 reviewer）没有阻塞问题和重要问题，两条小问题都是文字：
+
+| 审查意见 | 处理 |
+|---|---|
+| 上面第二十一轮一段写「其余八段本来就各只有一个会升层的函数」。出错的五段里包装函数 `call` 也被编译了，强制升层下这五段的 `PromotionCount()` 是 2 | 我用临时测试打印了十段的升层数和进入次数，与 reviewer 的结果相同。那一句改成「各只有一个会进入升层代码的函数」并写明包装函数只被 `pcall` 调用；指南 §2.2c 里对应的判据也按这个说法写 |
+| `engineering.md` §3.1 的 YAML 片段里整行新写的一条注释用了半角标点 | 改成全角 |
+
+这一轮还指出一项修改前就有的文档问题：`engineering.md` §1 的 Makefile 片段与真实的 Makefile 不一致（`all:` 的依赖、目标清单、
+「七件套」的个数）。本分支只在两边的 `all:` 里各加了 `check-readme`。记在
+[#344](https://github.com/Liam0205/wangshu/issues/344)。
 
 验证：`make all` 与 `make fuzz-oracle` 通过。把 `internal/stdlib` 的 `stdlib.go` 和 `tablelib.go` 一起换回修复前的版本：
 行为测试 10 个用例失败，`test/api` 的 `io.lines` 用例 4 个失败，`TestTiered_StdlibNames` 在 P3、P4 两种构建下十段脚本里
