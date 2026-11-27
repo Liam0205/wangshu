@@ -1043,6 +1043,16 @@ reviewer 另外列了三处修改前就过期、本分支没有碰的文字：`t
 `docs/design/architecture.md` 的目录树列的工作流（`nightly-benchmark`、`release`）与 `.github/workflows/` 里实际的文件不符；
 `docs/design/p3-wasm-tier/08-testing-strategy.md` 引用的 `all:` 一行是旧的。它们与 #344 是同一类问题，补在那个 issue 的评论里。
 
+第二十五轮独立审查（全范围，又一位 reviewer）没有阻塞问题和重要问题，两条小问题：
+
+| 审查意见 | 处理 |
+|---|---|
+| README 反方向的检查看不到 `debug` 这个名字。`debug.debug` 在登记表里，全局名 `debug` 因此被当成可能是库函数的缩写；而含有带反引号的 `debug` 的格子一定被算作「提到了 debug 库」，于是每个格子都被跳过。在「不提供」表里加一行把整个 debug 库写成不提供，三个测试都通过。reviewer 把望舒提供的 114 个名字逐个加进表里，只有这一个不失败 | 匹配规则加一条：库自己的名字不受这个限制（带反引号的 `debug` 不会是 `debug.debug` 的缩写，那条规则本来就有）。两个 README 的 debug 一行原来给库名加了反引号，按新规则它就成了「列出了全局 `debug`」，所以去掉那一处反引号。`TestReadmeListsMatcher` 加两个用例。我重做了两个方向的逐名字检查：114 个已提供的名字逐个加进表里，都能被看到；35 个缺少的名字，在列出它的那一行里去掉对应的词，都判为未列出。实际在两个 README 里加一行「整个 debug 库不提供」，`make check-readme` 失败 |
+| 指南新增 §2.2c 之后，同一份指南里另外几处仍把 `PromotionCount` 当作「路径被执行过」的证据，速查一节也没有条目指向 §2.2c | 指南里提到 `PromotionCount` 的位置逐个读了一遍，五处对齐到 §2.2c 的结论（它是编译侧的量），速查一节加一条。指南之外提到它的文档也查了（README 两处、另外三份指南、12 号文档、P4 的测试策略文档和进度记录）：它们或者只把它说成「已升层的 Proto 数」，或者把它与执行侧的计数器（`NativeRunCount`、各分支的命中计数）一起断言，没有哪一处单独拿它当「升层代码执行过」的证据，没有改 |
+
+这一轮还发现一项与 #329 无关、此前没有登记的存量差异：`collectgarbage("setpause")` 和 `("setstepmul")` 固定返回 0，官方返回设置之前的
+值，而设计文档把 `setpause` 列为完整提供。记在 [#345](https://github.com/Liam0205/wangshu/issues/345)。
+
 验证：`make all` 与 `make fuzz-oracle` 通过。把 `internal/stdlib` 的 `stdlib.go` 和 `tablelib.go` 一起换回修复前的版本：
 行为测试 10 个用例失败，`test/api` 的 `io.lines` 用例 4 个失败，`TestTiered_StdlibNames` 在 P3、P4 两种构建下十段脚本里
 六段失败（剩下的四段修复前后结果相同：迭代器对坏参数的报错、带文件名的 `io.lines`、从升层代码里调用两个工厂函数各一段，它们的作用是

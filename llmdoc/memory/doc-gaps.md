@@ -25,6 +25,12 @@
   值中间可以有 nil，nil 之后的值可能落进哈希段，两侧求长度时找到的边界就不一样。差分 fuzz 能直接看到。见
   [#342](https://github.com/Liam0205/wangshu/issues/342)。
 
+- **【未修】`collectgarbage("setpause")` / `("setstepmul")` 固定返回 0** — 官方返回设置之前的值（默认都是 200）。
+  10 §4.6 的表和 §14 总表把 `setpause` 列为完整提供（「设 GCPAUSE，返回旧值」），实现把它和 `setstepmul` 放在同一个分支里，
+  只返回 0，不读也不写回收器的 pause 比例；`setstepmul` 文档写的是「存值、返回旧值」，实现也没有做。README 的「增量 GC」一行和
+  `exemptions` 只登记了 `step` / `setstepmul`。差分 fuzz 的 prelude 把 `collectgarbage` 换成了桩，nightly 看不到。见
+  [#345](https://github.com/Liam0205/wangshu/issues/345)。
+
 - **【未修】文件句柄的 `close` 不传句柄时报错文字不同** — `io.stdout.close()` 官方报 `FILE* expected, got nil`，望舒报
   `got no value`：官方的 `io_close` 在没有参数时先压入默认输出（句柄方法的环境里没有，所以是 nil）再检查。其余句柄方法
   两侧相同。差分 fuzz 能直接看到。见
