@@ -333,6 +333,35 @@ func TestCollect_CompactKeepsWatermarkHeadroom(t *testing.T) {
 	}
 }
 
+// TestCollect_CompactFollowsThePauseRatio: the size Compact keeps is live + the next threshold
+// with a quarter of headroom, so it follows the pause ratio. With the slab sized for a ratio of 200
+// only, a larger ratio would have every cycle grow the slab back.
+func TestCollect_CompactFollowsThePauseRatio(t *testing.T) {
+	for _, tc := range []struct {
+		pause int
+		times uint64 // live + live*pause/100, in units of live
+	}{{100, 2}, {200, 3}, {400, 5}} {
+		a := arena.New(arena.Options{InitialBytes: 64 * 1024})
+		c := New(a, Options{})
+		g := object.AllocTable(a, 0, 0)
+		c.LinkSweep(g)
+		c.SetRoots(Roots{Globals: g})
+		// A live 64 KiB table rooted on the shadow stack, and a dead 8 MiB one.
+		keep := object.AllocTable(a, 8*1024, 0)
+		c.LinkSweep(keep)
+		c.Push(value.MakeGC(value.TagTable, keep))
+		dead := object.AllocTable(a, 1<<20, 0)
+		c.LinkSweep(dead)
+		c.SetPause(tc.pause)
+		c.Collect()
+		live := c.liveBytesAfterSweep
+		if want := (live*tc.times*5/4 + 7) &^ 7; uint64(a.Cap()) != want {
+			t.Errorf("pause %d: cap after Collect = %d, want (live %d × %d) × 1.25 = %d",
+				tc.pause, a.Cap(), live, tc.times, want)
+		}
+	}
+}
+
 // TestSetPauseDrivesTheThreshold: the pause ratio set through SetPause is what the next collection
 // uses for its threshold, SetPause and SetStepMul return the previous value, and a ratio a script
 // can pass (negative, huge) neither wraps the threshold nor makes it zero.
