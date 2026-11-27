@@ -370,35 +370,36 @@ func EmitGetTableNodeHit(buf []byte, aReg, bReg uint8,
 //
 // Returns the appended buf.
 //
-// **Byte layout** (113 bytes; getter ArrayHit is 132 bytes, but the setter
-// drops the 19-byte nil mask/check segment, then adds load R(C) value + reverse
-// store):
+// **Byte layout** (159 bytes):
 //
-//	[0-21]   load R(A) → rax + strict IsTable guard (22 bytes, reused)
-//	[22-28]  re-load R(A) → rax (7 bytes)
-//	[29-44]  GCRef extract + rcx = offset (16 bytes)
-//	[45-51]  load arena base → r14 (7 bytes)
-//	[52-74]  gen check (load word5 + shr + cmp eax + jne, 23 bytes)
-//	[75-82]  load table.arrayRef = [r14+rcx+16] → rax (8 bytes)
-//	[83-85]  mov rcx, rax (rcx = arrayRef offset, 3 bytes)
-//	[86-92]  load R(C) → rdx (7 bytes, EmitMovqRdxFromMemRbx)
-//	[93-100] mov [r14+rcx+stableIndex*8], rdx (8 bytes, reverse store)
-//	[101]    ret (1 byte)
-//	[102-112] deopt block (mov rax deoptCode + ret, 11 bytes)
-//	——— total 113 bytes ———
+//	[0-21]    load R(A) → rax + strict IsTable guard (22 bytes, reused)
+//	[22-28]   re-load R(A) → rax (7 bytes)
+//	[29-44]   GCRef extract + rcx = offset (16 bytes)
+//	[45-51]   load arena base → r14 (7 bytes)
+//	[52-74]   gen check (load word5 + shr + cmp eax + jne, 23 bytes)
+//	[75-82]   load table.arrayRef = [r14+rcx+16] → rax (8 bytes)
+//	[83-85]   mov rcx, rax (rcx = arrayRef offset, 3 bytes)
+//	[86-93]   load array[stableIndex] → rax (8 bytes, the slot's current value)
+//	[94-103]  mov rdx, qNanBoxNilImm (10 bytes)
+//	[104-106] cmp rax, rdx (3 bytes)
+//	[107-112] je deopt (6 bytes, the slot holds nil)
+//	[113-122] mov rax, qNanBoxNilImm (10 bytes)
+//	[123-129] load R(C) → rdx (7 bytes, EmitMovqRdxFromMemRbx)
+//	[130-132] cmp rax, rdx (3 bytes)
+//	[133-138] je deopt (6 bytes, the value to store is nil)
+//	[139-146] mov [r14+rcx+stableIndex*8], rdx (8 bytes, reverse store)
+//	[147]     ret (1 byte)
+//	[148-158] deopt block (mov rax deoptCode + ret, 11 bytes)
+//	——— total 159 bytes ———
 //
-// **Design simplifications** (this batch's SETTABLE engineering boundary):
-//   - **does not verify that the existing array[stableIndex] != nil** (new-key
-//     path) — the P1 interpreter's IC-hit protocol itself requires that slot to
-//     be non-nil; the IC slot validation (shape consistent + slot not
-//     invalidated) already guarantees it; the new-key path makes the IC refill,
-//     and if this frame speculates wrongly, the P1 interpreter bumps gen +
-//     RequestRefresh in the key-degradation scenario
-//   - **assumes no __newindex metatable** (meta freeze assumption) — metamethod
-//     scenarios should trigger a gen change handled by the IC invalidation path
-//
-// The strict version (adding ~13 bytes to verify existing nil + 13 bytes to
-// verify __newindex) is left for PJ4+.
+// **What the inline path stores**: a non-nil value over a non-nil value, and
+// nothing else. Both other cases go to the host:
+//   - the slot holds nil: the field is absent, so the store has to consult
+//     __newindex. Neither the gen check nor anything else in the template says
+//     the slot still holds what the interpreter saw when it filled the IC: the
+//     template does not compare the table's identity, and another table can
+//     carry the same gen.
+//   - the value to store is nil: host.SetTable does the store.
 //
 // **deopt path**: when the Run side sees raxSpec==deoptCode it calls
 // host.SetTable (byte-equal to the P1 interpreter, via IC + hash + __newindex
@@ -454,23 +455,36 @@ func EmitSetTableArrayHit(buf []byte, aReg, cReg uint8,
 	// 12. mov rcx, rax (rcx = arrayRef offset)
 	buf = EmitMovqRcxFromRax(buf)
 
-	// 13. load R(C) value → rdx (7 bytes)
-	buf = EmitMovqRdxFromMemRbx(buf, int32(cReg)*8)
+	// 13. the slot's current value → rax; nil means the field is absent → deopt
+	buf = EmitMovqRaxFromR14PlusRcxDisp(buf, int32(stableIndex)*8)
+	buf = EmitMovRdxImm64(buf, qNanBoxNilImm)
+	buf = EmitCmpRaxRdx(buf)
+	buf = EmitJeRel32(buf, 0)
+	jeAbsentOff := len(buf) - 4
 
-	// 14. mov [r14+rcx+stableIndex*8], rdx (reverse store)
+	// 14. load R(C) value → rdx; a nil store → deopt
+	buf = EmitMovRaxImm64(buf, qNanBoxNilImm)
+	buf = EmitMovqRdxFromMemRbx(buf, int32(cReg)*8)
+	buf = EmitCmpRaxRdx(buf)
+	buf = EmitJeRel32(buf, 0)
+	jeNilValOff := len(buf) - 4
+
+	// 15. mov [r14+rcx+stableIndex*8], rdx (reverse store)
 	buf = EmitMovqMemR14PlusRcxFromRdx(buf, int32(stableIndex)*8)
 
-	// 15. ret (normal exit; SETTABLE has no return value, host.DoReturn does not read R(A) when retB=1)
+	// 16. ret (normal exit; SETTABLE has no return value, host.DoReturn does not read R(A) when retB=1)
 	buf = EmitRet(buf)
 
-	// 16. deopt block
+	// 17. deopt block
 	deoptStart := len(buf)
 	buf = EmitMovRaxImm64(buf, deoptCode)
 	buf = EmitRet(buf)
 
-	// 17. patch all forward jcc to deopt start
+	// 18. patch all forward jcc to deopt start
 	PatchRel32(buf, jneTagOff, int32(deoptStart)-int32(jneTagOff+4))
 	PatchRel32(buf, jneShapeOff, int32(deoptStart)-int32(jneShapeOff+4))
+	PatchRel32(buf, jeAbsentOff, int32(deoptStart)-int32(jeAbsentOff+4))
+	PatchRel32(buf, jeNilValOff, int32(deoptStart)-int32(jeNilValOff+4))
 
 	return buf
 }
@@ -614,38 +628,46 @@ func EmitSelfArrayHit(buf []byte, aReg, bReg uint8,
 //   - stableKey: the key NaN-box frozen at compile time (from proto.Consts[KIdx])
 //   - arenaBaseOff / deoptCode: same as GetTable NodeHit
 //
-// **Byte layout** (140 bytes; GetTable NodeHit 159 - NodeVal/nil/storeRA 34 + load R(C)/reverse store 15):
+// **Byte layout** (186 bytes):
 //
-//	[0-6]    load R(A) → rax (7 bytes)
-//	[7-21]   strict IsTable guard (15 bytes)
-//	[22-44]  re-load + GCRef extract + rcx = offset (23 bytes)
-//	[45-51]  load arena base → r14 (7 bytes)
-//	[52-74]  gen check word5/shr/cmp eax/jne (23 bytes)
-//	[75-82]  load table.nodeRef = [r14+rcx+24] → rax (8 bytes)
-//	[83-85]  mov rcx, rax (rcx = nodeRef offset) (3 bytes)
-//	[86-93]  load NodeKey = [r14+rcx+stableIndex*24] → rax (8 bytes)
-//	[94-103] mov rdx, stableKey (10 bytes)
+//	[0-6]     load R(A) → rax (7 bytes)
+//	[7-21]    strict IsTable guard (15 bytes)
+//	[22-44]   re-load + GCRef extract + rcx = offset (23 bytes)
+//	[45-51]   load arena base → r14 (7 bytes)
+//	[52-74]   gen check word5/shr/cmp eax/jne (23 bytes)
+//	[75-82]   load table.nodeRef = [r14+rcx+24] → rax (8 bytes)
+//	[83-85]   mov rcx, rax (rcx = nodeRef offset) (3 bytes)
+//	[86-93]   load NodeKey = [r14+rcx+stableIndex*24] → rax (8 bytes)
+//	[94-103]  mov rdx, stableKey (10 bytes)
 //	[104-106] cmp rax, rdx (3 bytes)
 //	[107-112] jne deopt (6 bytes, NodeKey != stableKey → deopt)
-//	[113-119] load R(C) → rdx (7 bytes, setter loads value)
-//	[120-127] mov [r14+rcx+stableIndex*24+8], rdx (8 bytes, reverse store NodeVal)
-//	[128]     ret (1 byte)
-//	[129-139] deopt block (mov rax, deoptCode + ret, 11 bytes)
-//	——— total 140 bytes ———
+//	[113-120] load NodeVal = [r14+rcx+stableIndex*24+8] → rax (8 bytes)
+//	[121-130] mov rdx, qNanBoxNilImm (10 bytes)
+//	[131-133] cmp rax, rdx (3 bytes)
+//	[134-139] je deopt (6 bytes, the node holds no value)
+//	[140-149] mov rax, qNanBoxNilImm (10 bytes)
+//	[150-156] load R(C) → rdx (7 bytes, setter loads value)
+//	[157-159] cmp rax, rdx (3 bytes)
+//	[160-165] je deopt (6 bytes, the value to store is nil)
+//	[166-173] mov [r14+rcx+stableIndex*24+8], rdx (8 bytes, reverse store NodeVal)
+//	[174]     ret (1 byte)
+//	[175-185] deopt block (mov rax, deoptCode + ret, 11 bytes)
+//	——— total 186 bytes ———
 //
-// **Composite difference vs SetTable ArrayHit + GetTable NodeHit**:
-//   - vs GetTable NodeHit: drops the NodeVal load (used by getter) + nil check + write R(A)
-//   - vs SetTable ArrayHit: fetches word3=nodeRef + 24-byte stride + one extra key comparison
-//   - rdx reuse: rdx first holds stableKey (key comparison), then after use is overwritten by R(C) value
+// **What the inline path stores**: a non-nil value over a non-nil value, and
+// nothing else. Both other cases go to the host:
+//   - the node holds no value: a deleted key stays in its node, so the key
+//     comparison passes on a field that is absent, and the store has to
+//     consult __newindex. The gen check does not rule this out: the template
+//     does not compare the table's identity, and another table can carry the
+//     same gen with this key deleted in the same node.
+//   - the value to store is nil: a deletion goes through rawSet, which is
+//     where the table's gen advances.
 //
 // **deopt path**: when the Run side sees raxSpec==deoptCode it calls
 // host.SetTable byte-equal to P1 (via icSetTable + __newindex metamethod chain;
 // P1 icSetTable is compatible with NodeHit). The setter shape has retB=1, and
 // the Run side's DoReturn does not read R(A).
-//
-// **Design simplifications** (same boundary as SetTable ArrayHit):
-//   - does not verify that the existing NodeVal != nil (new-key path)
-//   - assumes no __newindex metatable
 func EmitSetTableNodeHit(buf []byte, aReg, cReg uint8,
 	stableShape, stableIndex uint32, stableKey uint64,
 	arenaBaseOff int32, deoptCode uint64) []byte {
@@ -701,24 +723,37 @@ func EmitSetTableNodeHit(buf []byte, aReg, cReg uint8,
 	buf = EmitJneRel32(buf, 0)
 	jneKeyOff := len(buf) - 4
 
-	// 13. **setter branch**: load R(C) value → rdx (overwrites stableKey, rdx reused)
-	buf = EmitMovqRdxFromMemRbx(buf, int32(cReg)*8)
+	// 13. NodeVal → rax; nil means the key is deleted → deopt (rdx reused)
+	buf = EmitMovqRaxFromR14PlusRcxDisp(buf, int32(stableIndex)*24+8)
+	buf = EmitMovRdxImm64(buf, qNanBoxNilImm)
+	buf = EmitCmpRaxRdx(buf)
+	buf = EmitJeRel32(buf, 0)
+	jeAbsentOff := len(buf) - 4
 
-	// 14. reverse store: mov [r14+rcx+stableIndex*24+8], rdx (write NodeVal)
+	// 14. **setter branch**: load R(C) value → rdx; a nil store → deopt
+	buf = EmitMovRaxImm64(buf, qNanBoxNilImm)
+	buf = EmitMovqRdxFromMemRbx(buf, int32(cReg)*8)
+	buf = EmitCmpRaxRdx(buf)
+	buf = EmitJeRel32(buf, 0)
+	jeNilValOff := len(buf) - 4
+
+	// 15. reverse store: mov [r14+rcx+stableIndex*24+8], rdx (write NodeVal)
 	buf = EmitMovqMemR14PlusRcxFromRdx(buf, int32(stableIndex)*24+8)
 
-	// 15. ret (setter has no R(A) write)
+	// 16. ret (setter has no R(A) write)
 	buf = EmitRet(buf)
 
-	// 16. deopt block
+	// 17. deopt block
 	deoptStart := len(buf)
 	buf = EmitMovRaxImm64(buf, deoptCode)
 	buf = EmitRet(buf)
 
-	// 17. patch all forward jcc to deopt start
+	// 18. patch all forward jcc to deopt start
 	PatchRel32(buf, jneTagOff, int32(deoptStart)-int32(jneTagOff+4))
 	PatchRel32(buf, jneShapeOff, int32(deoptStart)-int32(jneShapeOff+4))
 	PatchRel32(buf, jneKeyOff, int32(deoptStart)-int32(jneKeyOff+4))
+	PatchRel32(buf, jeAbsentOff, int32(deoptStart)-int32(jeAbsentOff+4))
+	PatchRel32(buf, jeNilValOff, int32(deoptStart)-int32(jeNilValOff+4))
 
 	return buf
 }

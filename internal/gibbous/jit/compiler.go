@@ -207,7 +207,7 @@ type shapeInfo struct {
 
 	// PJ4 SETTABLE NodeHit shape (`function(t, v) t["x"] = v end`):
 	//   - icSetNodeHit = true: takes the PJ4 SETTABLE IC NodeHit byte-level inline template
-	//     (140 bytes, hash-section NodeKey compare + reverse store NodeVal)
+	//     (hash-section NodeKey compare + reverse store NodeVal)
 	//   - reuses icSetCReg (value reg) / icStableShape / icStableIndex / icStableKey
 	icSetNodeHit bool
 
@@ -539,16 +539,11 @@ func analyzeGetTableNodeHit(proto *bytecode.Proto, feedback *bridge.TypeFeedback
 //   - feedback.Points[0].Kind == FBTableMono + Confidence >= 0.99
 //   - stableShape / stableIndex consistent
 //
-// **Design simplifications** (per pj4_template.go::EmitSetTableArrayHit godoc):
-//   - Does not verify existing array[stableIndex] != nil (new-key path guard) —
-//     relies on the P1 interpreter to bump gen + RequestRefresh on key
-//     degradation, accepting that this frame already wrote incorrectly
-//   - Does not verify __newindex metatable presence (meta freeze assumption) —
-//     metamethod scenarios should trigger a gen change handled by the IC
-//     invalidation path
-//
-// These two simplifications are the PJ4 SETTABLE engineering boundary; the
-// strict version is left for PJ4+.
+// **What the template stores inline** (per pj4_template.go::EmitSetTableArrayHit
+// godoc): a non-nil value over a non-nil value. A slot that holds nil is an
+// absent field, whose store has to consult __newindex, and a nil value is not
+// stored inline either; both deopt to host.SetTable. A store over an existing
+// value never consults __newindex, so the template needs no metatable check.
 //
 // Any failing condition returns (shapeInfo{}, false) — falls through to
 // analyzeShape host.SetTable (byte-equal with P1).
@@ -4432,7 +4427,7 @@ func (c *Compiler) Compile(proto *bytecode.Proto, feedback *bridge.TypeFeedback)
 			return c.compileIcNodeHit(proto, icInfo)
 		}
 		// **PJ4 SETTABLE IC ArrayHit shape**: `function(t,v) t[K] = v end`
-		// (setter, numeric key in the array section), 113-byte template
+		// (setter, numeric key in the array section), the template
 		// reverse-writes array[stableIndex] = R(C); on failure falls through to
 		// host.SetTable byte-equal (through the __newindex metamethod chain).
 		if icInfo, ok := analyzeSetTableArrayHit(proto, feedback); ok {
@@ -4447,7 +4442,7 @@ func (c *Compiler) Compile(proto *bytecode.Proto, feedback *bridge.TypeFeedback)
 			return c.compileIcSelfArrayHit(proto, icInfo)
 		}
 		// **PJ4 SETTABLE IC NodeHit shape**: `function(t,v) t["x"] = v end`
-		// (setter, string / arbitrary key in the hash section), 140-byte
+		// (setter, string / arbitrary key in the hash section), the
 		// template reverse-writes node[stableIndex].val = R(C); on failure
 		// falls through to host.SetTable byte-equal (through icSetTable +
 		// __newindex metamethod chain).
@@ -5081,18 +5076,16 @@ func (c *Compiler) compileIcNodeHit(proto *bytecode.Proto, info shapeInfo) (brid
 }
 
 // compileIcSetArrayHit compiles the PJ4 SETTABLE IC ArrayHit shape (per
-// analyzeSetTableArrayHit): it emits a 113-byte SETTABLE IC inline write-back
+// analyzeSetTableArrayHit): it emits the SETTABLE IC inline write-back
 // template; on failure, deopt → the Run side calls host.SetTable byte-equal P1
 // (through icSetTable + the __newindex metamethod chain).
 //
 // **setter shape retB=1** (SETTABLE, 0 return values) — the Run side's
 // DoReturn does not read R(A).
 //
-// Template, 113 bytes: strict IsTable guard + arena base + gen check + arrayRef
-// + load R(C) value → rdx + write-back store mov [r14+rcx+stableIndex*8], rdx +
-// ret + deopt block. **Simplification**: this batch does not verify that the
-// existing array[stableIndex] != nil (the new-key path) + does not verify the
-// __newindex metatable (see the EmitSetTableArrayHit godoc).
+// Template: strict IsTable guard + arena base + gen check + arrayRef + the
+// slot's current value is not nil + load R(C) value, not nil + write-back store
+// + ret + deopt block (byte layout in the EmitSetTableArrayHit godoc).
 func (c *Compiler) compileIcSetArrayHit(proto *bytecode.Proto, info shapeInfo) (bridge.GibbousCode, error) {
 	const deoptCode uint64 = 0xFFFCDEAD_DEADBE02
 	arenaBaseOff := int32(JITContextArenaBaseOffset)
@@ -5161,18 +5154,16 @@ func (c *Compiler) compileIcSelfArrayHit(proto *bytecode.Proto, info shapeInfo) 
 }
 
 // compileIcSetNodeHit compiles the PJ4 SETTABLE IC NodeHit shape (per
-// analyzeSetTableNodeHit): it emits a 140-byte SETTABLE NodeHit IC inline
-// write-back template (GetTable NodeHit 159 - getter segment 34 + setter
-// segment 15); on failure, deopt → the Run side calls host.SetTable byte-equal
+// analyzeSetTableNodeHit): it emits the SETTABLE NodeHit IC inline write-back
+// template; on failure, deopt → the Run side calls host.SetTable byte-equal
 // P1 (through icSetTable + the __newindex metamethod chain).
 //
 // **setter shape retB=1**; the Run side's DoReturn does not read R(A).
 //
-// Template, 140 bytes: strict IsTable guard + arena base + gen check + nodeRef
-// + node[stableIndex] + key comparison + load R(C) → rdx + write-back store
-// NodeVal + ret + deopt block. The design simplification is the same as
-// SetTable ArrayHit: no __newindex / does not verify the existing NodeVal (see
-// the EmitSetTableNodeHit godoc).
+// Template: strict IsTable guard + arena base + gen check + nodeRef +
+// node[stableIndex] + key comparison + NodeVal is not nil + load R(C), not nil
+// + write-back store NodeVal + ret + deopt block (byte layout in the
+// EmitSetTableNodeHit godoc).
 func (c *Compiler) compileIcSetNodeHit(proto *bytecode.Proto, info shapeInfo) (bridge.GibbousCode, error) {
 	const deoptCode uint64 = 0xFFFCDEAD_DEADBE04
 	arenaBaseOff := int32(JITContextArenaBaseOffset)

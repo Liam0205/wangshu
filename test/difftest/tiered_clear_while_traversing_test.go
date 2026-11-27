@@ -136,8 +136,8 @@ k2621 = 7
 local b = read338(1)
 return a, b, k2621`},
 	// A field is deleted by other code while a single-store function is compiled for it: the next
-	// store is a store to an absent field and must reach __newindex. The P4 template compares the
-	// node's key but not its value, so it relies on the deletion changing the generation.
+	// store is a store to an absent field and must reach __newindex. The key is still in its node,
+	// so what tells the P4 template apart from a store to an existing field is the node's value.
 	{"single_store_function_after_delete_elsewhere", `
 log338 = 0
 S338 = setmetatable({x = 0, y = 0}, {__newindex = function(t, k, v) log338 = log338 + 1 rawset(t, k, v) end})
@@ -201,47 +201,52 @@ func runTieredClear(t *testing.T, st *wangshu.State, warm, run *wangshu.Program,
 func TestTiered_ClearWhileTraversing(t *testing.T) {
 	oracle := findOracle()
 	for _, c := range tieredClearCases {
-		t.Run(c.name, func(t *testing.T) {
-			warm, err := wangshu.Compile([]byte(c.warm), "tierclear-warm")
-			if err != nil {
-				t.Fatalf("wangshu compile (warm): %v", err)
-			}
-			run, err := wangshu.Compile([]byte(c.run), "tierclear-run")
-			if err != nil {
-				t.Fatalf("wangshu compile (run): %v", err)
-			}
-			interp := newInterpBaselineState()
-			baseline := runTieredClear(t, interp, warm, run, false, "baseline")
-			if n := interp.GibbousEntries(); n != 0 {
-				t.Errorf("the interpreter-only baseline entered compiled code %d times", n)
-			}
-			if oracle != "" {
-				if want := runOracle(t, oracle, wrapForOracle("do "+c.warm+"\nend\n"+c.run)); baseline != want {
-					t.Errorf("interpreter vs oracle:\n  wangshu: %q\n  oracle:  %q", baseline, want)
-				}
-			}
-
-			tiered := newInterpBaselineState()
-			if got := runTieredClear(t, tiered, warm, run, true, "warm, then force-all"); got != baseline {
-				t.Errorf("warm, then force-all diverged from the interpreter:\n  tiered:      %q\n  interpreter: %q", got, baseline)
-			}
-			if tiered.GibbousEntries() == 0 {
-				t.Errorf("warm, then force-all never entered compiled code (%d protos promoted): this case does not exercise the tier",
-					tiered.PromotionCount())
-			}
-
-			forced := wangshu.NewState(wangshu.Options{})
-			forced.SetForceAllPromote(true)
-			if got := runTieredClear(t, forced, warm, run, false, "force-all"); got != baseline {
-				t.Errorf("force-all diverged from the interpreter:\n  force-all:   %q\n  interpreter: %q", got, baseline)
-			}
-
-			auto := newAutoState()
-			if got := runTieredClear(t, auto, warm, run, false, "auto"); got != baseline {
-				t.Errorf("auto diverged from the interpreter:\n  auto:        %q\n  interpreter: %q", got, baseline)
-			}
-			t.Logf("result %q; entries into compiled code: warm then force-all %d, force-all %d, auto %d",
-				baseline, tiered.GibbousEntries(), forced.GibbousEntries(), auto.GibbousEntries())
-		})
+		t.Run(c.name, func(t *testing.T) { checkWarmThenForced(t, oracle, c.warm, c.run) })
 	}
+}
+
+// checkWarmThenForced runs the two chunks of a case the four ways TestTiered_ClearWhileTraversing
+// describes and reports any disagreement.
+func checkWarmThenForced(t *testing.T, oracle, warmSrc, runSrc string) {
+	t.Helper()
+	warm, err := wangshu.Compile([]byte(warmSrc), "tierclear-warm")
+	if err != nil {
+		t.Fatalf("wangshu compile (warm): %v", err)
+	}
+	run, err := wangshu.Compile([]byte(runSrc), "tierclear-run")
+	if err != nil {
+		t.Fatalf("wangshu compile (run): %v", err)
+	}
+	interp := newInterpBaselineState()
+	baseline := runTieredClear(t, interp, warm, run, false, "baseline")
+	if n := interp.GibbousEntries(); n != 0 {
+		t.Errorf("the interpreter-only baseline entered compiled code %d times", n)
+	}
+	if oracle != "" {
+		if want := runOracle(t, oracle, wrapForOracle("do "+warmSrc+"\nend\n"+runSrc)); baseline != want {
+			t.Errorf("interpreter vs oracle:\n  wangshu: %q\n  oracle:  %q", baseline, want)
+		}
+	}
+
+	tiered := newInterpBaselineState()
+	if got := runTieredClear(t, tiered, warm, run, true, "warm, then force-all"); got != baseline {
+		t.Errorf("warm, then force-all diverged from the interpreter:\n  tiered:      %q\n  interpreter: %q", got, baseline)
+	}
+	if tiered.GibbousEntries() == 0 {
+		t.Errorf("warm, then force-all never entered compiled code (%d protos promoted): this case does not exercise the tier",
+			tiered.PromotionCount())
+	}
+
+	forced := wangshu.NewState(wangshu.Options{})
+	forced.SetForceAllPromote(true)
+	if got := runTieredClear(t, forced, warm, run, false, "force-all"); got != baseline {
+		t.Errorf("force-all diverged from the interpreter:\n  force-all:   %q\n  interpreter: %q", got, baseline)
+	}
+
+	auto := newAutoState()
+	if got := runTieredClear(t, auto, warm, run, false, "auto"); got != baseline {
+		t.Errorf("auto diverged from the interpreter:\n  auto:        %q\n  interpreter: %q", got, baseline)
+	}
+	t.Logf("result %q; entries into compiled code: warm then force-all %d, force-all %d, auto %d",
+		baseline, tiered.GibbousEntries(), forced.GibbousEntries(), auto.GibbousEntries())
 }

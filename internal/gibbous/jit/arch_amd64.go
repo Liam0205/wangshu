@@ -177,10 +177,10 @@ func archEmitGetTableNodeHit(buf []byte, aReg, bReg uint8,
 }
 
 // archEmitSetTableArrayHit splices the PJ4 SETTABLE IC ArrayHit byte-level
-// reverse-write template (113 bytes: strict IsTable guard + arena base +
-// gen check + arrayRef + load R(C) value → rdx + reverse store
-// [r14+rcx+stableIndex*8] from rdx + ret + deopt block). On amd64 it delegates
-// to jitamd64.EmitSetTableArrayHit.
+// reverse-write template (159 bytes: strict IsTable guard + arena base +
+// gen check + arrayRef + the slot's current value is not nil + load R(C)
+// value → rdx, not nil + reverse store [r14+rcx+stableIndex*8] from rdx + ret
+// + deopt block). On amd64 it delegates to jitamd64.EmitSetTableArrayHit.
 //
 // **setter form**: retB=1 (SETTABLE has 0 return values), the Run side does not
 // write R(A).
@@ -204,10 +204,11 @@ func archEmitSelfArrayHit(buf []byte, aReg, bReg uint8,
 }
 
 // archEmitSetTableNodeHit splices the PJ4 SETTABLE IC NodeHit byte-level
-// reverse-write template (140 bytes: GetTable NodeHit 159 - getter segment 34 +
-// setter segment 15). On amd64 it delegates to jitamd64.EmitSetTableNodeHit.
+// reverse-write template (186 bytes). On amd64 it delegates to
+// jitamd64.EmitSetTableNodeHit.
 //
-// **setter NodeHit form**: hash-segment NodeKey compare + reverse-write NodeVal.
+// **setter NodeHit form**: hash-segment NodeKey compare + NodeVal is not nil +
+// the value is not nil + reverse-write NodeVal.
 func archEmitSetTableNodeHit(buf []byte, aReg, cReg uint8,
 	stableShape, stableIndex uint32, stableKey uint64,
 	arenaBaseOff int32, deoptCode uint64) []byte {

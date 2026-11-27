@@ -31,12 +31,12 @@
 //     native GETGLOBAL/SETGLOBAL NodeHit, P3 wasm GETGLOBAL/SETGLOBAL
 //     NodeHit, and P3 wasm constant-key GETTABLE/SETTABLE/SELF NodeHit (wasm
 //     tableInlineable). A missing bump there reads another key's value.
-//     Two consumers lean on particular bumps. The P4 single-SETTABLE shape
-//     template (jit EmitSetTableNodeHit) compares NodeKey but not the node's
-//     current value, so after a deletion that did not bump it would store
-//     into the DEAD node without consulting __newindex. P3 wasm
-//     emitSetGlobal stores Nil inline, making a node DEAD with no bump: the
-//     bump on takeover is what invalidates snapshots of such a node;
+//     An unchanged gen does not say that a node still holds a value: P3
+//     wasm emitSetGlobal stores Nil inline, making a node DEAD with no bump,
+//     and a consumer that does not compare the table's identity can be
+//     handed another table with the same gen. Every inline consumer
+//     therefore checks the node's value itself, and the bump on takeover is
+//     what invalidates snapshots of a node that went DEAD without one;
 //   - border: binary search over the array part (# semantics, 01 §5.2).
 package crescent
 
