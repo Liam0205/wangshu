@@ -394,10 +394,13 @@ func TestRemovedStringKeysOfWeakValuedTable(t *testing.T) {
 //     if it is collectable (a string, a table, a function; not a number or a boolean), whether or
 //     not the key's object is alive. It does so while marking the table (traversetable), and a
 //     table whose keys and values are both weak is not traversed, so there a key the script
-//     removed stays as it is. next still finds a dead key's node, a store does not, so the same
+//     removed stays as it is. An entry the collector clears from a weak table has no such
+//     exception: cleartable removes it the same way in all three modes, so its key becomes a dead
+//     key even while the key's object is alive. next still finds a dead key's node, a store does not, so the same
 //     key stored again is inserted as a new key and can cause a rehash. wangshu puts a removed
 //     key back into its node as long as the key's object is alive, however many collections ran
-//     in between, and a string the script removed stays alive (06 §8.4);
+//     in between, and a string the script removed stays alive (06 §8.4). The key of an entry the
+//     collector cleared goes back into its node too while its object is alive;
 //   - stores that leave no value behind: lua5.1's luaH_set creates a node for a key before it
 //     knows that the value is nil or that __newindex will take the store, so such a store to an
 //     absent key leaves a removed key behind, uses up a free node and can cause a rehash. In
@@ -408,9 +411,10 @@ func TestRemovedStringKeysOfWeakValuedTable(t *testing.T) {
 //     key's node over, also varies within one implementation with what was allocated and
 //     collected before (TestNextOnRemovedKey_ObjectKeysInsertedAfterwards);
 //   - dead keys matched by address: after a collection lua5.1's next recognises a removed key
-//     whose object is gone by the address it had, so it also accepts an object or string that
-//     never was in the table and happens to be allocated there. wangshu's next raises for every
-//     key the table has no node for (TestDiff_NextFromKeysNeverInTheTable).
+//     whose object is gone by the address it had, so it also accepts an object that never was
+//     in the table and happens to be allocated there, and a string likewise, which also has to
+//     fall on the node's collision chain when its contents are not the old key's. wangshu's next
+//     raises for every key the table has no node for (TestDiff_NextFromKeysNeverInTheTable).
 //
 // The manual leaves the behaviour undefined once a traversal has assigned to a field that did not
 // exist; the cases are here so that a change in wangshu's answers is noticed. want is wangshu's
@@ -450,6 +454,13 @@ for i = 1, 8 do t[K[i]] = nil end
 collectgarbage()
 for i = 1, 5 do t[K[i]] = i end
 return (pcall(next, t, K[6]))`, "true", "true"},
+	// The collector clears the entries of key1, key3 and key5 once hold lets go of their values;
+	// keys keeps the strings referenced. lua5.1's cleartable turns the three keys into dead keys, so stored again
+	// they are new keys, and key5 goes to its main position, the node of the key2 the script
+	// removed, and takes it over. wangshu writes the three back into their nodes.
+	{"keys_of_cleared_entries_stored_again_weak_values", keysOfClearedEntriesStoredAgain("v"), "true", "false"},
+	// A table whose keys and values are both weak is cleared the same way, though marking skips it.
+	{"keys_of_cleared_entries_stored_again_weak_keys_and_values", keysOfClearedEntriesStoredAgain("kv"), "true", "false"},
 	// A nil stored to a key that was never there: lua5.1 has a node for it afterwards.
 	{"nil_stored_to_an_absent_key", `
 local t = {a = 1} t.x = nil
@@ -467,6 +478,21 @@ local s = {} for i = 1, 8 do s["k" .. i] = i end
 local n = 0
 return pcall(function() for k in pairs(s) do s[k] = nil s["absent" .. k] = nil n = n + 1 end return n end)`,
 		"true\t8", "false\tinvalid key to 'next'"},
+}
+
+// keysOfClearedEntriesStoredAgain is the script of the two keys_of_cleared_entries cases for a
+// table with the given __mode.
+func keysOfClearedEntriesStoredAgain(mode string) string {
+	return `
+local w = setmetatable({}, {__mode = "` + mode + `"})
+local hold, keys = {}, {}
+for i = 1, 5 do keys[i] = "key" .. i end
+for i = 1, 5 do hold[i] = {} w[keys[i]] = hold[i] end
+w[keys[2]] = nil
+hold[1], hold[3], hold[5] = nil, nil, nil
+collectgarbage()
+for _, i in ipairs({1, 3, 5}) do hold[i] = {} w[keys[i]] = hold[i] end
+return (pcall(next, w, keys[2]))`
 }
 
 // TestDiff_NextOnRemovedKeyAfterStores pins both sides of nextOnRemovedKeyAfterStores. Unlike the
