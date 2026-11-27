@@ -387,8 +387,8 @@ func (st *State) SetStepBudget(n int64) { st.core.SetStepBudget(n) }
 //
 // Restriction: snapshots string keys only — stdlib and the host's own globals
 // are all string keys. Keys of other types are skipped, and a script can set
-// them: rawset(_G, 2, file) changes what io.stdout.close() closes, and a Reset
-// does not remove it. Composite values in the baseline (table/function
+// them: rawset(_G, 2, x) changes what a bare io.stdout.close() checks, and a
+// Reset does not remove it. Composite values in the baseline (table/function
 // GCRef) enter the GC roots via visitExtraValues, so what Reset writes back to
 // _G is not a dangling ref.
 func (st *State) MarkGlobalsBaseline() { st.core.MarkGlobalsBaseline() }

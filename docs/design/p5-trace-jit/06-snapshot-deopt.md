@@ -253,7 +253,7 @@ type SunkRecipe struct {
 
 - **snapshot 压缩**:每个 guard 一份全量映射会撑爆内存(§5 展开预算数学);LuaJIT 用增量 / 共享编码;望舒 v1 用 delta 编码,基于前一 snapshot。
 - **与 regalloc 的配合**:snapshot 引用的 IR 值在 exit 时必须可以恢复——这个约束改变了 regalloc 的自由度(见 05 §6);snapshot 与 regalloc 的联合不变式是本机器正确性的核心。
-- **unsink 与 GC 的交互**:deopt 途中分配 → 可能触发 GC;GC 需要看到已分配但字段未填的 sunk 对象,以及已经物化的栈槽——**根可见性的顺序**是最深的坑(§6.4)。
+- **unsink 与 GC 的交互**:deopt 途中要分配,途中的安全点可能触发 GC(分配本身只记账、不回收,[P1 06 §7.1](../p1-interpreter/06-memory-gc.md));GC 需要看到已分配但字段未填的 sunk 对象,以及已经物化的栈槽——**根可见性的顺序**是最深的坑(§6.4)。
 
 ---
 
@@ -532,7 +532,7 @@ func (tc *TraceCode) deoptRestore(state *State, snapID uint32) (int32, error) {
 
 ### 6.4 GC 与根可见性:最深的坑
 
-**问题**:step 5 的 unsink 填字段时,可能触发 GC(table grow / string intern);GC 需要能看到:
+**问题**:step 5 的 unsink 填字段时,可能触发 GC(序列里有安全点时;分配本身只记账、不回收);GC 需要能看到:
 
 - **已经物化的栈槽**:天然可见(住在 arena 值栈,GC 根扫描的常规区域);
 - **已分配但字段未填的 sunk 对象**:**不天然可见**——它们还没被任何栈槽 / CallInfo 引用(还没到 step 4 引用它们的机会,或者引用它们的槽在别的 sunk 对象里);

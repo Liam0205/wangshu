@@ -409,7 +409,7 @@ func (th *Thread) CheckString(i int) []byte {
 ### 3.2 范例一:`table.concat`(循环拼接,逐步累积)
 
 `table.concat(t, sep, i, j)` 把 `t[i]..sep..t[i+1]..sep..…..t[j]` 拼成一个串。它在循环里**逐步累积结果**,
-每步可能分配 → 触发 GC → 累积的中间串必须在 shadow stack 上:
+每步都分配,按「分配可能触发 GC」的纪律([06](./06-memory-gc.md) §6.3)累积的中间串必须在 shadow stack 上:
 
 ```go
 // table.concat(t, sep, i, j):拼接表的数组段。展示 shadow stack 纪律(06 §6.3)。
@@ -544,11 +544,11 @@ func gsubFunctionRepl(vm *VM, th *Thread, captures []value.Value, repl value.Val
 
 - **捕获子串在 Go slice,GC 看不见**:matcher 把匹配的子串从源串切出、intern 成 arena String,放进 `captures`
   这个 **Go slice**。06 §5.1 R7:GC 精确栈扫描看不见 Go 栈/slice 里的 arena 引用(GCRef 是整数)。
-- **调 `repl` 会 GC**:`callLuaFromHost` 跑 Lua 替换函数,可能分配 → GC。若 `captures` 里的串没 Pin,GC 会
+- **调 `repl` 会 GC**:`callLuaFromHost` 跑 Lua 替换函数,替换函数执行到安全点时 GC。若 `captures` 里的串没 Pin,GC 会
   误回收它们(它们除了 `captures` Go slice 外无其它引用)→ `repl` 收到悬垂 GCRef → 崩溃/脏读。
 - **正确做法:调 `repl` 前 Pin captures,调后 Unpin**。这是 06 §6.3 纪律「下一次可能触发 GC 的分配之前,所有
   已持有但未上 Lua 栈/表的 arena 引用都要在 shadow stack 上」的精确兑现——captures 是「已持有但未上栈」的 arena
-  引用,`callLuaFromHost`(内部分配)是「下一次可能触发 GC 的分配」。
+  引用,`callLuaFromHost`(替换函数里的安全点)是「下一次可能触发 GC」的地方。
 - **替代方案:把 captures 先 push 到 Lua 栈**(成为 R5 自动可达,06 §5.1),则不需 Pin。但 gsub 的 captures 作为
   `callLuaFromHost` 的 args 本就要进栈——若 `callLuaFromHost` 实现是「先把 args 压栈再 execute」,则 args 压栈那一刻
   起就 R5 可达,Pin 可省。**定稿:`callLuaFromHost` 内部把 args 压栈后才 execute**(args 进栈即可达),故**上面的

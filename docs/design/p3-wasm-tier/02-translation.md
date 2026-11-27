@@ -764,7 +764,7 @@ GETGLOBAL/SETGLOBAL 是「目标表恒为 globals」的表访问特例(02 §4):
 ;; gibbous 代码自身从不分配(00-overview §8;分配 + GC 都在助手内),全经助手
 (local.set $vb (call $h_newtable (local.get $base) (i32.const B) (i32.const C)))
 (i64.store offset=8*A (local.get $base) (local.get $vb))
-;; NEWTABLE 后随 safepoint(execute.go 127 行);助手内收口(分配即可能触发 collect)
+;; NEWTABLE 后随 safepoint(execute.go 127 行);助手内收口(助手末尾的安全点可能触发 collect)
 ```
 
 - NEWTABLE 带「预分配」语义但不带 IC——它创建新表无 IC 价值。

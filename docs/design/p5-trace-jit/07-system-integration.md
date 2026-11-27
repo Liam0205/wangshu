@@ -550,10 +550,10 @@ F2 保守 yield 判定同源)。
 相同(依据 [P4 05 §1.3.3](../p4-method-jit/05-system-pipeline.md) jitContext 是 Go 堆对象但内部 uintptr
 不被追踪的语义)。
 
-### 8.3 unsink 分配可能触发 GC(依据 [06](./06-snapshot-deopt.md))
+### 8.3 unsink 期间可能发生 GC(依据 [06](./06-snapshot-deopt.md))
 
-deopt 期间 `UnsinkAlloc` 调 `Arena.Alloc`,若越 GC 阈值触发 collect——collect 期间 fullmoon 已退出 trace
-段进入 Go 世界,一切按 P4 已建纪律走:
+deopt 期间 `UnsinkAlloc` 调 `Arena.Alloc`。分配本身只记账、不回收([P1 06 §7.1](../p1-interpreter/06-memory-gc.md)),
+回收发生在 unsink 序列里的安全点——这时 fullmoon 已退出 trace 段进入 Go 世界,一切按 P4 已建纪律走:
 
 - Go 侧 helper 内 arena grow / GC 由 Go runtime 与望舒自管 GC 协作([P1 06 §8.2](../p1-interpreter/06-memory-gc.md));
 - 完成后 `RefreshJitCtxAddrs` 刷新 5 个地址字段;
