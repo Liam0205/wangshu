@@ -1170,9 +1170,10 @@ arena 大小跟着比例变。`TestTiered_StdlibNames` 加一段
   不同的那一种情况（见下）。
 - `test/api`：`TestTableForEach_ClearingEntries`。
 
-变异验证：24 处改动逐个撤掉或改坏，每一处都有测试失败。其中「接管时不 bump」由单元测试、P3 下的
-`deleted_global_node_taken_over` 和 P4 下的 `deleted_global_node_taken_over_single_store` 发现；「删除时不 bump」只由单元测试发现
-（现在没有哪个内联路径的正确性依赖这一次 bump，见下面 P4 模板一段）。把同一份 `TestDiff_ClearWhileTraversing` 放到修改前的 master 上，
+变异验证：24 处改动逐个撤掉或改坏，每一处都有测试失败。其中「接管时不 bump」由单元测试和 P3 下的
+`deleted_global_node_taken_over` 发现（P4 下没有分层用例能看到它：P4 的内联路径都不写入 nil，删除总是经过表操作、在删除时 bump）；
+「删除时不 bump」只由单元测试发现（现在没有哪个内联路径的正确性依赖这一次 bump，见下面 P4 模板一段）；P4 模板「不内联写入 nil」
+这一项只由模板的字节布局测试发现（去掉它之后槽位变成 nil，下一次赋值照样退回宿主，行为上没有差别）。把同一份 `TestDiff_ClearWhileTraversing` 放到修改前的 master 上，
 16 段里 13 段失败（剩下的 3 段修改前后结果相同：数组部分的键、被删除的键不让对象存活、删除之后隔着回收再写回）。
 
 **与官方不同、有意保留**：
