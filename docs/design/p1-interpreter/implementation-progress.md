@@ -980,8 +980,8 @@ reviewer 在跑 P4 全量测试时还撞到一次 `TestIssue177_StringLimitConte
 
 这一轮还发现两项与 #329 无关、此前没有登记的存量差异，都在 master 上复现过，差分 fuzz 都能直接看到：
 
-- 表构造式以多值展开结尾（`{...}`、`{f()}`、`{1, f()}`），展开出来的值中间有 nil 而最后一个值不是 nil 时，`#t` 和
-  `unpack(t)` 与官方不同，`local args = {...}` 之后 `f(unpack(args))` 会丢掉 nil 之后的参数。记在
+- 表构造式以多值展开结尾（`{...}`、`{f()}`、`{1, f()}`），展开出来的值里有 nil 时，`#t` 和 `unpack(t)` 给出的个数
+  可能与官方不同，`local args = {...}` 之后 `f(unpack(args))` 传出去的参数个数因此可能不对。记在
   [#342](https://github.com/Liam0205/wangshu/issues/342)。
 - `io.stdout.close()` 不传句柄时报 `got no value`，官方报 `got nil`。记在
   [#343](https://github.com/Liam0205/wangshu/issues/343)。
@@ -997,6 +997,17 @@ reviewer 在跑 P4 全量测试时还撞到一次 `TestIssue177_StringLimitConte
 把其中一个内核改成不升层的写法，进入次数从 78 降到 39，这一段照常通过，那一半的覆盖就没有了。这一段拆成
 `ipairs_called_from_compiled_code` 和 `pairs_called_from_compiled_code` 两段，各一个内核；同样的变异现在让对应的一段在
 P3、P4 下失败。拆开后的十段在 amd64 和 linux/arm64（qemu）的 P3、P4 上通过。其余八段本来就各只有一个会升层的函数。
+
+第二十二轮独立审查（全范围，又一位 reviewer）在当时的提交上没有任何问题。审查期间我按第二十一轮 reviewer 的复核意见
+改写了 #342 的说明，把这个提交并进第二十二轮的范围之后，reviewer 指出改写的文字有两处不对：
+
+| 审查意见 | 处理 |
+|---|---|
+| 「最后一个值也是 nil 时两侧相同」不成立：传入 `1, 2, nil, 4, nil` 官方得 2、望舒得 4。望舒的结果有时比官方大；最后一个值不是 nil 时两侧也不一定不同 | 我写这句话的依据只有 `1, nil, nil` 一组输入。改成先量再写：把长度 1 到 8、每个位置是值或 nil 的 510 种序列全部经 `{...}` 和 `{0, ...}` 构造一遍，在官方和望舒三种构建上比对。`{...}` 的结果：含 nil 的 502 种里 281 种两侧不同，望舒偏小 273 种、偏大 8 种；最后一个值不是 nil 的 247 种，官方都等于总个数，其中 188 种两侧不同；最后一个值是 nil 的 255 种里 93 种不同；不含 nil 的 8 种都相同。`{0, ...}` 有 244 种不同。doc-gaps、这份记录里对应的一句和 #342 的正文都按实测重写 |
+| 原因一句写成「中间的 nil 落进哈希段」。nil 不会存进表里，落进哈希段的是 nil 之后的值 | 改正 |
+
+「写死个数的字面量不受影响」这一句原来也只看了两个字面量，这次用 16 个带 nil 的字面量（最长 120 个元素，跨过
+`SETLIST` 每 50 个一批的边界）量过，两侧相同。
 
 验证：`make all` 与 `make fuzz-oracle` 通过。把 `internal/stdlib` 的 `stdlib.go` 和 `tablelib.go` 一起换回修复前的版本：
 行为测试 10 个用例失败，`test/api` 的 `io.lines` 用例 4 个失败，`TestTiered_StdlibNames` 在 P3、P4 两种构建下十段脚本里
