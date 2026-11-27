@@ -111,10 +111,11 @@ type PerOpCode struct {
 
 	// TFORLOOP block (generic for): when tforLoopValid is true, the
 	// dispatcher calls host.TForLoop each iteration until it returns -2.
-	tforLoopValid bool
-	tforLoopA     uint8
-	tforLoopC     uint8
-	tforLoopPC    uint16
+	tforLoopValid  bool
+	tforLoopA      uint8
+	tforLoopC      uint8
+	tforLoopPC     uint16
+	tforLoopBackPC uint16
 }
 
 // Proto returns the source Proto.
@@ -528,10 +529,11 @@ func (c *PerOpCode) runTForLoop(base uint32) int32 {
 		// Loop back-edge fuel (issue #102): a host-closure iterator
 		// (e.g. next) never enters a Lua frame, so nothing else bills
 		// or checks the step budget per iteration — the interpreter
-		// preempts on every TFORLOOP continuation (execute.go).
+		// preempts on every TFORLOOP continuation, at the JMP that
+		// follows the TFORLOOP (execute.go), so that is the pc reported.
 		if c.jitCtx.LoopFuelTick() {
 			LoopFuelExitCount.Add(1)
-			if st := c.host.LoopPreempt(c.jitCtx, int32(base), int32(c.tforLoopPC)); st != 0 {
+			if st := c.host.LoopPreempt(c.jitCtx, int32(base), int32(c.tforLoopBackPC)); st != 0 {
 				return st
 			}
 		}
@@ -652,26 +654,27 @@ func TranslateProto(proto *bytecode.Proto, host jit.P4HostState) (bridge.Gibbous
 		return nil, err
 	}
 	return &PerOpCode{
-		proto:         proto,
-		codePage:      page,
-		jitCtx:        jit.NewJITContext(),
-		host:          host,
-		sources:       info.sources,
-		sideEffects:   info.sideEffects,
-		retA:          info.retA,
-		retB:          info.retB,
-		retPC:         info.retPC,
-		isTailCall:    info.isTailCall,
-		forLoopValid:  info.forLoopValid,
-		forLoopA:      info.forLoopA,
-		forLoopPC:     info.forLoopPC,
-		forLoopBackPC: info.forLoopBackPC,
-		forLoopAfter:  info.forLoopAfter,
-		bodyEffects:   info.bodyEffects,
-		tforLoopValid: info.tforLoopValid,
-		tforLoopA:     info.tforLoopA,
-		tforLoopC:     info.tforLoopC,
-		tforLoopPC:    info.tforLoopPC,
+		proto:          proto,
+		codePage:       page,
+		jitCtx:         jit.NewJITContext(),
+		host:           host,
+		sources:        info.sources,
+		sideEffects:    info.sideEffects,
+		retA:           info.retA,
+		retB:           info.retB,
+		retPC:          info.retPC,
+		isTailCall:     info.isTailCall,
+		forLoopValid:   info.forLoopValid,
+		forLoopA:       info.forLoopA,
+		forLoopPC:      info.forLoopPC,
+		forLoopBackPC:  info.forLoopBackPC,
+		forLoopAfter:   info.forLoopAfter,
+		bodyEffects:    info.bodyEffects,
+		tforLoopValid:  info.tforLoopValid,
+		tforLoopA:      info.tforLoopA,
+		tforLoopC:      info.tforLoopC,
+		tforLoopPC:     info.tforLoopPC,
+		tforLoopBackPC: info.tforLoopBackPC,
 	}, nil
 }
 

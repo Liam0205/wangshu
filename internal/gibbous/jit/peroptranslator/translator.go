@@ -99,6 +99,8 @@ type shapeInfo struct {
 	tforLoopA     uint8  // R(A..A+2) holds iterator/state/control
 	tforLoopC     uint8  // result count (R(A+3..A+2+C))
 	tforLoopPC    uint16 // pc of the TFORLOOP instruction
+	// pc of the JMP after the TFORLOOP: the back edge, where a preemption is reported
+	tforLoopBackPC uint16
 }
 
 // maxShapePC is the highest pc AnalyzeShape accepts for the RETURN. Every pc it records is below
@@ -1074,6 +1076,7 @@ func AnalyzeShape(proto *bytecode.Proto) shapeInfo {
 		info.tforLoopA = tloop.a
 		info.tforLoopC = tloop.c
 		info.tforLoopPC = uint16(tloop.tloopPC)
+		info.tforLoopBackPC = uint16(tloop.tloopPC + 1)
 		info.forLoopAfter = tforLoopAfter
 		info.bodyEffects = bodyEffects
 	}
