@@ -68,9 +68,9 @@ package wangshu
 type Options struct {
     InitialArenaBytes uint32 // VM 主 arena 初始容量(默认 64 KiB,见 06 §3)
     MaxArenaBytes     uint32 // 主 arena 上限(默认 4 GiB,bump/cap 是 uint32,06 §3)
-    MaxCallDepth      int    // Lua 调用深度上限(CallInfo 数,05 §7.4;默认如 200000)
-    MaxCCalls         int    // host→Lua 重入深度上限(真 Go 栈,05 §7.4;默认 200)
-    GCPause           int    // GC pacing,存活量百分比(默认 200:再分配 2 倍存活量时回收,06 §8.3;含义与官方的 gcpause 差 100)
+    MaxCallDepth      int    // Lua 调用深度上限(CallInfo 数,05 §7.4);NewState 不读,实际上限是常量 20000
+    MaxCCalls         int    // host→Lua 重入深度上限(真 Go 栈,05 §7.4);NewState 不读,实际上限是常量 200
+    GCPause           int    // GC pacing,存活量百分比(06 §8.3);NewState 不读,每个 State 从 200 开始:再分配 2 倍存活量时回收,含义与官方的 gcpause 差 100
     Libs              Lib      // 标准库位掩码(零值=LibsDefault 对齐 gopher-lua 面;LibsSafe=计算沙箱;见 10 §12.1)
     Exclude           []string // 函数级排除路径(注册后删除),如 {"os.execute","io.open"}(10 §12.1 三层粒度)
 }
