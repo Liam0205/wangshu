@@ -2463,6 +2463,9 @@ stdlib 的 shadow stack 纪律(§3)漏 Pin 是**最难调的 bug 类**(06 §6.3:
   conformance 若含 require 用例,标 P1 已知限制。
 - **`collectgarbage` step/setstepmul 简化**(§4.6):P1 只 full GC(06 §8.3),`"step"` 近似为触发 full GC,
   `setstepmul` 存而不用。脚本依赖增量步进精确语义会微差,记口径。增量 GC 是 P3+。
+- **`collectgarbage` 的另外两处差异**(§4.6):`setpause` 的比例含义与官方差 100,要不要改成官方的口径见
+  [#353](https://github.com/Liam0205/wangshu/issues/353);`stop` 之后的 `collectgarbage()` / `("step")` 不恢复自动回收、`restart` 之后的回收时机
+  与官方不同,见 [#354](https://github.com/Liam0205/wangshu/issues/354)。
 - **`%q` / `%f`/`%g`/`%e` / pattern 的精确差分**(§5.2/§6.6):`%q` 转义集、format 浮点的 C printf 复刻细节
   (指数位数/尾零/inf-nan)、pattern 各构造的边角语义(空匹配推进、`%f` 边界、贪婪回溯顺序)、`matchDepth`
   上限与 `"pattern too complex"` 措辞——**全部待 12 差分核对**,本文给骨架不编造精确字节。

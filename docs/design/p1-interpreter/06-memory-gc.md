@@ -623,7 +623,7 @@ updatePacing():
   加进 live;分配量上，创建协程时按段大小计入，扩容时经 `Collector.Account` 计入增量(只记账、不收集),与 lua5.1 把线程栈
   算进 `totalbytes` 一样，详见 [08](./08-coroutines.md) §6.1。
 
-> pacing 影响 GC **频率**,不影响**正确性**(§11):无论何时 GC,存活对象不变、`pairs` 序不变。脚本能看到回收时机的地方只有弱表条目何时被清、终结器何时执行和 `collectgarbage("count")` 的数值。
+> pacing 影响 GC **频率**,不影响**正确性**(§11):无论何时 GC,存活对象不变、`pairs` 序不变。脚本能看到回收时机的地方是弱表条目何时被清、终结器何时执行、`collectgarbage("count")` / `gcinfo()` 的数值，以及新对象的 `tostring` 地址（回收释放的块会被复用，[12](./12-testing-difftest.md) §3.1）。
 > 但 GC 频率影响**性能**与**捕获 bug 的概率**——[12](./12-testing-difftest.md) 的「高频 GC 模式」(collector 的压力模式,
 > 每个安全点都做一次 full GC;只把 GCPAUSE 调小做不到,阈值有上面说的下限)是逼出「漏 push shadow stack / mark 漏字段」类 bug 的压力测试手段(§11)。
 
