@@ -121,6 +121,14 @@ local t = {a = 1}
 t.a = nil
 local ok, k = pcall(next, t, "a")
 return ok, k, pcall(next, t, "never")`, "true\tnil\tfalse\tinvalid key to 'next'"},
+	// The same with a key that is not a constant of the chunk: the string is built at run time, and
+	// built again for the call to next.
+	{"next_from_a_removed_key_built_at_run_time", `
+local t = {}
+for i = 1, 5 do t["dyn" .. i] = i end
+t["dyn" .. 3] = nil
+local ok = pcall(next, t, "dyn" .. 3)
+return ok, pcall(next, t, "dyn" .. 9)`, "true\tfalse\tinvalid key to 'next'"},
 	// A removed key does not keep its object alive.
 	{"removed_key_is_collectable", `
 local probe = setmetatable({}, {__mode = "v"})
@@ -183,5 +191,36 @@ func TestDiff_ClearWhileTraversing(t *testing.T) {
 				t.Errorf("wangshu, collecting at every safepoint:\n  got:  %q\n  want: %q", got, c.want)
 			}
 		})
+	}
+}
+
+// nextFromCollectedStringKey removes a string key that nothing else refers to, collects, and then
+// hands next a string with the same contents. wangshu's answer does not depend on whether a
+// collection happened in between: a removed node keeps its string key alive, so the rebuilt string
+// finds the node (06 §8.4). lua5.1 lets the string die and marks the node's key dead, after which
+// next only matches that key by object identity, so there the same call fails once a collection
+// has run. The difference is registered in exemptions (corners_test.go).
+const nextFromCollectedStringKey = `
+local t = {}
+for i = 1, 5 do t["dyn" .. i] = i end
+t["dyn" .. 3] = nil
+collectgarbage() collectgarbage()
+return (pcall(next, t, "dyn" .. 3))`
+
+// TestDiff_NextFromCollectedStringKey pins both sides of that difference: wangshu's result with the
+// collector in its normal mode and collecting at every safepoint, and lua5.1's, so that the
+// registration is revisited if either changes.
+func TestDiff_NextFromCollectedStringKey(t *testing.T) {
+	const wantWangshu, wantOracle = "true", "false"
+	for _, stress := range []bool{false, true} {
+		if got := runClearCase(t, nextFromCollectedStringKey, stress); got != wantWangshu {
+			t.Errorf("wangshu (collecting at every safepoint: %v):\n  got:  %q\n  want: %q", stress, got, wantWangshu)
+		}
+	}
+	if oracle := findOracle(); oracle != "" {
+		got := strings.TrimSuffix(runOracle(t, oracle, wrapForOracle(nextFromCollectedStringKey)), "\n")
+		if got != wantOracle {
+			t.Errorf("lua5.1 no longer differs as recorded:\n  got:      %q\n  recorded: %q", got, wantOracle)
+		}
 	}
 }

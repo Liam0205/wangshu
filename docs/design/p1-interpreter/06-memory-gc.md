@@ -656,6 +656,11 @@ type Collector struct {
    换成占位值而不是清成空闲节点，是因为空闲节点可以分给任何新键：那样一来新键落在哪个节点（也就是遍历顺序）会取决于回收发生的时机。
    字符串键照常标记，原因是内容相同的字符串在原对象被回收之后还能重新创建，它应该找回原来的节点，而不是因为中间发生过一次回收就被当成
    新键插到别处；代价是每个已删除的节点让一个字符串多存活到下一次 rehash。
+   这一点与官方不同，是有意保留的差异：官方的 `removeentry` 不让已删除节点里的字符串键存活，回收之后 `next` 只按对象地址认这个键，
+   所以 `t[k] = nil`、回收、再用重新拼出来的同内容字符串调用 `next(t, k)`，官方报 `invalid key to 'next'`，望舒从原位置继续；
+   没有发生回收时两边相同。官方的结果取决于回收有没有在中间发生，与「普通回收和每个安全点都回收两种方式下结果相同」的测试要求不能
+   同时满足。登记在 `test/difftest/corners_test.go` 的 `exemptions` 和 README 的差异表里，`TestDiff_NextFromCollectedStringKey` 固定两边
+   各自的结果。
    遍历过程中继续使用某个键的调用方（`next` 的调用者、`table.foreach`、公开 API 的 `Table.ForEach`）自己保证这个键可达。
 4. **可观察性**:cleartable 移除 entry 影响后续 `pairs`/`next` 产出,与 `pairs` 序、`tostring` 地址同类,纳入 §11 / [12](./12-testing-difftest.md) 的差分口径。
 
