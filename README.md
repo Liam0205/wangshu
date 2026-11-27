@@ -183,7 +183,7 @@ for i := 0; i < 1000; i++ {
 | 防挂起 | 模式匹配的灾难性回溯（如 `.*.+%A*x`） | 回溯超过 `1<<20` 步时报 `pattern too complex`，官方会一直算下去 |
 | C 未定义行为 | `string.char` 收到超出 int 范围的数（含 NaN、±inf）；`collectgarbage("setpause", n)` / `collectgarbage("setstepmul", n)` 的 `n` 大于 64 位整数的上限（含 +inf） | 官方行为由 C 未定义行为决定，x86-64 与 arm64 结果不同；望舒固定采用 x86-64 的结果 |
 | 回收时机 | 已经用 `t[k] = nil` 删掉的字符串键 | 望舒让这样的键存活到所在的表下一次 rehash，所以 `next(t, k)` 总是从它原来的位置继续，结果不随回收时机变化；官方会回收它，之后 `next(t, 同内容的新字符串)` 是否报 `invalid key to 'next'` 取决于新字符串的分配地址。代价是内存：原地清空之后闲置的表不释放它放过的字符串键（[#352](https://github.com/Liam0205/wangshu/issues/352)） |
-| 表的布局 | 删除一个键、插入别的键之后，再对已删除的键调用 `next` | 这个键的节点是否还在取决于哈希部分的布局，望舒的布局与官方不同（[#349](https://github.com/Liam0205/wangshu/issues/349)），两边可能一个报错、一个继续；手册规定遍历过程中给不存在的字段赋值之后行为未定义 |
+| 表的布局 | 删除一个键之后又有键写入（包括发生过回收之后把同一个键写回去），再对已删除的键调用 `next` | 这个键的节点是否还在，两边可能不同，一个报错、一个继续。原因一是哈希部分的布局与官方不同（[#349](https://github.com/Liam0205/wangshu/issues/349)）；二是官方每次回收都把已删除的键标成 dead key，之后同一个键写回去按新键插入，望舒总是写回原来的节点。手册规定遍历过程中给不存在的字段赋值之后行为未定义 |
 | 时区 | `os.time{isdst=...}` 贴着夏令时切换点的少数输入 | 所有平台都按 glibc 的规则解释，所以各平台结果一致；在 macOS / BSD 上可能与本机编译的官方 Lua 不同 |
 
 按类别的说明在 `test/difftest/corners_test.go` 的 `exemptions`，可以用 `go test -v -run TestExemptions_Documented ./test/difftest/` 列出；逐个名字的清单是同一个文件里的 `stdlibAbsent`，`TestDiff_StdlibNames` 用它对着官方 `lua5.1` 检查。各函数的细节见 [10-stdlib](docs/design/p1-interpreter/10-stdlib.md)。

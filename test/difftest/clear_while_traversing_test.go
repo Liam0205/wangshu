@@ -222,14 +222,22 @@ func TestDiff_NextFromCollectedStringKey(t *testing.T) {
 	}
 }
 
-// nextAfterInsertingOtherKeys are calls of next on a removed key after other keys have been
-// inserted. Whether the removed key's node is still there is decided by the layout of the hash
-// part: a new key whose main position is that node takes it over, and an insertion that finds no
-// free node rehashes. wangshu's hash part is not laid out like lua5.1's (#349), so the two disagree
-// on some of these in either direction. The manual leaves the behaviour undefined once a traversal
-// has assigned to a field that did not exist; the cases are here so that a change in wangshu's
-// answers is noticed. want is wangshu's result, oracle is lua5.1's.
-var nextAfterInsertingOtherKeys = []struct{ name, src, want, oracle string }{
+// nextOnRemovedKeyAfterStores are calls of next on a removed key after further stores to the table.
+// Whether the removed key's node is still there differs from lua5.1 for two reasons, and in either
+// direction:
+//
+//   - the layout of the hash part: a new key whose main position is that node takes it over, and an
+//     insertion that finds no free node rehashes, which drops every removed key. wangshu's hash
+//     part is not laid out like lua5.1's (#349);
+//   - collections: lua5.1 turns the key of every removed node into a dead key at each collection,
+//     whether or not the key's object is alive. next still finds such a node, a store does not, so
+//     the same key stored again is inserted as a new key and can cause a rehash. wangshu puts a
+//     removed key back into its node however many collections ran in between (06 §8.4).
+//
+// The manual leaves the behaviour undefined once a traversal has assigned to a field that did not
+// exist; the cases are here so that a change in wangshu's answers is noticed. want is wangshu's
+// result, oracle is lua5.1's.
+var nextOnRemovedKeyAfterStores = []struct{ name, src, want, oracle string }{
 	// lua5.1's hash part has one node here and 1.5 takes it over; wangshu's has two.
 	{"one_key_removed_then_one_inserted", `
 local t = {} t.x1 = 1 t.x1 = nil t[1.5] = 1
@@ -242,14 +250,24 @@ local w = {} w.x1 = 1
 local n = 0
 return pcall(function() for k in pairs(w) do w[k] = nil w[1.5] = 1 n = n + 1 end return n end)`,
 		"true\t1", "false\tinvalid key to 'next'"},
+	// The keys stay alive in K. After the collection lua5.1 inserts the five of them as new keys,
+	// finds no free node and rehashes, which drops the three that were not stored again.
+	{"same_keys_stored_again_after_a_collection", `
+local K = {} for i = 1, 8 do K[i] = "key" .. i end
+local t = {}
+for i = 1, 8 do t[K[i]] = i end
+for i = 1, 8 do t[K[i]] = nil end
+collectgarbage()
+for i = 1, 5 do t[K[i]] = i end
+return (pcall(next, t, K[6]))`, "true", "false"},
 }
 
-// TestDiff_NextAfterInsertingOtherKeys pins both sides of nextAfterInsertingOtherKeys. Unlike the
-// collected-string case, lua5.1's results here follow from its table layout alone, so they are
-// asserted: when #349 is settled these cases move into clearWhileTraversingCases.
-func TestDiff_NextAfterInsertingOtherKeys(t *testing.T) {
+// TestDiff_NextOnRemovedKeyAfterStores pins both sides of nextOnRemovedKeyAfterStores. Unlike the
+// collected-string case, lua5.1's results here follow from its table layout and from which objects
+// are alive, not from where the allocator puts them, so they are asserted.
+func TestDiff_NextOnRemovedKeyAfterStores(t *testing.T) {
 	oracle := findOracle()
-	for _, c := range nextAfterInsertingOtherKeys {
+	for _, c := range nextOnRemovedKeyAfterStores {
 		t.Run(c.name, func(t *testing.T) {
 			for _, stress := range []bool{false, true} {
 				if got := runClearCase(t, c.src, stress); got != c.want {
