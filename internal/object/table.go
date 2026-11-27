@@ -39,8 +39,8 @@ const (
 )
 
 // DeadKey is the key the collector leaves in a DEAD node whose key object it is
-// about to free (the role of 5.1's LUA_TDEADKEY). The node stays DEAD -- which
-// nodes a later insertion may use must not depend on when the collector ran --
+// about to free (the role of 5.1's LUA_TDEADKEY). The node stays DEAD -- a
+// collection must not turn it into a node that any later insertion may use --
 // but refers to no object. The value is the canonical NaN: never a table key
 // ("table index is NaN"), not collectable, and unequal to every key under
 // crescent's keyEqual, itself included, so no lookup matches it.
