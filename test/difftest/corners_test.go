@@ -63,6 +63,10 @@ return math.sinh(0), math.cosh(0), math.tanh(0)`},
 	{"corner_gc_setstepmul_previous", `return collectgarbage("setstepmul", 200), collectgarbage("setstepmul", 300), collectgarbage("setstepmul", 200)`},
 	{"corner_gc_set_without_value", `return collectgarbage("setpause"), collectgarbage("setpause", 200), collectgarbage("setstepmul"), collectgarbage("setstepmul", nil), collectgarbage("setstepmul", 200)`},
 	{"corner_gc_set_conversions", `return collectgarbage("setpause", 150.7), collectgarbage("setpause", "120"), collectgarbage("setpause", -5), collectgarbage("setpause", 2^31), collectgarbage("setpause", 2^31 - 1), collectgarbage("setpause", -2^31), collectgarbage("setpause", 200)`},
+	// The second argument narrows in two steps, double -> lua_Integer (64 bits) -> int: a value
+	// beyond int32 keeps its low 32 bits. A direct conversion to int32 gives the same answers as
+	// this for 2^31 on amd64 and different ones here.
+	{"corner_gc_set_conversions_beyond_int32", `return collectgarbage("setpause", 2^32 + 5), collectgarbage("setpause", 4294967296 * 3 + 7), collectgarbage("setpause", -2147483649), collectgarbage("setpause", 2^53), collectgarbage("setstepmul", 2^31 + 2^32), collectgarbage("setstepmul", 200), collectgarbage("setpause", 200)`},
 	{"corner_gc_set_bad_value", `return select(2, pcall(collectgarbage, "setpause", "x")), select(2, pcall(collectgarbage, "setstepmul", {}))`},
 	// The option is checked before the second argument.
 	{"corner_gc_bad_option_and_bad_value", `return select(2, pcall(collectgarbage, "bogus", "x")), select(2, pcall(collectgarbage, "bogus")), select(2, pcall(collectgarbage, "count", "x")), select(2, pcall(collectgarbage, 0, "x")), select(2, pcall(collectgarbage, {}, "x")), select(2, pcall(collectgarbage, nil, "x"))`},
@@ -230,8 +234,9 @@ end`
 
 // gcPauseMeaning is where the pause ratio means something else than in lua5.1: wangshu compares
 // live * pause / 100 with the bytes allocated since the last collection, lua5.1 compares it with the
-// total. A ratio p here therefore behaves roughly like p + 100 there: at 100 lua5.1 collects after
-// a tenth of the live data has been allocated again and wangshu after as much as the live data; at
+// total. A ratio p here therefore behaves roughly like p + 100 there: at 100 lua5.1 starts the
+// next collection as soon as one has finished (it has collected well within the 5000 tables the
+// probe allocates) and wangshu collects after as much as the live data has been allocated again; at
 // 200 lua5.1 collects once the total has doubled and wangshu once it has tripled. Registered in
 // exemptions; whether to change it is issue #353.
 const gcPauseMeaning = gcPauseProbe + `
