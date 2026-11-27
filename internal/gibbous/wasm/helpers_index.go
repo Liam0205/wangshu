@@ -66,6 +66,8 @@ const (
 	payloadMaskU64 uint64 = 0x0000_FFFF_FFFF_FFFF
 
 	// Table object field byte offsets (object/table.go layout: word_n offset=8*n).
+	tblAsizeOff = 8  // word1 low 32 bits: asize
+	tblHmaskOff = 12 // word1 high 32 bits: hmask
 	tblArrayOff = 16 // word2: arrayRef
 	tblNodeOff  = 24 // word3: nodeRef
 	tblGenOff   = 40 // word5: lastfree | gen (gen in the high 32 bits)

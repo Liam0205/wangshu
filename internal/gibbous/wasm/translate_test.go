@@ -30,6 +30,7 @@ type mockHost struct {
 	fastCallHitsAddr   uint32
 	getGlobalCalls     int
 	getGlobalFn        func(base, pc, a, bx int32) int32
+	tableHelperCalls   int // GetTable + SetTable + Self
 }
 
 type retCall struct{ base, pc, a, b int32 }
@@ -56,8 +57,8 @@ func (m *mockHost) Compare(base, pc, op, b, c int32) int32  { return 0 }
 func (m *mockHost) Eq(base, pc, b, c int32) int32           { return 0 }
 func (m *mockHost) ForPrep(base, pc, a int32) int32         { return 0 }
 
-func (m *mockHost) GetTable(base, pc, a, b, c int32) int32 { return 0 }
-func (m *mockHost) SetTable(base, pc, a, b, c int32) int32 { return 0 }
+func (m *mockHost) GetTable(base, pc, a, b, c int32) int32 { m.tableHelperCalls++; return 0 }
+func (m *mockHost) SetTable(base, pc, a, b, c int32) int32 { m.tableHelperCalls++; return 0 }
 func (m *mockHost) DoGetGlobal(base, pc, a, bx int32) int32 {
 	m.getGlobalCalls++
 	if m.getGlobalFn != nil {
@@ -66,7 +67,7 @@ func (m *mockHost) DoGetGlobal(base, pc, a, bx int32) int32 {
 	return 0
 }
 func (m *mockHost) DoSetGlobal(base, pc, a, bx int32) int32 { return 0 }
-func (m *mockHost) Self(base, pc, a, b, c int32) int32      { return 0 }
+func (m *mockHost) Self(base, pc, a, b, c int32) int32      { m.tableHelperCalls++; return 0 }
 func (m *mockHost) NewTable(base, pc, a, b, c int32) int32  { return 0 }
 func (m *mockHost) SetList(base, pc, a, b, c int32) int32   { return 0 }
 func (m *mockHost) DoCall(base, pc, a, b, c int32) int64    { return int64(base) }
@@ -644,7 +645,7 @@ func TestPW5_SelfInlineHit(t *testing.T) {
 	mem.WriteUint64Le(tblOff+16, 0)                     // arrayRef
 	mem.WriteUint64Le(tblOff+24, uint64(nodeOff))       // nodeRef
 	mem.WriteUint64Le(tblOff+40, uint64(gen)<<32)       // gen
-	mem.WriteUint64Le(nodeOff+0, 0xFFFB_0000_0000_0009) // key (string-ish)
+	mem.WriteUint64Le(nodeOff+0, 0xFFFB_0000_0000_0009) // key (string-ish; K0 below)
 	mem.WriteUint64Le(nodeOff+8, methodVal)             // val (method)
 	mem.WriteUint64Le(nodeOff+16, 0xFFFFFFFF)           // next=-1
 
@@ -658,7 +659,7 @@ func TestPW5_SelfInlineHit(t *testing.T) {
 			bytecode.EncodeABC(bytecode.SELF, 0, 2, bytecode.MaxK), // C=MaxK = K0 (constant key)
 			bytecode.EncodeABC(bytecode.RETURN, 0, 3, 0),
 		},
-		Consts: []value.Value{value.Nil}, // K0 placeholder
+		Consts: []value.Value{value.Value(0xFFFB_0000_0000_0009)}, // K0 = the node's key
 		IC:     make([]bytecode.ICSlot, 2),
 	}
 	proto.IC[0] = bytecode.ICSlot{Kind: bytecode.ICKindNodeHit, Shape: gen, Index: 0, TableRef: uint32(tblOff)}

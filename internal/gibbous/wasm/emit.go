@@ -223,6 +223,10 @@ func (e *emitter) i64Shl()        { e.raw(opI64Shl) }
 func (e *emitter) i64ExtendUI32() { e.raw(opI64ExtendUI32) }
 func (e *emitter) i32GtS()        { e.raw(opI32GtS) }
 
+// Unsigned i32 comparisons (table sizes against a frozen slot index).
+func (e *emitter) i32LtU() { e.raw(0x49) }
+func (e *emitter) i32LeU() { e.raw(0x4d) }
+
 // PW10 zero-crossing ④: i64 arithmetic (segment-frame-word packing + offset add) / logical or (flag-bit merge).
 func (e *emitter) i64Add() { e.raw(0x7c) }
 func (e *emitter) i64Or()  { e.raw(0x84) }
