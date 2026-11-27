@@ -401,6 +401,10 @@ func EmitGetTableNodeHit(buf []byte, aReg, bReg uint8,
 //     carry the same gen.
 //   - the value to store is nil: host.SetTable does the store.
 //
+// The template does not check that stableIndex lies inside this table's
+// array part: on a table with the same gen and a smaller one it reads and
+// writes past it (#350), and none of the checks above then mean anything.
+//
 // **deopt path**: when the Run side sees raxSpec==deoptCode it calls
 // host.SetTable (byte-equal to the P1 interpreter, via IC + hash + __newindex
 // metamethod chain). The setter shape returns RETURN A 1 (no return value), and
@@ -663,6 +667,10 @@ func EmitSelfArrayHit(buf []byte, aReg, bReg uint8,
 //     same gen with this key deleted in the same node.
 //   - the value to store is nil: a deletion goes through rawSet, which is
 //     where the table's gen advances.
+//
+// The template does not check that stableIndex lies inside this table's
+// hash part: on a table with the same gen and a smaller one it reads and
+// writes past it (#350), and none of the checks above then mean anything.
 //
 // **deopt path**: when the Run side sees raxSpec==deoptCode it calls
 // host.SetTable byte-equal to P1 (via icSetTable + __newindex metamethod chain;

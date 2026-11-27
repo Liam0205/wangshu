@@ -350,7 +350,9 @@ const EncodedGetTableNodeHitArm64Len = 196
 // **What the inline path stores**: a non-nil value over a non-nil value, and
 // nothing else (same as amd64 EmitSetTableArrayHit). A slot that holds nil is
 // an absent field, whose store has to consult __newindex; a nil value is
-// stored by host.SetTable. Both take the deopt path.
+// stored by host.SetTable. Both take the deopt path. Like the amd64 template
+// it does not check that stableIndex lies inside this table's array part
+// (#350).
 //
 // **Preconditions** (per 06 §4.2; the arm64 trampoline is deferred to PJ8+):
 //   - x26 = valueStackBase / x27 = jitContext / x14 = arena base
@@ -467,7 +469,9 @@ const EncodedSetTableArrayHitArm64Len = 180
 // **What the inline path stores**: a non-nil value over a non-nil value, and
 // nothing else (same as amd64 EmitSetTableNodeHit). A node that holds no value
 // is a deleted key, whose store has to consult __newindex; a nil value is a
-// deletion, which goes through rawSet. Both take the deopt path.
+// deletion, which goes through rawSet. Both take the deopt path. Like the
+// amd64 template it does not check that stableIndex lies inside this table's
+// hash part (#350).
 //
 // **deopt path**: when the Run side sees x0==deoptCode it calls host.SetTable
 // byte-equal to P1 (P1 icSetTable handles NodeHit; via IC + hash + __newindex
