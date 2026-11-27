@@ -152,17 +152,18 @@ func archEmitForLoopWithBody2(buf []byte, kS, kInit, kLimit, kStep, kBody1, kBod
 }
 
 // archEmitGetTableArrayHit splices the PJ4 IC ArrayHit byte-level direct-slot
-// template (132 bytes: IsTable guard + arena base load + gen check + array
-// direct hit + nil check + write R(A) + deopt block). On amd64 it delegates to
-// jitamd64.EmitGetTableArrayHit.
+// template (151 bytes: IsTable guard + arena base load + gen check + index
+// guard + array direct hit + nil check + write R(A) + deopt block). On amd64
+// it delegates to jitamd64.EmitGetTableArrayHit.
 func archEmitGetTableArrayHit(buf []byte, aReg, bReg uint8, stableShape, stableIndex uint32, arenaBaseOff int32, deoptCode uint64) []byte {
 	return jitamd64.EmitGetTableArrayHit(buf, aReg, bReg, stableShape, stableIndex, arenaBaseOff, deoptCode)
 }
 
 // archEmitGetTableNodeHit splices the PJ4 IC NodeHit byte-level direct-slot
-// template (159 bytes: strict IsTable guard + arena base + gen check + nodeRef +
-// node[stableIndex] + key compare + NodeVal load + nil check + write R(A) +
-// deopt block). On amd64 it delegates to jitamd64.EmitGetTableNodeHit.
+// template (191 bytes: strict IsTable guard + arena base + gen check + index
+// guard + nodeRef, which must not be 0 + node[stableIndex] + key compare +
+// NodeVal load + nil check + write R(A) + deopt block). On amd64 it delegates
+// to jitamd64.EmitGetTableNodeHit.
 //
 // Key differences from ArrayHit:
 //   - reads word3=nodeRef (offset 24) instead of word2=arrayRef (offset 16)
@@ -177,10 +178,11 @@ func archEmitGetTableNodeHit(buf []byte, aReg, bReg uint8,
 }
 
 // archEmitSetTableArrayHit splices the PJ4 SETTABLE IC ArrayHit byte-level
-// reverse-write template (159 bytes: strict IsTable guard + arena base +
-// gen check + arrayRef + the slot's current value is not nil + load R(C)
-// value → rdx, not nil + reverse store [r14+rcx+stableIndex*8] from rdx + ret
-// + deopt block). On amd64 it delegates to jitamd64.EmitSetTableArrayHit.
+// reverse-write template (178 bytes: strict IsTable guard + arena base +
+// gen check + index guard + arrayRef + the slot's current value is not nil +
+// load R(C) value → rdx, not nil + reverse store [r14+rcx+stableIndex*8] from
+// rdx + ret + deopt block). On amd64 it delegates to
+// jitamd64.EmitSetTableArrayHit.
 //
 // **setter form**: retB=1 (SETTABLE has 0 return values), the Run side does not
 // write R(A).
@@ -191,7 +193,7 @@ func archEmitSetTableArrayHit(buf []byte, aReg, cReg uint8,
 }
 
 // archEmitSelfArrayHit splices the PJ4 SELF IC ArrayHit byte-level inline
-// template (139 bytes: GETTABLE ArrayHit 132 + a 7-byte R(A+1) copy segment).
+// template (158 bytes: GETTABLE ArrayHit 151 + a 7-byte R(A+1) copy segment).
 // On amd64 it delegates to jitamd64.EmitSelfArrayHit.
 //
 // **SELF form**: R(A+1) := R(B); R(A) := R(B)[K]. The template first stores
@@ -204,7 +206,7 @@ func archEmitSelfArrayHit(buf []byte, aReg, bReg uint8,
 }
 
 // archEmitSetTableNodeHit splices the PJ4 SETTABLE IC NodeHit byte-level
-// reverse-write template (186 bytes). On amd64 it delegates to
+// reverse-write template (218 bytes). On amd64 it delegates to
 // jitamd64.EmitSetTableNodeHit.
 //
 // **setter NodeHit form**: hash-segment NodeKey compare + NodeVal is not nil +
@@ -217,8 +219,8 @@ func archEmitSetTableNodeHit(buf []byte, aReg, cReg uint8,
 }
 
 // archEmitSelfNodeHit splices the PJ4 SELF IC NodeHit byte-level inline
-// template (166 bytes: SELF ArrayHit 139 + a 27-byte key compare). On amd64 it
-// delegates to jitamd64.EmitSelfNodeHit.
+// template (198 bytes: SELF ArrayHit 158 + 40 as in GETTABLE NodeHit). On
+// amd64 it delegates to jitamd64.EmitSelfNodeHit.
 //
 // **SELF NodeHit form**: R(A+1) := R(B); R(A) := R(B)[K_string]
 // (via a hash-segment NodeKey compare + NodeVal load). This is the typical IC

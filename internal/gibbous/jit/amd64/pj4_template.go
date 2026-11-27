@@ -8,7 +8,7 @@
 // When the IC slot kind=ArrayHit + stableShape/stableIndex hits, byte-level
 // inline reads the array segment directly, skipping the hash lookup.
 //
-// **Byte-level flow** (amd64, ~125 bytes, strict IsTable guard version):
+// **Byte-level flow** (amd64, 151 bytes, strict IsTable guard version):
 //
 //	1. load R(B) into rax (candidate table NaN-box)
 //	2. **strict IsTable guard**: shr rax,48 + cmp eax,0xFFFC + jne deopt
@@ -17,12 +17,22 @@
 //	4. load arena base into r14 (from jitContext via EmitMovqR14FromR15Disp)
 //	5. mov rcx, rax (rcx = GCRef byte offset)
 //	6. load table.word5 = [r14+rcx+40] into rax → shr 32 → compare to stableShape
-//	7. load table.arrayRef = [r14+rcx+16] into rax
-//	8. load array[stableIndex] = [r14+rcx+stableIndex*8] into rax
-//	9. nil check: cmp rax, qNanBoxNil → je deopt
-//	10. store R(A) = rax
-//	11. ret
-//	12. [deopt:] mov rax, deoptCode; ret
+//	7. load table.word1 = [r14+rcx+8] into rax → compare asize (eax) to
+//	   stableIndex → jbe deopt
+//	8. load table.arrayRef = [r14+rcx+16] into rax
+//	9. load array[stableIndex] = [r14+rcx+stableIndex*8] into rax
+//	10. nil check: cmp rax, qNanBoxNil → je deopt
+//	11. store R(A) = rax
+//	12. ret
+//	13. [deopt:] mov rax, deoptCode; ret
+//
+// **What the guards establish**: the gen check says the table has not been
+// restructured since some table with this gen was observed; it does not say
+// the table is the one the interpreter saw, since tables built the same way
+// carry the same gen. Every template therefore also checks that the frozen
+// index lies inside the part of this table it addresses (step 7 here; hmask
+// and a non-zero nodeRef in the node forms), and the node forms compare the
+// key found there.
 //
 // **Preconditions**:
 //   - rbx = valueStackBase (set up by callJITSpec)
@@ -61,6 +71,58 @@ const qNanBoxNilImm uint64 = 0xFFF8_0000_0000_0000
 // (0xFFFC), the immediate for the strict IsTable guard byte-level `cmp eax, 0xFFFC`.
 const qNanBoxTableTagHigh16 int32 = 0xFFFC
 
+// emitArrayIndexGuard emits the guard that keeps a frozen array index inside
+// the array part of the table that reached the template. Tables built the
+// same way carry the same gen, so the gen check alone lets a table with a
+// smaller array part through, and array[stableIndex] would then be a word of
+// whatever the arena holds after it. Expects r14 = arena base and rcx = the
+// table's GCRef offset; clobbers rax.
+//
+//	mov rax, [r14+rcx+8]   ; 8 (table.word1, asize in the low 32 bits)
+//	cmp eax, stableIndex   ; 5
+//	jbe deopt              ; 6 (asize <= stableIndex)
+//
+// Returns buf and the offset of the rel32 the caller patches to its deopt
+// block (19 bytes emitted).
+func emitArrayIndexGuard(buf []byte, stableIndex uint32) ([]byte, int) {
+	buf = EmitMovqRaxFromR14PlusRcxDisp(buf, 8)
+	buf = EmitCmpEaxImm32(buf, int32(stableIndex))
+	buf = EmitJbeRel32(buf, 0)
+	return buf, len(buf) - 4
+}
+
+// emitNodeIndexGuard is emitArrayIndexGuard for the hash part: the frozen
+// node index has to be at most hmask. Same register expectations.
+//
+//	mov rax, [r14+rcx+8]   ; 8 (table.word1, hmask in the high 32 bits)
+//	shr rax, 32            ; 4
+//	cmp eax, stableIndex   ; 5
+//	jb deopt               ; 6 (hmask < stableIndex)
+//
+// Returns buf and the offset of the rel32 to patch (23 bytes emitted).
+func emitNodeIndexGuard(buf []byte, stableIndex uint32) ([]byte, int) {
+	buf = EmitMovqRaxFromR14PlusRcxDisp(buf, 8)
+	buf = append(buf, 0x48, 0xC1, 0xE8, 32) // shr rax, 32
+	buf = EmitCmpEaxImm32(buf, int32(stableIndex))
+	buf = EmitJbRel32(buf, 0)
+	return buf, len(buf) - 4
+}
+
+// emitNodeRefGuard sends a table without a hash part to the deopt block.
+// hmask is 0 both for a one-node hash part and for none at all, so node
+// index 0 passes emitNodeIndexGuard on a table whose nodeRef is 0, and
+// node[0] would then be the first words of the arena. Expects rax = nodeRef.
+//
+//	test rax, rax          ; 3
+//	je deopt               ; 6
+//
+// Returns buf and the offset of the rel32 to patch (9 bytes emitted).
+func emitNodeRefGuard(buf []byte) ([]byte, int) {
+	buf = append(buf, 0x48, 0x85, 0xC0) // test rax, rax
+	buf = EmitJeRel32(buf, 0)
+	return buf, len(buf) - 4
+}
+
 // EmitGetTableArrayHit assembles the byte-level sequence of the IC ArrayHit
 // direct-hit slot template.
 //
@@ -74,7 +136,7 @@ const qNanBoxTableTagHigh16 int32 = 0xFFFC
 //
 // Returns the appended buf.
 //
-// **Byte layout** (strict IsTable guard version, ~125 bytes):
+// **Byte layout** (strict IsTable guard version, 151 bytes):
 //
 //	[ 0] mov rax, [rbx + bReg*8]                     ; 7 (load R(B))
 //	[ 7] shr rax, 48                                 ; 4 (extract top 16-bit tag)
@@ -90,18 +152,21 @@ const qNanBoxTableTagHigh16 int32 = 0xFFFC
 //	[60] shr rax, 32                                 ; 4 (gen is in the top 32 bits)
 //	[64] cmp eax, stableShape                        ; 5 (gen compare)
 //	[69] jne deopt                                   ; 6
-//	[75] mov rax, [r14+rcx+16]                       ; 8 (table.arrayRef → rax)
-//	[83] mov rcx, rax                                ; 3 (rcx = arrayRef offset)
-//	[86] mov rax, [r14+rcx+stableIndex*8]            ; 8 (array[stableIndex])
-//	[94] mov rcx, qNanBoxNilImm                      ; 10 (Nil bits)
-//	[104] cmp rax, rcx                               ; 3
-//	[107] je deopt                                   ; 6
-//	[113] mov [rbx + aReg*8], rax                    ; 7 (store R(A))
-//	[120] ret                                        ; 1
-//	[121] ; deopt block
-//	[121] mov rax, deoptCode imm64                   ; 10
-//	[131] ret                                        ; 1
-//	——— total 132 bytes (original simplified version 129 bytes; strict version +3 bytes for the re-load of R(B)) ———
+//	[75] mov rax, [r14+rcx+8]                        ; 8 (table.word1, asize in the low 32 bits)
+//	[83] cmp eax, stableIndex                        ; 5
+//	[88] jbe deopt                                   ; 6 (asize <= stableIndex)
+//	[94] mov rax, [r14+rcx+16]                       ; 8 (table.arrayRef → rax)
+//	[102] mov rcx, rax                               ; 3 (rcx = arrayRef offset)
+//	[105] mov rax, [r14+rcx+stableIndex*8]           ; 8 (array[stableIndex])
+//	[113] mov rcx, qNanBoxNilImm                     ; 10 (Nil bits)
+//	[123] cmp rax, rcx                               ; 3
+//	[126] je deopt                                   ; 6
+//	[132] mov [rbx + aReg*8], rax                    ; 7 (store R(A))
+//	[139] ret                                        ; 1
+//	[140] ; deopt block
+//	[140] mov rax, deoptCode imm64                   ; 10
+//	[150] ret                                        ; 1
+//	——— total 151 bytes ———
 //
 // **strict IsTable guard**: `shr rax,48 + cmp eax,0xFFFC + jne deopt`
 // (15 bytes) precisely checks the top 16 bits = TagTable (0xFFFC). string
@@ -156,6 +221,9 @@ func EmitGetTableArrayHit(buf []byte, aReg, bReg uint8, stableShape, stableIndex
 	buf = EmitJneRel32(buf, 0)
 	jneShapeOff := len(buf) - 4
 
+	// the frozen index has to lie inside this table's array part → else deopt
+	var jbeBoundOff int
+	buf, jbeBoundOff = emitArrayIndexGuard(buf, stableIndex)
 	// 11. load table.arrayRef = [r14+rcx+16] → rax
 	buf = EmitMovqRaxFromR14PlusRcxDisp(buf, 16)
 
@@ -185,6 +253,7 @@ func EmitGetTableArrayHit(buf []byte, aReg, bReg uint8, stableShape, stableIndex
 	// 18. patch all forward jcc to deopt start
 	PatchRel32(buf, jneTagOff, int32(deoptStart)-int32(jneTagOff+4))
 	PatchRel32(buf, jneShapeOff, int32(deoptStart)-int32(jneShapeOff+4))
+	PatchRel32(buf, jbeBoundOff, int32(deoptStart)-int32(jbeBoundOff+4))
 	PatchRel32(buf, jeNilOff, int32(deoptStart)-int32(jeNilOff+4))
 
 	return buf
@@ -210,7 +279,7 @@ func EmitGetTableArrayHit(buf []byte, aReg, bReg uint8, stableShape, stableIndex
 //
 // Returns the appended buf.
 //
-// **Byte layout** (strict IsTable guard + key comparison version, ~159 bytes):
+// **Byte layout** (strict IsTable guard + key comparison version, 191 bytes):
 //
 //	[ 0-6 ] mov rax, [rbx + bReg*8]                ; 7 (load R(B))
 //	[ 7-10] shr rax, 48                            ; 4
@@ -225,29 +294,38 @@ func EmitGetTableArrayHit(buf []byte, aReg, bReg uint8, stableShape, stableIndex
 //	[60-63] shr rax, 32                            ; 4 (gen is in the top 32 bits)
 //	[64-68] cmp eax, stableShape                   ; 5
 //	[69-74] jne deopt                              ; 6
-//	[75-82] mov rax, [r14+rcx+24]                  ; 8 (table.nodeRef → rax,
+//	[75-82] mov rax, [r14+rcx+8]                   ; 8 (table.word1, hmask in the high 32 bits)
+//	[83-86] shr rax, 32                            ; 4
+//	[87-91] cmp eax, stableIndex                   ; 5
+//	[92-97] jb deopt                               ; 6 (hmask < stableIndex)
+//	[98-105] mov rax, [r14+rcx+24]                 ; 8 (table.nodeRef → rax,
 //	                                                    word3=24=3*8)
-//	[83-85] mov rcx, rax                           ; 3 (rcx = nodeRef offset)
-//	[86-93] mov rax, [r14+rcx+stableIndex*24]      ; 8 (NodeKey load)
-//	[94-103] mov rdx, stableKey                    ; 10
-//	[104-106] cmp rax, rdx                         ; 3
-//	[107-112] jne deopt                            ; 6 (NodeKey != stableKey)
-//	[113-120] mov rax, [r14+rcx+stableIndex*24+8]  ; 8 (NodeVal load)
-//	[121-130] mov rcx, qNanBoxNilImm               ; 10
-//	[131-133] cmp rax, rcx                         ; 3
-//	[134-139] je deopt                             ; 6 (NodeVal == Nil)
-//	[140-146] mov [rbx + aReg*8], rax              ; 7 (store R(A))
-//	[147] ret                                      ; 1
-//	[148-157] mov rax, deoptCode imm64             ; 10 (deopt block)
-//	[158] ret                                      ; 1
-//	——— total ~159 bytes (ArrayHit 132 bytes + key comparison 27 bytes) ———
+//	[106-108] test rax, rax                        ; 3
+//	[109-114] je deopt                             ; 6 (no hash part)
+//	[115-117] mov rcx, rax                         ; 3 (rcx = nodeRef offset)
+//	[118-125] mov rax, [r14+rcx+stableIndex*24]    ; 8 (NodeKey load)
+//	[126-135] mov rdx, stableKey                   ; 10
+//	[136-138] cmp rax, rdx                         ; 3
+//	[139-144] jne deopt                            ; 6 (NodeKey != stableKey)
+//	[145-152] mov rax, [r14+rcx+stableIndex*24+8]  ; 8 (NodeVal load)
+//	[153-162] mov rcx, qNanBoxNilImm               ; 10
+//	[163-165] cmp rax, rcx                         ; 3
+//	[166-171] je deopt                             ; 6 (NodeVal == Nil)
+//	[172-178] mov [rbx + aReg*8], rax              ; 7 (store R(A))
+//	[179] ret                                      ; 1
+//	[180-189] mov rax, deoptCode imm64             ; 10 (deopt block)
+//	[190] ret                                      ; 1
+//	——— total 191 bytes ———
 //
 // **NodeHit vs ArrayHit differences**:
 //   - fetches word3=nodeRef (offset 24) instead of word2=arrayRef (offset 16)
 //   - node[idx] stride is 24 bytes (nodeWords=3) instead of array[idx]'s 8 bytes
 //   - one extra key comparison (NodeKey == stableKey, to guard against key
 //     degradation / __index chain)
-//   - template length +27 bytes (key load + mov rdx + cmp + jne, 27 bytes total)
+//   - the index guard compares hmask instead of asize, and a zero nodeRef
+//     goes to the deopt block
+//   - template length +40 bytes (key load + mov rdx + cmp + jne, 27 bytes;
+//     shr in the index guard, 4 bytes; nodeRef guard, 9 bytes)
 //
 // **stableKey compile-time freeze**:
 //   - number key: value.NumberValue(K) raw bits (IEEE 754 NaN-box)
@@ -303,9 +381,15 @@ func EmitGetTableNodeHit(buf []byte, aReg, bReg uint8,
 	buf = EmitJneRel32(buf, 0)
 	jneShapeOff := len(buf) - 4
 
+	// the frozen index has to lie inside this table's hash part → else deopt
+	var jbBoundOff int
+	buf, jbBoundOff = emitNodeIndexGuard(buf, stableIndex)
 	// 11. **NodeHit branch**: load table.nodeRef = [r14+rcx+24] → rax
 	//     (word3=tableNodeIdx=3, 3*8=24 bytes; ArrayHit uses word2=16, i.e. arrayRef)
 	buf = EmitMovqRaxFromR14PlusRcxDisp(buf, 24)
+	// a table with no hash part has nodeRef 0 → deopt
+	var jeNoNodesOff int
+	buf, jeNoNodesOff = emitNodeRefGuard(buf)
 
 	// 12. mov rcx, rax (rcx = nodeRef offset)
 	buf = EmitMovqRcxFromRax(buf)
@@ -345,6 +429,8 @@ func EmitGetTableNodeHit(buf []byte, aReg, bReg uint8,
 	// 21. patch all forward jcc to deopt start
 	PatchRel32(buf, jneTagOff, int32(deoptStart)-int32(jneTagOff+4))
 	PatchRel32(buf, jneShapeOff, int32(deoptStart)-int32(jneShapeOff+4))
+	PatchRel32(buf, jbBoundOff, int32(deoptStart)-int32(jbBoundOff+4))
+	PatchRel32(buf, jeNoNodesOff, int32(deoptStart)-int32(jeNoNodesOff+4))
 	PatchRel32(buf, jneKeyOff, int32(deoptStart)-int32(jneKeyOff+4))
 	PatchRel32(buf, jeNilOff, int32(deoptStart)-int32(jeNilOff+4))
 
@@ -370,27 +456,28 @@ func EmitGetTableNodeHit(buf []byte, aReg, bReg uint8,
 //
 // Returns the appended buf.
 //
-// **Byte layout** (159 bytes):
+// **Byte layout** (178 bytes):
 //
 //	[0-21]    load R(A) → rax + strict IsTable guard (22 bytes, reused)
 //	[22-28]   re-load R(A) → rax (7 bytes)
 //	[29-44]   GCRef extract + rcx = offset (16 bytes)
 //	[45-51]   load arena base → r14 (7 bytes)
 //	[52-74]   gen check (load word5 + shr + cmp eax + jne, 23 bytes)
-//	[75-82]   load table.arrayRef = [r14+rcx+16] → rax (8 bytes)
-//	[83-85]   mov rcx, rax (rcx = arrayRef offset, 3 bytes)
-//	[86-93]   load array[stableIndex] → rax (8 bytes, the slot's current value)
-//	[94-103]  mov rdx, qNanBoxNilImm (10 bytes)
-//	[104-106] cmp rax, rdx (3 bytes)
-//	[107-112] je deopt (6 bytes, the slot holds nil)
-//	[113-122] mov rax, qNanBoxNilImm (10 bytes)
-//	[123-129] load R(C) → rdx (7 bytes, EmitMovqRdxFromMemRbx)
-//	[130-132] cmp rax, rdx (3 bytes)
-//	[133-138] je deopt (6 bytes, the value to store is nil)
-//	[139-146] mov [r14+rcx+stableIndex*8], rdx (8 bytes, reverse store)
-//	[147]     ret (1 byte)
-//	[148-158] deopt block (mov rax deoptCode + ret, 11 bytes)
-//	——— total 159 bytes ———
+//	[75-93]   index guard (load word1 + cmp eax + jbe, 19 bytes, emitArrayIndexGuard)
+//	[94-101]  load table.arrayRef = [r14+rcx+16] → rax (8 bytes)
+//	[102-104] mov rcx, rax (rcx = arrayRef offset, 3 bytes)
+//	[105-112] load array[stableIndex] → rax (8 bytes, the slot's current value)
+//	[113-122] mov rdx, qNanBoxNilImm (10 bytes)
+//	[123-125] cmp rax, rdx (3 bytes)
+//	[126-131] je deopt (6 bytes, the slot holds nil)
+//	[132-141] mov rax, qNanBoxNilImm (10 bytes)
+//	[142-148] load R(C) → rdx (7 bytes, EmitMovqRdxFromMemRbx)
+//	[149-151] cmp rax, rdx (3 bytes)
+//	[152-157] je deopt (6 bytes, the value to store is nil)
+//	[158-165] mov [r14+rcx+stableIndex*8], rdx (8 bytes, reverse store)
+//	[166]     ret (1 byte)
+//	[167-177] deopt block (mov rax deoptCode + ret, 11 bytes)
+//	——— total 178 bytes ———
 //
 // **What the inline path stores**: a non-nil value over a non-nil value, and
 // nothing else. Both other cases go to the host:
@@ -401,9 +488,8 @@ func EmitGetTableNodeHit(buf []byte, aReg, bReg uint8,
 //     carry the same gen.
 //   - the value to store is nil: host.SetTable does the store.
 //
-// The template does not check that stableIndex lies inside this table's
-// array part: on a table with the same gen and a smaller one it reads and
-// writes past it (#350), and none of the checks above then mean anything.
+// Both checks read the slot at stableIndex, which the index guard has placed
+// inside this table's array part.
 //
 // **deopt path**: when the Run side sees raxSpec==deoptCode it calls
 // host.SetTable (byte-equal to the P1 interpreter, via IC + hash + __newindex
@@ -453,6 +539,9 @@ func EmitSetTableArrayHit(buf []byte, aReg, cReg uint8,
 	buf = EmitJneRel32(buf, 0)
 	jneShapeOff := len(buf) - 4
 
+	// the frozen index has to lie inside this table's array part → else deopt
+	var jbeBoundOff int
+	buf, jbeBoundOff = emitArrayIndexGuard(buf, stableIndex)
 	// 11. load table.arrayRef = [r14+rcx+16] → rax
 	buf = EmitMovqRaxFromR14PlusRcxDisp(buf, 16)
 
@@ -487,6 +576,7 @@ func EmitSetTableArrayHit(buf []byte, aReg, cReg uint8,
 	// 18. patch all forward jcc to deopt start
 	PatchRel32(buf, jneTagOff, int32(deoptStart)-int32(jneTagOff+4))
 	PatchRel32(buf, jneShapeOff, int32(deoptStart)-int32(jneShapeOff+4))
+	PatchRel32(buf, jbeBoundOff, int32(deoptStart)-int32(jbeBoundOff+4))
 	PatchRel32(buf, jeAbsentOff, int32(deoptStart)-int32(jeAbsentOff+4))
 	PatchRel32(buf, jeNilValOff, int32(deoptStart)-int32(jeNilValOff+4))
 
@@ -516,7 +606,7 @@ func EmitSetTableArrayHit(buf []byte, aReg, cReg uint8,
 //   - bReg: R(B) (obj) register number
 //   - stableShape / stableIndex / arenaBaseOff / deoptCode: same as GETTABLE
 //
-// **Byte layout** (139 bytes, ArrayHit 132 bytes + R(A+1) copy segment 7 bytes):
+// **Byte layout** (158 bytes, ArrayHit 151 bytes + R(A+1) copy segment 7 bytes):
 //
 //	[0-6]    load R(B) → rax (7 bytes, obj NaN-box)
 //	[7-13]   **extra**: store R(A+1) = rax (mov [rbx+(A+1)*8], rax)
@@ -525,11 +615,11 @@ func EmitSetTableArrayHit(buf []byte, aReg, cReg uint8,
 //	[18-22]  cmp eax, 0xFFFC (5 bytes)
 //	[23-28]  jne deopt (6 bytes)
 //	         **note**: continues into the ArrayHit template, reusing the strict IsTable guard
-//	... same as ArrayHit getter: GCRef extract / gen check / arrayRef /
-//	    array[stableIndex] / nil check / write R(A) / ret / deopt
+//	... same as ArrayHit getter: GCRef extract / gen check / index guard /
+//	    arrayRef / array[stableIndex] / nil check / write R(A) / ret / deopt
 //
-// Measured exactly 139 bytes (summing primitives one by one:
-// 7+7+4+5+6+7+10+3+3+7+8+4+5+6+8+3+8+10+3+6+7+1+10+1=139). EmitMovqMemRegFromRax
+// Measured exactly 158 bytes (summing primitives one by one:
+// 7+7+4+5+6+7+10+3+3+7+8+4+5+6+8+5+6+8+3+8+10+3+6+7+1+10+1=158). EmitMovqMemRegFromRax
 // uses the generic disp32 encoding (7 bytes), not the disp8 short form (so the
 // template length does not fluctuate with the register number).
 //
@@ -583,6 +673,9 @@ func EmitSelfArrayHit(buf []byte, aReg, bReg uint8,
 	buf = EmitJneRel32(buf, 0)
 	jneShapeOff := len(buf) - 4
 
+	// the frozen index has to lie inside this table's array part → else deopt
+	var jbeBoundOff int
+	buf, jbeBoundOff = emitArrayIndexGuard(buf, stableIndex)
 	// 9. load table.arrayRef → rax
 	buf = EmitMovqRaxFromR14PlusRcxDisp(buf, 16)
 	buf = EmitMovqRcxFromRax(buf) // rcx = arrayRef offset
@@ -610,6 +703,7 @@ func EmitSelfArrayHit(buf []byte, aReg, bReg uint8,
 	// 15. patch all forward jcc to deopt start
 	PatchRel32(buf, jneTagOff, int32(deoptStart)-int32(jneTagOff+4))
 	PatchRel32(buf, jneShapeOff, int32(deoptStart)-int32(jneShapeOff+4))
+	PatchRel32(buf, jbeBoundOff, int32(deoptStart)-int32(jbeBoundOff+4))
 	PatchRel32(buf, jeNilOff, int32(deoptStart)-int32(jeNilOff+4))
 
 	return buf
@@ -632,31 +726,33 @@ func EmitSelfArrayHit(buf []byte, aReg, bReg uint8,
 //   - stableKey: the key NaN-box frozen at compile time (from proto.Consts[KIdx])
 //   - arenaBaseOff / deoptCode: same as GetTable NodeHit
 //
-// **Byte layout** (186 bytes):
+// **Byte layout** (218 bytes):
 //
 //	[0-6]     load R(A) → rax (7 bytes)
 //	[7-21]    strict IsTable guard (15 bytes)
 //	[22-44]   re-load + GCRef extract + rcx = offset (23 bytes)
 //	[45-51]   load arena base → r14 (7 bytes)
 //	[52-74]   gen check word5/shr/cmp eax/jne (23 bytes)
-//	[75-82]   load table.nodeRef = [r14+rcx+24] → rax (8 bytes)
-//	[83-85]   mov rcx, rax (rcx = nodeRef offset) (3 bytes)
-//	[86-93]   load NodeKey = [r14+rcx+stableIndex*24] → rax (8 bytes)
-//	[94-103]  mov rdx, stableKey (10 bytes)
-//	[104-106] cmp rax, rdx (3 bytes)
-//	[107-112] jne deopt (6 bytes, NodeKey != stableKey → deopt)
-//	[113-120] load NodeVal = [r14+rcx+stableIndex*24+8] → rax (8 bytes)
-//	[121-130] mov rdx, qNanBoxNilImm (10 bytes)
-//	[131-133] cmp rax, rdx (3 bytes)
-//	[134-139] je deopt (6 bytes, the node holds no value)
-//	[140-149] mov rax, qNanBoxNilImm (10 bytes)
-//	[150-156] load R(C) → rdx (7 bytes, setter loads value)
-//	[157-159] cmp rax, rdx (3 bytes)
-//	[160-165] je deopt (6 bytes, the value to store is nil)
-//	[166-173] mov [r14+rcx+stableIndex*24+8], rdx (8 bytes, reverse store NodeVal)
-//	[174]     ret (1 byte)
-//	[175-185] deopt block (mov rax, deoptCode + ret, 11 bytes)
-//	——— total 186 bytes ———
+//	[75-97]   index guard (load word1 + shr + cmp eax + jb, 23 bytes, emitNodeIndexGuard)
+//	[98-105]  load table.nodeRef = [r14+rcx+24] → rax (8 bytes)
+//	[106-114] nodeRef guard (test rax, rax + je, 9 bytes, emitNodeRefGuard)
+//	[115-117] mov rcx, rax (rcx = nodeRef offset) (3 bytes)
+//	[118-125] load NodeKey = [r14+rcx+stableIndex*24] → rax (8 bytes)
+//	[126-135] mov rdx, stableKey (10 bytes)
+//	[136-138] cmp rax, rdx (3 bytes)
+//	[139-144] jne deopt (6 bytes, NodeKey != stableKey → deopt)
+//	[145-152] load NodeVal = [r14+rcx+stableIndex*24+8] → rax (8 bytes)
+//	[153-162] mov rdx, qNanBoxNilImm (10 bytes)
+//	[163-165] cmp rax, rdx (3 bytes)
+//	[166-171] je deopt (6 bytes, the node holds no value)
+//	[172-181] mov rax, qNanBoxNilImm (10 bytes)
+//	[182-188] load R(C) → rdx (7 bytes, setter loads value)
+//	[189-191] cmp rax, rdx (3 bytes)
+//	[192-197] je deopt (6 bytes, the value to store is nil)
+//	[198-205] mov [r14+rcx+stableIndex*24+8], rdx (8 bytes, reverse store NodeVal)
+//	[206]     ret (1 byte)
+//	[207-217] deopt block (mov rax, deoptCode + ret, 11 bytes)
+//	——— total 218 bytes ———
 //
 // **What the inline path stores**: a non-nil value over a non-nil value, and
 // nothing else. Both other cases go to the host:
@@ -668,9 +764,8 @@ func EmitSelfArrayHit(buf []byte, aReg, bReg uint8,
 //   - the value to store is nil: a deletion goes through rawSet, which is
 //     where the table's gen advances.
 //
-// The template does not check that stableIndex lies inside this table's
-// hash part: on a table with the same gen and a smaller one it reads and
-// writes past it (#350), and none of the checks above then mean anything.
+// All three checks read the node at stableIndex, which the index guard and
+// the nodeRef guard have placed inside this table's hash part.
 //
 // **deopt path**: when the Run side sees raxSpec==deoptCode it calls
 // host.SetTable byte-equal to P1 (via icSetTable + __newindex metamethod chain;
@@ -714,8 +809,14 @@ func EmitSetTableNodeHit(buf []byte, aReg, cReg uint8,
 	buf = EmitJneRel32(buf, 0)
 	jneShapeOff := len(buf) - 4
 
+	// the frozen index has to lie inside this table's hash part → else deopt
+	var jbBoundOff int
+	buf, jbBoundOff = emitNodeIndexGuard(buf, stableIndex)
 	// 8. **NodeHit branch**: load table.nodeRef = [r14+rcx+24] → rax
 	buf = EmitMovqRaxFromR14PlusRcxDisp(buf, 24)
+	// a table with no hash part has nodeRef 0 → deopt
+	var jeNoNodesOff int
+	buf, jeNoNodesOff = emitNodeRefGuard(buf)
 
 	// 9. mov rcx, rax (rcx = nodeRef offset)
 	buf = EmitMovqRcxFromRax(buf)
@@ -759,6 +860,8 @@ func EmitSetTableNodeHit(buf []byte, aReg, cReg uint8,
 	// 18. patch all forward jcc to deopt start
 	PatchRel32(buf, jneTagOff, int32(deoptStart)-int32(jneTagOff+4))
 	PatchRel32(buf, jneShapeOff, int32(deoptStart)-int32(jneShapeOff+4))
+	PatchRel32(buf, jbBoundOff, int32(deoptStart)-int32(jbBoundOff+4))
+	PatchRel32(buf, jeNoNodesOff, int32(deoptStart)-int32(jeNoNodesOff+4))
 	PatchRel32(buf, jneKeyOff, int32(deoptStart)-int32(jneKeyOff+4))
 	PatchRel32(buf, jeAbsentOff, int32(deoptStart)-int32(jeAbsentOff+4))
 	PatchRel32(buf, jeNilValOff, int32(deoptStart)-int32(jeNilValOff+4))
@@ -779,7 +882,7 @@ func EmitSetTableNodeHit(buf []byte, aReg, cReg uint8,
 //	R(A+1) := R(B)  ; self/this argument
 //	R(A)   := R(B)[K_string]  ; method function (direct hit via hash-segment NodeHit)
 //
-// **Byte layout** (166 bytes, SELF ArrayHit 139 + key comparison 27):
+// **Byte layout** (198 bytes, SELF ArrayHit 158 + 40 as in GETTABLE NodeHit):
 //
 //	[0-6]    load R(B) → rax (7 bytes)
 //	[7-13]   store R(A+1) = rax (7 bytes, SELF's first step)
@@ -788,25 +891,28 @@ func EmitSetTableNodeHit(buf []byte, aReg, cReg uint8,
 //	[36-51]  GCRef extract + rcx = offset (16 bytes)
 //	[52-58]  load arena base → r14 (7 bytes)
 //	[59-81]  gen check (23 bytes)
-//	[82-89]  load nodeRef = [r14+rcx+24] → rax (8 bytes, word3)
-//	[90-92]  mov rcx, rax (rcx = nodeRef offset) (3 bytes)
-//	[93-100] load NodeKey = [r14+rcx+stableIndex*24] → rax (8 bytes)
-//	[101-110] mov rdx, stableKey (10 bytes)
-//	[111-113] cmp rax, rdx (3 bytes)
-//	[114-119] jne deopt (6 bytes)
-//	[120-127] load NodeVal = [r14+rcx+stableIndex*24+8] → rax (8 bytes)
-//	[128-137] mov rcx, qNanBoxNil (10 bytes)
-//	[138-140] cmp rax, rcx (3 bytes)
-//	[141-146] je deopt (6 bytes, NodeVal == Nil)
-//	[147-153] store R(A) = rax (7 bytes)
-//	[154]    ret (1 byte)
-//	[155-165] deopt block (11 bytes)
-//	——— total 166 bytes ———
+//	[82-104] index guard (load word1 + shr + cmp eax + jb, 23 bytes)
+//	[105-112] load nodeRef = [r14+rcx+24] → rax (8 bytes, word3)
+//	[113-121] nodeRef guard (test rax, rax + je, 9 bytes)
+//	[122-124] mov rcx, rax (rcx = nodeRef offset) (3 bytes)
+//	[125-132] load NodeKey = [r14+rcx+stableIndex*24] → rax (8 bytes)
+//	[133-142] mov rdx, stableKey (10 bytes)
+//	[143-145] cmp rax, rdx (3 bytes)
+//	[146-151] jne deopt (6 bytes)
+//	[152-159] load NodeVal = [r14+rcx+stableIndex*24+8] → rax (8 bytes)
+//	[160-169] mov rcx, qNanBoxNil (10 bytes)
+//	[170-172] cmp rax, rcx (3 bytes)
+//	[173-178] je deopt (6 bytes, NodeVal == Nil)
+//	[179-185] store R(A) = rax (7 bytes)
+//	[186]    ret (1 byte)
+//	[187-197] deopt block (11 bytes)
+//	——— total 198 bytes ———
 //
 // Key differences vs SELF ArrayHit:
 //   - fetches word3=nodeRef (offset 24) instead of word2=arrayRef (offset 16)
 //   - node stride is 24 bytes
 //   - one extra key comparison segment (mov rdx stableKey + cmp rax rdx + jne)
+//   - the index guard compares hmask, and a zero nodeRef goes to the deopt block
 //
 // **deopt path**: when the Run side sees raxSpec==deoptCode it calls
 // host.GetTable byte-equal to P1 (R(A+1)=R(B) already stored, same steps as the
@@ -857,8 +963,14 @@ func EmitSelfNodeHitNoRet(buf []byte, aReg, bReg uint8,
 		byte(stableShape>>24))
 	buf = EmitJneRel32(buf, 0)
 	jneShapeOff := len(buf) - 4
+	// the frozen index has to lie inside this table's hash part → else deopt
+	var jbBoundOff int
+	buf, jbBoundOff = emitNodeIndexGuard(buf, stableIndex)
 	// 9. NodeHit branch: load nodeRef = [r14+rcx+24]
 	buf = EmitMovqRaxFromR14PlusRcxDisp(buf, 24)
+	// a table with no hash part has nodeRef 0 → deopt
+	var jeNoNodesOff int
+	buf, jeNoNodesOff = emitNodeRefGuard(buf)
 	// 10. mov rcx, rax (rcx = nodeRef offset)
 	buf = EmitMovqRcxFromRax(buf)
 	// 11. load NodeKey = [r14+rcx+stableIndex*24] → rax
@@ -889,6 +1001,8 @@ func EmitSelfNodeHitNoRet(buf []byte, aReg, bReg uint8,
 	// 19. patch forward jcc to deopt start
 	PatchRel32(buf, jneTagOff, int32(deoptStart)-int32(jneTagOff+4))
 	PatchRel32(buf, jneShapeOff, int32(deoptStart)-int32(jneShapeOff+4))
+	PatchRel32(buf, jbBoundOff, int32(deoptStart)-int32(jbBoundOff+4))
+	PatchRel32(buf, jeNoNodesOff, int32(deoptStart)-int32(jeNoNodesOff+4))
 	PatchRel32(buf, jneKeyOff, int32(deoptStart)-int32(jneKeyOff+4))
 	PatchRel32(buf, jeNilOff, int32(deoptStart)-int32(jeNilOff+4))
 	// 20. patch the success jmp to jump past the deopt block (start of the following BuildVoid0Arg)
@@ -938,8 +1052,14 @@ func EmitSelfNodeHit(buf []byte, aReg, bReg uint8,
 	buf = EmitJneRel32(buf, 0)
 	jneShapeOff := len(buf) - 4
 
+	// the frozen index has to lie inside this table's hash part → else deopt
+	var jbBoundOff int
+	buf, jbBoundOff = emitNodeIndexGuard(buf, stableIndex)
 	// 9. **NodeHit branch**: load nodeRef = [r14+rcx+24]
 	buf = EmitMovqRaxFromR14PlusRcxDisp(buf, 24)
+	// a table with no hash part has nodeRef 0 → deopt
+	var jeNoNodesOff int
+	buf, jeNoNodesOff = emitNodeRefGuard(buf)
 
 	// 10. mov rcx, rax (rcx = nodeRef offset)
 	buf = EmitMovqRcxFromRax(buf)
@@ -978,6 +1098,8 @@ func EmitSelfNodeHit(buf []byte, aReg, bReg uint8,
 	// 19. patch all forward jcc to deopt start
 	PatchRel32(buf, jneTagOff, int32(deoptStart)-int32(jneTagOff+4))
 	PatchRel32(buf, jneShapeOff, int32(deoptStart)-int32(jneShapeOff+4))
+	PatchRel32(buf, jbBoundOff, int32(deoptStart)-int32(jbBoundOff+4))
+	PatchRel32(buf, jeNoNodesOff, int32(deoptStart)-int32(jeNoNodesOff+4))
 	PatchRel32(buf, jneKeyOff, int32(deoptStart)-int32(jneKeyOff+4))
 	PatchRel32(buf, jeNilOff, int32(deoptStart)-int32(jeNilOff+4))
 

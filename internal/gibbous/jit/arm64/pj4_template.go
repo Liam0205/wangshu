@@ -18,12 +18,20 @@
 //   - x0/x1/x2/x3 = scratch
 //
 // **Six paths**:
-//   - EmitGetTableArrayHitArm64 (168 bytes)
-//   - EmitGetTableNodeHitArm64 (mirrors amd64 159B)
-//   - EmitSetTableArrayHitArm64 (mirrors amd64 113B)
-//   - EmitSetTableNodeHitArm64 (mirrors amd64 140B)
-//   - EmitSelfArrayHitArm64 (mirrors amd64 139B)
-//   - EmitSelfNodeHitArm64 (mirrors amd64 166B)
+//   - EmitGetTableArrayHitArm64 (216 bytes)
+//   - EmitGetTableNodeHitArm64 (248 bytes)
+//   - EmitSetTableArrayHitArm64 (228 bytes)
+//   - EmitSetTableNodeHitArm64 (260 bytes)
+//   - EmitSelfArrayHitArm64 (220 bytes)
+//   - EmitSelfNodeHitArm64 (252 bytes; EmitSelfNodeHitNoRetArm64 is the same
+//     length)
+//
+// **What the guards establish** (same as the amd64 templates): the gen check
+// does not say the table is the one the interpreter saw, since tables built
+// the same way carry the same gen. Every template therefore also checks that
+// the frozen index lies inside the part of this table it addresses, and the
+// node forms send a zero nodeRef to the deopt block and compare the key found
+// in the node.
 
 package arm64
 
@@ -42,15 +50,67 @@ const qNanBoxNilImmArm64 uint64 = 0xFFF8_0000_0000_0000
 // 16-bit NaN-box tag).
 const payloadMaskArm64 uint64 = 0x0000_FFFF_FFFF_FFFF
 
+// emitArrayIndexGuardArm64 emits the guard that keeps a frozen array index
+// inside the array part of the table that reached the template. Tables built
+// the same way carry the same gen, so the gen check alone lets a table with a
+// smaller array part through, and array[stableIndex] would then be a word of
+// whatever the arena holds after it. Expects x2 = the table's address;
+// clobbers x0 and x3.
+//
+//	LDR w0, [x2, #8]            ; 4 (table.word1 low half: asize)
+//	MOV x3, stableIndex imm64   ; 16
+//	CMP x0, x3                  ; 4
+//	B.LS deopt                  ; 4 (asize <= stableIndex)
+//
+// Returns buf and the offset of the B.cond the caller patches to its deopt
+// block (28 bytes emitted).
+func emitArrayIndexGuardArm64(buf []byte, stableIndex uint32) ([]byte, int) {
+	buf = EmitLdrWtFromXnDisp(buf, 0, 2, 8)
+	buf = EmitMovXdImm64(buf, 3, uint64(stableIndex))
+	buf = EmitCmpXnXm(buf, 0, 3)
+	off := len(buf)
+	buf = EmitBCond(buf, CondLS, 0)
+	return buf, off
+}
+
+// emitNodeIndexGuardArm64 is emitArrayIndexGuardArm64 for the hash part: the
+// frozen node index has to be at most hmask. Same register expectations.
+//
+//	LDR w0, [x2, #12]           ; 4 (table.word1 high half: hmask)
+//	MOV x3, stableIndex imm64   ; 16
+//	CMP x0, x3                  ; 4
+//	B.LO deopt                  ; 4 (hmask < stableIndex)
+//
+// Returns buf and the offset of the B.cond to patch (28 bytes emitted).
+func emitNodeIndexGuardArm64(buf []byte, stableIndex uint32) ([]byte, int) {
+	buf = EmitLdrWtFromXnDisp(buf, 0, 2, 12)
+	buf = EmitMovXdImm64(buf, 3, uint64(stableIndex))
+	buf = EmitCmpXnXm(buf, 0, 3)
+	off := len(buf)
+	buf = EmitBCond(buf, CondLO, 0)
+	return buf, off
+}
+
+// emitSlotAddrArm64 advances x2 from the start of an array or node block to
+// the slot at byteOff. The offset goes through a register: the immediate of
+// LDR/STR stops at 32760, which an array index of 4096 or a node index of
+// 1365 already passes. Clobbers x1.
+//
+//	MOV x1, byteOff imm64       ; 16
+//	ADD x2, x2, x1              ; 4
+func emitSlotAddrArm64(buf []byte, byteOff uint64) []byte {
+	buf = EmitMovXdImm64(buf, 1, byteOff)
+	return EmitAddXdXnXm(buf, 2, 2, 1)
+}
+
 // EmitGetTableArrayHitArm64 assembles the arm64 PJ4 IC ArrayHit byte-level
-// direct-slot template (the arm64 mirror of the amd64 132-byte
-// EmitGetTableArrayHit).
+// direct-slot template (the arm64 mirror of the amd64 EmitGetTableArrayHit).
 //
 // **Not wired in yet** (the arm64 trampoline asm + mmap+RX end-to-end path
 // awaits a physical self-hosted runner); this batch is pure byte-level
 // template assembly plus byte-level unit tests to validate the layout.
 //
-// **Byte layout** (168 bytes, strict IsTable guard version):
+// **Byte layout** (216 bytes, strict IsTable guard version):
 //
 //	[ 0-3 ] LDR x0, [x26 + B*8]          ; 4 (load R(B) NaN-box)
 //	[ 4-7 ] LSR x0, x0, #48               ; 4 (IsTable shift)
@@ -68,25 +128,29 @@ const payloadMaskArm64 uint64 = 0x0000_FFFF_FFFF_FFFF
 //	[76-91] MOV x3, stableShape imm64     ; 16
 //	[92-95] CMP x0, x3                    ; 4
 //	[96-99] B.NE deopt                    ; 4
-//	[100-103] LDR x0, [x2, #16]           ; 4 (table.arrayRef → x0)
-//	[104-107] MOV x1, x0                   ; 4 (rcx = arrayRef offset)
-//	[108-111] ADD x2, x14, x1              ; 4 (SIB substitute: x2 = base + arrayRef)
-//	[112-115] LDR x0, [x2, #stableIndex*8] ; 4 (array[stableIndex])
-//	[116-131] MOV x3, qNanBoxNil imm64    ; 16
-//	[132-135] CMP x0, x3                    ; 4
-//	[136-139] B.EQ deopt                   ; 4
-//	[140-143] STR x0, [x26 + A*8]         ; 4 (store R(A))
-//	[144-147] RET                          ; 4
-//	[148-163] MOV x0, deoptCode imm64     ; 16 (deopt block)
-//	[164-167] RET                          ; 4
-//	——— total 168 bytes (amd64 132 + arm64 SIB substitute + MOV imm64 length delta) ———
+//	[100-103] LDR w0, [x2, #8]            ; 4 (table.word1 low half: asize)
+//	[104-119] MOV x3, stableIndex imm64   ; 16
+//	[120-123] CMP x0, x3                  ; 4
+//	[124-127] B.LS deopt                  ; 4 (asize <= stableIndex)
+//	[128-131] LDR x0, [x2, #16]           ; 4 (table.arrayRef → x0)
+//	[132-135] MOV x1, x0                  ; 4 (rcx = arrayRef offset)
+//	[136-139] ADD x2, x14, x1             ; 4 (SIB substitute: x2 = base + arrayRef)
+//	[140-155] MOV x1, stableIndex*8 imm64 ; 16
+//	[156-159] ADD x2, x2, x1              ; 4 (x2 = address of array[stableIndex])
+//	[160-163] LDR x0, [x2]                ; 4 (array[stableIndex])
+//	[164-179] MOV x3, qNanBoxNil imm64    ; 16
+//	[180-183] CMP x0, x3                  ; 4
+//	[184-187] B.EQ deopt                  ; 4
+//	[188-191] STR x0, [x26 + A*8]         ; 4 (store R(A))
+//	[192-195] RET                         ; 4
+//	[196-211] MOV x0, deoptCode imm64     ; 16 (deopt block)
+//	[212-215] RET                         ; 4
+//	——— total 216 bytes ———
 //
-// **36-byte delta vs amd64's 132 bytes**:
-//   - arm64 SIB substitute: 2x ADD + LDR (8 bytes) replaces amd64's single
-//     SIB ldr (10 bytes) → saves 2 bytes but adds 2 instructions
-//   - arm64 MOV imm64 sequence is 16 bytes (movz+3*movk) vs amd64's 10 bytes
-//     (mov rax imm64) → +6 bytes each, 4 MOV imm64 uses = +24 bytes
-//   - total delta ~36 bytes, as expected
+// **Longer than amd64's 151 bytes** because a MOV imm64 is 16 bytes here
+// (movz+3*movk) against 10, a [base+index] access takes an ADD first, and the
+// slot's byte offset is loaded into a register instead of riding in the LDR
+// (whose immediate stops at 32760).
 //
 // **Preconditions** (per 06 §4.2; the arm64 trampoline is deferred to PJ8+):
 //   - x26 = valueStackBase
@@ -150,6 +214,10 @@ func EmitGetTableArrayHitArm64(buf []byte, aReg, bReg uint8, stableShape, stable
 	bNeShapeOff := len(buf)
 	buf = EmitBCond(buf, CondNE, 0)
 
+	// the frozen index has to lie inside this table's array part → else deopt
+	var bLsBoundOff int
+	buf, bLsBoundOff = emitArrayIndexGuardArm64(buf, stableIndex)
+
 	// 17. LDR x0, [x2, #16] (table.arrayRef → x0)
 	buf = EmitLdrXtFromXnDisp(buf, 0, 2, 16)
 
@@ -159,8 +227,11 @@ func EmitGetTableArrayHitArm64(buf []byte, aReg, bReg uint8, stableShape, stable
 	// 19. ADD x2, x14, x1 (SIB substitute: base + arrayRef)
 	buf = EmitAddXdXnXm(buf, 2, 14, 1)
 
-	// 20. LDR x0, [x2, #stableIndex*8] (array[stableIndex])
-	buf = EmitLdrXtFromXnDisp(buf, 0, 2, uint16(stableIndex)*8)
+	// x2 = address of array[stableIndex]
+	buf = emitSlotAddrArm64(buf, uint64(stableIndex)*8)
+
+	// 20. LDR x0, [x2] (array[stableIndex])
+	buf = EmitLdrXtFromXnDisp(buf, 0, 2, 0)
 
 	// 21. MOV x3, qNanBoxNil imm64
 	buf = EmitMovXdImm64(buf, 3, qNanBoxNilImmArm64)
@@ -186,18 +257,18 @@ func EmitGetTableArrayHitArm64(buf []byte, aReg, bReg uint8, stableShape, stable
 	// 27. patch B.cond imm19 = (deoptStart - this B.cond itself) / 4
 	patchBCondImm19(buf, bNeTagOff, int32(deoptStart-bNeTagOff)/4)
 	patchBCondImm19(buf, bNeShapeOff, int32(deoptStart-bNeShapeOff)/4)
+	patchBCondImm19(buf, bLsBoundOff, int32(deoptStart-bLsBoundOff)/4)
 	patchBCondImm19(buf, bEqNilOff, int32(deoptStart-bEqNilOff)/4)
 
 	return buf
 }
 
 // EncodedGetTableArrayHitArm64Len is the byte count of the arm64 PJ4 IC
-// ArrayHit template (168).
-const EncodedGetTableArrayHitArm64Len = 168
+// ArrayHit template (216).
+const EncodedGetTableArrayHitArm64Len = 216
 
 // EmitGetTableNodeHitArm64 assembles the arm64 PJ4 IC NodeHit byte-level
-// direct-slot template (the arm64 mirror of the amd64 159-byte
-// EmitGetTableNodeHit).
+// direct-slot template (the arm64 mirror of the amd64 EmitGetTableNodeHit).
 //
 // **Not wired in yet** (same as the file header note): the arm64 trampoline
 // asm + mmap+RX end-to-end path awaits a physical self-hosted runner; this
@@ -210,8 +281,11 @@ const EncodedGetTableArrayHitArm64Len = 168
 //     array[idx]'s 8 bytes
 //   - one extra key comparison (NodeKey == stableKey verifies against key
 //     degeneration / the __index chain)
+//   - the index guard compares hmask instead of asize, and a zero nodeRef
+//     goes to the deopt block
 //
-// **Byte layout** (196 bytes, ArrayHit 168 + key comparison segment 28):
+// **Byte layout** (248 bytes, ArrayHit 216 + key comparison segment 28 +
+// CBZ 4):
 //
 //	[ 0-31] IsTable guard (LDR + LSR + MOV imm64 + CMP + B.NE, 32 bytes)
 //	[32-67] re-load + payloadMask AND + MOV x1,x0 + LDR x14 + ADD x2 (36 bytes)
@@ -220,22 +294,29 @@ const EncodedGetTableArrayHitArm64Len = 168
 //	[76-91] MOV x3, stableShape                ; 16
 //	[92-95] CMP x0, x3                         ; 4
 //	[96-99] B.NE deopt                         ; 4
-//	[100-103] LDR x0, [x2, #24]                ; 4 (**nodeRef** word3, NodeHit branch)
-//	[104-107] MOV x1, x0                       ; 4 (rcx = nodeRef offset)
-//	[108-111] ADD x2, x14, x1                  ; 4 (SIB substitute: new base for node)
-//	[112-115] LDR x0, [x2, #stableIndex*24]    ; 4 (NodeKey)
-//	[116-131] MOV x3, stableKey imm64          ; 16
-//	[132-135] CMP x0, x3                       ; 4
-//	[136-139] B.NE deopt                       ; 4 (NodeKey != stableKey)
-//	[140-143] LDR x0, [x2, #stableIndex*24+8]  ; 4 (NodeVal)
-//	[144-159] MOV x3, qNanBoxNil imm64         ; 16
-//	[160-163] CMP x0, x3                       ; 4
-//	[164-167] B.EQ deopt                       ; 4 (NodeVal == Nil)
-//	[168-171] STR x0, [x26 + A*8]              ; 4
-//	[172-175] RET                              ; 4
-//	[176-191] MOV x0, deoptCode imm64          ; 16 (deopt block)
-//	[192-195] RET                              ; 4
-//	——— total 196 bytes ———
+//	[100-103] LDR w0, [x2, #12]                ; 4 (table.word1 high half: hmask)
+//	[104-119] MOV x3, stableIndex imm64        ; 16
+//	[120-123] CMP x0, x3                       ; 4
+//	[124-127] B.LO deopt                       ; 4 (hmask < stableIndex)
+//	[128-131] LDR x0, [x2, #24]                ; 4 (**nodeRef** word3, NodeHit branch)
+//	[132-135] CBZ x0, deopt                    ; 4 (no hash part)
+//	[136-139] MOV x1, x0                       ; 4 (rcx = nodeRef offset)
+//	[140-143] ADD x2, x14, x1                  ; 4 (SIB substitute: new base for node)
+//	[144-159] MOV x1, stableIndex*24 imm64     ; 16
+//	[160-163] ADD x2, x2, x1                   ; 4 (x2 = address of node[stableIndex])
+//	[164-167] LDR x0, [x2]                     ; 4 (NodeKey)
+//	[168-183] MOV x3, stableKey imm64          ; 16
+//	[184-187] CMP x0, x3                       ; 4
+//	[188-191] B.NE deopt                       ; 4 (NodeKey != stableKey)
+//	[192-195] LDR x0, [x2, #8]                 ; 4 (NodeVal)
+//	[196-211] MOV x3, qNanBoxNil imm64         ; 16
+//	[212-215] CMP x0, x3                       ; 4
+//	[216-219] B.EQ deopt                       ; 4 (NodeVal == Nil)
+//	[220-223] STR x0, [x26 + A*8]              ; 4
+//	[224-227] RET                              ; 4
+//	[228-243] MOV x0, deoptCode imm64          ; 16 (deopt block)
+//	[244-247] RET                              ; 4
+//	——— total 248 bytes ———
 //
 // **stableKey frozen at compile time** (same as amd64 NodeHit):
 //   - numeric key: value.NumberValue(K) raw bits (IEEE 754 NaN-box)
@@ -276,20 +357,30 @@ func EmitGetTableNodeHitArm64(buf []byte, aReg, bReg uint8,
 	bNeShapeOff := len(buf)
 	buf = EmitBCond(buf, CondNE, 0)
 
+	// the frozen index has to lie inside this table's hash part → else deopt
+	var bLoBoundOff int
+	buf, bLoBoundOff = emitNodeIndexGuardArm64(buf, stableIndex)
+
 	// 17-19. **NodeHit branch**: load nodeRef (word3, offset 24) + new SIB base
 	buf = EmitLdrXtFromXnDisp(buf, 0, 2, 24)
+	// a table with no hash part has nodeRef 0 → deopt
+	cbzNoNodesOff := len(buf)
+	buf = EmitCbzX(buf, 0, 0)
 	buf = EmitMovXdFromXn(buf, 1, 0)
 	buf = EmitAddXdXnXm(buf, 2, 14, 1)
 
+	// x2 = address of node[stableIndex] (key at +0, value at +8)
+	buf = emitSlotAddrArm64(buf, uint64(stableIndex)*24)
+
 	// 20-23. NodeKey load + stableKey comparison + B.NE deopt
-	buf = EmitLdrXtFromXnDisp(buf, 0, 2, uint16(stableIndex*24))
+	buf = EmitLdrXtFromXnDisp(buf, 0, 2, 0)
 	buf = EmitMovXdImm64(buf, 3, stableKey)
 	buf = EmitCmpXnXm(buf, 0, 3)
 	bNeKeyOff := len(buf)
 	buf = EmitBCond(buf, CondNE, 0)
 
 	// 24-27. NodeVal load + nil check + B.EQ deopt
-	buf = EmitLdrXtFromXnDisp(buf, 0, 2, uint16(stableIndex*24+8))
+	buf = EmitLdrXtFromXnDisp(buf, 0, 2, 8)
 	buf = EmitMovXdImm64(buf, 3, qNanBoxNilImmArm64)
 	buf = EmitCmpXnXm(buf, 0, 3)
 	bEqNilOff := len(buf)
@@ -307,6 +398,8 @@ func EmitGetTableNodeHitArm64(buf []byte, aReg, bReg uint8,
 	// 31. patch B.cond imm19 = (deoptStart - this B.cond itself) / 4
 	patchBCondImm19(buf, bNeTagOff, int32(deoptStart-bNeTagOff)/4)
 	patchBCondImm19(buf, bNeShapeOff, int32(deoptStart-bNeShapeOff)/4)
+	patchBCondImm19(buf, bLoBoundOff, int32(deoptStart-bLoBoundOff)/4)
+	patchCbnzImm19(buf, cbzNoNodesOff, int32(deoptStart-cbzNoNodesOff)/4)
 	patchBCondImm19(buf, bNeKeyOff, int32(deoptStart-bNeKeyOff)/4)
 	patchBCondImm19(buf, bEqNilOff, int32(deoptStart-bEqNilOff)/4)
 
@@ -314,8 +407,8 @@ func EmitGetTableNodeHitArm64(buf []byte, aReg, bReg uint8,
 }
 
 // EncodedGetTableNodeHitArm64Len is the byte count of the arm64 PJ4 IC NodeHit
-// template (196).
-const EncodedGetTableNodeHitArm64Len = 196
+// template (248).
+const EncodedGetTableNodeHitArm64Len = 248
 
 // EmitSetTableArrayHitArm64 assembles the arm64 PJ4 IC SETTABLE ArrayHit
 // byte-level inline write-back template (the arm64 mirror of the amd64
@@ -326,33 +419,35 @@ const EncodedGetTableNodeHitArm64Len = 196
 // / C=R(v)). When IC[0].Kind = ArrayHit and Shape/Index hit, it does a
 // byte-level inline write-back to array[stableIndex].
 //
-// **Byte layout** (180 bytes):
+// **Byte layout** (228 bytes):
 //
 //	[ 0-31] IsTable guard                          ; 32 (same as GETTABLE ArrayHit)
 //	[32-67] re-load + payloadMask + AND + SIB base ; 36
 //	[68-99] word5 + LSR + stableShape + CMP + B.NE ; 32 (gen check)
-//	[100-103] LDR x0, [x2, #16]                    ; 4 (table.arrayRef)
-//	[104-107] MOV x1, x0                           ; 4 (rcx = arrayRef offset)
-//	[108-111] ADD x2, x14, x1                      ; 4 (SIB substitute: base for array)
-//	[112-115] LDR x0, [x2, #stableIndex*8]         ; 4 (the slot's current value)
-//	[116-131] MOV x3, qNanBoxNil imm64             ; 16
-//	[132-135] CMP x0, x3                           ; 4
-//	[136-139] B.EQ deopt                           ; 4 (the slot holds nil)
-//	[140-143] LDR x0, [x26 + C*8]                  ; 4 (load R(C) value → x0)
-//	[144-147] CMP x0, x3                           ; 4
-//	[148-151] B.EQ deopt                           ; 4 (the value to store is nil)
-//	[152-155] STR x0, [x2, #stableIndex*8]         ; 4 (write-back store array[idx])
-//	[156-159] RET                                  ; 4 (setter has no R(A) write)
-//	[160-175] MOV x0, deoptCode imm64              ; 16 (deopt block)
-//	[176-179] RET                                  ; 4
-//	——— total 180 bytes ———
+//	[100-127] LDR w0 asize + MOV + CMP + B.LS      ; 28 (index guard)
+//	[128-131] LDR x0, [x2, #16]                    ; 4 (table.arrayRef)
+//	[132-135] MOV x1, x0                           ; 4 (rcx = arrayRef offset)
+//	[136-139] ADD x2, x14, x1                      ; 4 (SIB substitute: base for array)
+//	[140-159] MOV x1, stableIndex*8 + ADD x2, x2, x1 ; 20 (x2 = address of the slot)
+//	[160-163] LDR x0, [x2]                         ; 4 (the slot's current value)
+//	[164-179] MOV x3, qNanBoxNil imm64             ; 16
+//	[180-183] CMP x0, x3                           ; 4
+//	[184-187] B.EQ deopt                           ; 4 (the slot holds nil)
+//	[188-191] LDR x0, [x26 + C*8]                  ; 4 (load R(C) value → x0)
+//	[192-195] CMP x0, x3                           ; 4
+//	[196-199] B.EQ deopt                           ; 4 (the value to store is nil)
+//	[200-203] STR x0, [x2]                         ; 4 (write-back store array[idx])
+//	[204-207] RET                                  ; 4 (setter has no R(A) write)
+//	[208-223] MOV x0, deoptCode imm64              ; 16 (deopt block)
+//	[224-227] RET                                  ; 4
+//	——— total 228 bytes ———
 //
 // **What the inline path stores**: a non-nil value over a non-nil value, and
 // nothing else (same as amd64 EmitSetTableArrayHit). A slot that holds nil is
 // an absent field, whose store has to consult __newindex; a nil value is
-// stored by host.SetTable. Both take the deopt path. Like the amd64 template
-// it does not check that stableIndex lies inside this table's array part
-// (#350).
+// stored by host.SetTable. Both take the deopt path. Both checks read the
+// slot at stableIndex, which the index guard has placed inside this table's
+// array part.
 //
 // **Preconditions** (per 06 §4.2; the arm64 trampoline is deferred to PJ8+):
 //   - x26 = valueStackBase / x27 = jitContext / x14 = arena base
@@ -391,13 +486,20 @@ func EmitSetTableArrayHitArm64(buf []byte, aReg, cReg uint8,
 	bNeShapeOff := len(buf)
 	buf = EmitBCond(buf, CondNE, 0)
 
+	// the frozen index has to lie inside this table's array part → else deopt
+	var bLsBoundOff int
+	buf, bLsBoundOff = emitArrayIndexGuardArm64(buf, stableIndex)
+
 	// 17-19. load arrayRef (word2, offset 16) + new SIB base for array
 	buf = EmitLdrXtFromXnDisp(buf, 0, 2, 16)
 	buf = EmitMovXdFromXn(buf, 1, 0)
 	buf = EmitAddXdXnXm(buf, 2, 14, 1)
 
+	// x2 = address of array[stableIndex]
+	buf = emitSlotAddrArm64(buf, uint64(stableIndex)*8)
+
 	// 20-23. the slot's current value → x0; nil means the field is absent → deopt
-	buf = EmitLdrXtFromXnDisp(buf, 0, 2, uint16(stableIndex*8))
+	buf = EmitLdrXtFromXnDisp(buf, 0, 2, 0)
 	buf = EmitMovXdImm64(buf, 3, qNanBoxNilImmArm64)
 	buf = EmitCmpXnXm(buf, 0, 3)
 	bEqAbsentOff := len(buf)
@@ -409,8 +511,8 @@ func EmitSetTableArrayHitArm64(buf []byte, aReg, cReg uint8,
 	bEqNilValOff := len(buf)
 	buf = EmitBCond(buf, CondEQ, 0)
 
-	// 27. write-back store: STR x0, [x2, #stableIndex*8]
-	buf = EmitStrXtToXnDisp(buf, 0, 2, uint16(stableIndex*8))
+	// 27. write-back store: STR x0, [x2]
+	buf = EmitStrXtToXnDisp(buf, 0, 2, 0)
 
 	// 28. RET (setter has no R(A) write)
 	buf = EmitRet(buf)
@@ -423,6 +525,7 @@ func EmitSetTableArrayHitArm64(buf []byte, aReg, cReg uint8,
 	// 30. patch B.cond imm19
 	patchBCondImm19(buf, bNeTagOff, int32(deoptStart-bNeTagOff)/4)
 	patchBCondImm19(buf, bNeShapeOff, int32(deoptStart-bNeShapeOff)/4)
+	patchBCondImm19(buf, bLsBoundOff, int32(deoptStart-bLsBoundOff)/4)
 	patchBCondImm19(buf, bEqAbsentOff, int32(deoptStart-bEqAbsentOff)/4)
 	patchBCondImm19(buf, bEqNilValOff, int32(deoptStart-bEqNilValOff)/4)
 
@@ -430,8 +533,8 @@ func EmitSetTableArrayHitArm64(buf []byte, aReg, cReg uint8,
 }
 
 // EncodedSetTableArrayHitArm64Len is the byte count of the arm64 PJ4 SETTABLE
-// ArrayHit template (180).
-const EncodedSetTableArrayHitArm64Len = 180
+// ArrayHit template (228).
+const EncodedSetTableArrayHitArm64Len = 228
 
 // EmitSetTableNodeHitArm64 assembles the arm64 PJ4 IC SETTABLE NodeHit
 // byte-level inline write-back template (the arm64 mirror of the amd64
@@ -449,29 +552,30 @@ const EncodedSetTableArrayHitArm64Len = 180
 //     check; then it loads R(C), checks it and stores it into NodeVal instead
 //     of storing NodeVal into R(A)
 //
-// **Byte layout** (208 bytes):
+// **Byte layout** (260 bytes):
 //
-//	[ 0-139] same as GETTABLE NodeHit up to B.NE key (IsTable + GCRef + SIB +
-//	         gen check + nodeRef + NodeKey + stableKey + CMP + B.NE) = 140
-//	[140-143] LDR x0, [x2, #stableIndex*24+8]  ; 4 (NodeVal)
-//	[144-159] MOV x3, qNanBoxNil imm64         ; 16
-//	[160-163] CMP x0, x3                       ; 4
-//	[164-167] B.EQ deopt                       ; 4 (the node holds no value)
-//	[168-171] LDR x0, [x26 + C*8]              ; 4 (setter: load R(C) value → x0)
-//	[172-175] CMP x0, x3                       ; 4
-//	[176-179] B.EQ deopt                       ; 4 (the value to store is nil)
-//	[180-183] STR x0, [x2, #stableIndex*24+8]  ; 4 (write-back store NodeVal)
-//	[184-187] RET                              ; 4 (setter has no R(A) write)
-//	[188-203] MOV x0, deoptCode imm64          ; 16 (deopt block)
-//	[204-207] RET                              ; 4
-//	——— total 208 bytes ———
+//	[ 0-191] same as GETTABLE NodeHit up to B.NE key (IsTable + GCRef + SIB +
+//	         gen check + index guard + nodeRef + CBZ + node address + NodeKey +
+//	         stableKey + CMP + B.NE) = 192
+//	[192-195] LDR x0, [x2, #8]                 ; 4 (NodeVal)
+//	[196-211] MOV x3, qNanBoxNil imm64         ; 16
+//	[212-215] CMP x0, x3                       ; 4
+//	[216-219] B.EQ deopt                       ; 4 (the node holds no value)
+//	[220-223] LDR x0, [x26 + C*8]              ; 4 (setter: load R(C) value → x0)
+//	[224-227] CMP x0, x3                       ; 4
+//	[228-231] B.EQ deopt                       ; 4 (the value to store is nil)
+//	[232-235] STR x0, [x2, #8]                 ; 4 (write-back store NodeVal)
+//	[236-239] RET                              ; 4 (setter has no R(A) write)
+//	[240-255] MOV x0, deoptCode imm64          ; 16 (deopt block)
+//	[256-259] RET                              ; 4
+//	——— total 260 bytes ———
 //
 // **What the inline path stores**: a non-nil value over a non-nil value, and
 // nothing else (same as amd64 EmitSetTableNodeHit). A node that holds no value
 // is a deleted key, whose store has to consult __newindex; a nil value is a
-// deletion, which goes through rawSet. Both take the deopt path. Like the
-// amd64 template it does not check that stableIndex lies inside this table's
-// hash part (#350).
+// deletion, which goes through rawSet. Both take the deopt path. All three
+// checks read the node at stableIndex, which the index guard and the CBZ on
+// nodeRef have placed inside this table's hash part.
 //
 // **deopt path**: when the Run side sees x0==deoptCode it calls host.SetTable
 // byte-equal to P1 (P1 icSetTable handles NodeHit; via IC + hash + __newindex
@@ -506,20 +610,30 @@ func EmitSetTableNodeHitArm64(buf []byte, aReg, cReg uint8,
 	bNeShapeOff := len(buf)
 	buf = EmitBCond(buf, CondNE, 0)
 
+	// the frozen index has to lie inside this table's hash part → else deopt
+	var bLoBoundOff int
+	buf, bLoBoundOff = emitNodeIndexGuardArm64(buf, stableIndex)
+
 	// 17-19. **NodeHit branch**: load nodeRef + new SIB base for node
 	buf = EmitLdrXtFromXnDisp(buf, 0, 2, 24)
+	// a table with no hash part has nodeRef 0 → deopt
+	cbzNoNodesOff := len(buf)
+	buf = EmitCbzX(buf, 0, 0)
 	buf = EmitMovXdFromXn(buf, 1, 0)
 	buf = EmitAddXdXnXm(buf, 2, 14, 1)
 
+	// x2 = address of node[stableIndex] (key at +0, value at +8)
+	buf = emitSlotAddrArm64(buf, uint64(stableIndex)*24)
+
 	// 20-23. NodeKey load + stableKey comparison + B.NE deopt
-	buf = EmitLdrXtFromXnDisp(buf, 0, 2, uint16(stableIndex*24))
+	buf = EmitLdrXtFromXnDisp(buf, 0, 2, 0)
 	buf = EmitMovXdImm64(buf, 3, stableKey)
 	buf = EmitCmpXnXm(buf, 0, 3)
 	bNeKeyOff := len(buf)
 	buf = EmitBCond(buf, CondNE, 0)
 
 	// 24-27. NodeVal → x0; nil means the key is deleted → deopt
-	buf = EmitLdrXtFromXnDisp(buf, 0, 2, uint16(stableIndex*24+8))
+	buf = EmitLdrXtFromXnDisp(buf, 0, 2, 8)
 	buf = EmitMovXdImm64(buf, 3, qNanBoxNilImmArm64)
 	buf = EmitCmpXnXm(buf, 0, 3)
 	bEqAbsentOff := len(buf)
@@ -532,7 +646,7 @@ func EmitSetTableNodeHitArm64(buf []byte, aReg, cReg uint8,
 	buf = EmitBCond(buf, CondEQ, 0)
 
 	// 31. write-back STR NodeVal
-	buf = EmitStrXtToXnDisp(buf, 0, 2, uint16(stableIndex*24+8))
+	buf = EmitStrXtToXnDisp(buf, 0, 2, 8)
 
 	// 32. RET (setter has no R(A) write)
 	buf = EmitRet(buf)
@@ -545,6 +659,8 @@ func EmitSetTableNodeHitArm64(buf []byte, aReg, cReg uint8,
 	// 34. patch B.cond imm19
 	patchBCondImm19(buf, bNeTagOff, int32(deoptStart-bNeTagOff)/4)
 	patchBCondImm19(buf, bNeShapeOff, int32(deoptStart-bNeShapeOff)/4)
+	patchBCondImm19(buf, bLoBoundOff, int32(deoptStart-bLoBoundOff)/4)
+	patchCbnzImm19(buf, cbzNoNodesOff, int32(deoptStart-cbzNoNodesOff)/4)
 	patchBCondImm19(buf, bNeKeyOff, int32(deoptStart-bNeKeyOff)/4)
 	patchBCondImm19(buf, bEqAbsentOff, int32(deoptStart-bEqAbsentOff)/4)
 	patchBCondImm19(buf, bEqNilValOff, int32(deoptStart-bEqNilValOff)/4)
@@ -553,11 +669,11 @@ func EmitSetTableNodeHitArm64(buf []byte, aReg, cReg uint8,
 }
 
 // EncodedSetTableNodeHitArm64Len is the byte count of the arm64 PJ4 SETTABLE
-// NodeHit template (208).
-const EncodedSetTableNodeHitArm64Len = 208
+// NodeHit template (260).
+const EncodedSetTableNodeHitArm64Len = 260
 
 // EmitSelfArrayHitArm64 assembles the arm64 PJ4 IC SELF ArrayHit byte-level
-// inline template (the arm64 mirror of the amd64 139-byte EmitSelfArrayHit).
+// inline template (the arm64 mirror of the amd64 EmitSelfArrayHit).
 //
 // **SELF opcode semantics** (per bytecode/opcode.go::SELF):
 //
@@ -572,24 +688,26 @@ const EncodedSetTableNodeHitArm64Len = 208
 // array segment (rare but a valid form); the common case is NodeHit (a string
 // key method name).
 //
-// **Byte layout** (172 bytes, ArrayHit 168 + R(A+1) copy segment 4):
+// **Byte layout** (220 bytes, ArrayHit 216 + R(A+1) copy segment 4):
 //
 //	[ 0-3 ] LDR x0, [x26 + B*8]          ; 4 (load R(B) obj NaN-box)
 //	[ 4-7 ] STR x0, [x26 + (A+1)*8]      ; 4 (**SELF extra**: store R(A+1) = obj)
 //	[ 8-35] IsTable guard (LSR + MOV imm64 + CMP + B.NE)  ; 28 (entry LDR already used)
 //	[36-71] re-load + payloadMask + AND + SIB ; 36
 //	[72-103] word5 + LSR + stableShape + CMP + B.NE ; 32 (gen check)
-//	[104-107] LDR x0, [x2, #16]          ; 4 (table.arrayRef)
-//	[108-111] MOV x1, x0                  ; 4
-//	[112-115] ADD x2, x14, x1             ; 4 (SIB base for array)
-//	[116-119] LDR x0, [x2, #stableIndex*8]; 4 (array[stableIndex])
-//	[120-135] MOV x3, qNanBoxNil          ; 16
-//	[136-139] CMP x0, x3                  ; 4
-//	[140-143] B.EQ deopt                  ; 4
-//	[144-147] STR x0, [x26 + A*8]         ; 4 (store R(A) method)
-//	[148-151] RET                         ; 4
-//	[152-171] MOV x0, deoptCode + RET     ; 20 (deopt block)
-//	——— total 172 bytes ———
+//	[104-131] LDR w0 asize + MOV + CMP + B.LS ; 28 (index guard)
+//	[132-135] LDR x0, [x2, #16]          ; 4 (table.arrayRef)
+//	[136-139] MOV x1, x0                  ; 4
+//	[140-143] ADD x2, x14, x1             ; 4 (SIB base for array)
+//	[144-163] MOV x1, stableIndex*8 + ADD x2, x2, x1 ; 20 (x2 = address of the slot)
+//	[164-167] LDR x0, [x2]                ; 4 (array[stableIndex])
+//	[168-183] MOV x3, qNanBoxNil          ; 16
+//	[184-187] CMP x0, x3                  ; 4
+//	[188-191] B.EQ deopt                  ; 4
+//	[192-195] STR x0, [x26 + A*8]         ; 4 (store R(A) method)
+//	[196-199] RET                         ; 4
+//	[200-219] MOV x0, deoptCode + RET     ; 20 (deopt block)
+//	——— total 220 bytes ———
 //
 // **SELF design points** (same as amd64 SELF ArrayHit):
 //   - R(A+1) is written **before** the IsTable guard, because the deopt path
@@ -636,13 +754,20 @@ func EmitSelfArrayHitArm64(buf []byte, aReg, bReg uint8,
 	bNeShapeOff := len(buf)
 	buf = EmitBCond(buf, CondNE, 0)
 
+	// the frozen index has to lie inside this table's array part → else deopt
+	var bLsBoundOff int
+	buf, bLsBoundOff = emitArrayIndexGuardArm64(buf, stableIndex)
+
 	// 19-21. arrayRef + new SIB base for array
 	buf = EmitLdrXtFromXnDisp(buf, 0, 2, 16)
 	buf = EmitMovXdFromXn(buf, 1, 0)
 	buf = EmitAddXdXnXm(buf, 2, 14, 1)
 
+	// x2 = address of array[stableIndex]
+	buf = emitSlotAddrArm64(buf, uint64(stableIndex)*8)
+
 	// 22. LDR array[stableIndex]
-	buf = EmitLdrXtFromXnDisp(buf, 0, 2, uint16(stableIndex*8))
+	buf = EmitLdrXtFromXnDisp(buf, 0, 2, 0)
 
 	// 23-25. nil check + B.EQ deopt
 	buf = EmitMovXdImm64(buf, 3, qNanBoxNilImmArm64)
@@ -664,17 +789,18 @@ func EmitSelfArrayHitArm64(buf []byte, aReg, bReg uint8,
 	// 29. patch B.cond imm19
 	patchBCondImm19(buf, bNeTagOff, int32(deoptStart-bNeTagOff)/4)
 	patchBCondImm19(buf, bNeShapeOff, int32(deoptStart-bNeShapeOff)/4)
+	patchBCondImm19(buf, bLsBoundOff, int32(deoptStart-bLsBoundOff)/4)
 	patchBCondImm19(buf, bEqNilOff, int32(deoptStart-bEqNilOff)/4)
 
 	return buf
 }
 
 // EncodedSelfArrayHitArm64Len is the byte count of the arm64 PJ4 SELF ArrayHit
-// template (172).
-const EncodedSelfArrayHitArm64Len = 172
+// template (220).
+const EncodedSelfArrayHitArm64Len = 220
 
 // EmitSelfNodeHitArm64 assembles the arm64 PJ4 IC SELF NodeHit byte-level
-// inline template (the arm64 mirror of the amd64 166-byte EmitSelfNodeHit).
+// inline template (the arm64 mirror of the amd64 EmitSelfNodeHit).
 //
 // **SELF opcode semantics** (per bytecode/opcode.go::SELF):
 //
@@ -686,7 +812,7 @@ const EncodedSelfArrayHitArm64Len = 172
 // NodeHit if it hits the hash segment), with one extra hit condition of
 // NodeKey == stableKey.
 //
-// **Byte layout** (200 bytes, NodeHit 196 + R(A+1) copy segment 4):
+// **Byte layout** (252 bytes, NodeHit 248 + R(A+1) copy segment 4):
 //
 //	[ 0-3 ] LDR x0, [x26 + B*8]              ; 4 (load R(B) obj)
 //	[ 4-7 ] STR x0, [x26 + (A+1)*8]          ; 4 (**SELF first step**: R(A+1)=obj)
@@ -696,22 +822,25 @@ const EncodedSelfArrayHitArm64Len = 172
 //	[32-35] B.NE deopt                        ; 4
 //	[36-71] re-load + payloadMask + AND + SIB ; 36
 //	[72-103] word5 + LSR + stableShape + CMP + B.NE ; 32 (gen check)
-//	[104-107] LDR x0, [x2, #24]              ; 4 (**nodeRef** word3)
-//	[108-111] MOV x1, x0                      ; 4
-//	[112-115] ADD x2, x14, x1                 ; 4 (SIB base for node)
-//	[116-119] LDR x0, [x2, #stableIndex*24]   ; 4 (NodeKey)
-//	[120-135] MOV x3, stableKey imm64         ; 16
-//	[136-139] CMP x0, x3                      ; 4
-//	[140-143] B.NE deopt                      ; 4 (NodeKey != stableKey)
-//	[144-147] LDR x0, [x2, #stableIndex*24+8] ; 4 (NodeVal)
-//	[148-163] MOV x3, qNanBoxNil imm64        ; 16
-//	[164-167] CMP x0, x3                      ; 4
-//	[168-171] B.EQ deopt                      ; 4 (NodeVal == Nil)
-//	[172-175] STR x0, [x26 + A*8]             ; 4 (store R(A) = method)
-//	[176-179] RET                             ; 4
-//	[180-195] MOV x0, deoptCode imm64         ; 16 (deopt block)
-//	[196-199] RET                             ; 4
-//	——— total 200 bytes ———
+//	[104-131] LDR w0 hmask + MOV + CMP + B.LO ; 28 (index guard)
+//	[132-135] LDR x0, [x2, #24]              ; 4 (**nodeRef** word3)
+//	[136-139] CBZ x0, deopt                   ; 4 (no hash part)
+//	[140-143] MOV x1, x0                      ; 4
+//	[144-147] ADD x2, x14, x1                 ; 4 (SIB base for node)
+//	[148-167] MOV x1, stableIndex*24 + ADD x2, x2, x1 ; 20 (x2 = address of the node)
+//	[168-171] LDR x0, [x2]                    ; 4 (NodeKey)
+//	[172-187] MOV x3, stableKey imm64         ; 16
+//	[188-191] CMP x0, x3                      ; 4
+//	[192-195] B.NE deopt                      ; 4 (NodeKey != stableKey)
+//	[196-199] LDR x0, [x2, #8]                ; 4 (NodeVal)
+//	[200-215] MOV x3, qNanBoxNil imm64        ; 16
+//	[216-219] CMP x0, x3                      ; 4
+//	[220-223] B.EQ deopt                      ; 4 (NodeVal == Nil)
+//	[224-227] STR x0, [x26 + A*8]             ; 4 (store R(A) = method)
+//	[228-231] RET                             ; 4
+//	[232-247] MOV x0, deoptCode imm64         ; 16 (deopt block)
+//	[248-251] RET                             ; 4
+//	——— total 252 bytes ———
 //
 // **SELF design points** (same as SELF ArrayHit + amd64 SELF NodeHit):
 //   - R(A+1) is written **before** the IsTable guard (same steps as the
@@ -757,20 +886,30 @@ func EmitSelfNodeHitArm64(buf []byte, aReg, bReg uint8,
 	bNeShapeOff := len(buf)
 	buf = EmitBCond(buf, CondNE, 0)
 
+	// the frozen index has to lie inside this table's hash part → else deopt
+	var bLoBoundOff int
+	buf, bLoBoundOff = emitNodeIndexGuardArm64(buf, stableIndex)
+
 	// 18-20. **NodeHit branch**: load nodeRef (word3, offset 24) + new SIB base
 	buf = EmitLdrXtFromXnDisp(buf, 0, 2, 24)
+	// a table with no hash part has nodeRef 0 → deopt
+	cbzNoNodesOff := len(buf)
+	buf = EmitCbzX(buf, 0, 0)
 	buf = EmitMovXdFromXn(buf, 1, 0)
 	buf = EmitAddXdXnXm(buf, 2, 14, 1)
 
+	// x2 = address of node[stableIndex] (key at +0, value at +8)
+	buf = emitSlotAddrArm64(buf, uint64(stableIndex)*24)
+
 	// 21-24. NodeKey load + stableKey comparison + B.NE deopt
-	buf = EmitLdrXtFromXnDisp(buf, 0, 2, uint16(stableIndex*24))
+	buf = EmitLdrXtFromXnDisp(buf, 0, 2, 0)
 	buf = EmitMovXdImm64(buf, 3, stableKey)
 	buf = EmitCmpXnXm(buf, 0, 3)
 	bNeKeyOff := len(buf)
 	buf = EmitBCond(buf, CondNE, 0)
 
 	// 25-28. NodeVal load + nil check + B.EQ deopt
-	buf = EmitLdrXtFromXnDisp(buf, 0, 2, uint16(stableIndex*24+8))
+	buf = EmitLdrXtFromXnDisp(buf, 0, 2, 8)
 	buf = EmitMovXdImm64(buf, 3, qNanBoxNilImmArm64)
 	buf = EmitCmpXnXm(buf, 0, 3)
 	bEqNilOff := len(buf)
@@ -788,6 +927,8 @@ func EmitSelfNodeHitArm64(buf []byte, aReg, bReg uint8,
 	// 32. patch B.cond imm19 = (deoptStart - this B.cond itself) / 4
 	patchBCondImm19(buf, bNeTagOff, int32(deoptStart-bNeTagOff)/4)
 	patchBCondImm19(buf, bNeShapeOff, int32(deoptStart-bNeShapeOff)/4)
+	patchBCondImm19(buf, bLoBoundOff, int32(deoptStart-bLoBoundOff)/4)
+	patchCbnzImm19(buf, cbzNoNodesOff, int32(deoptStart-cbzNoNodesOff)/4)
 	patchBCondImm19(buf, bNeKeyOff, int32(deoptStart-bNeKeyOff)/4)
 	patchBCondImm19(buf, bEqNilOff, int32(deoptStart-bEqNilOff)/4)
 
@@ -795,8 +936,8 @@ func EmitSelfNodeHitArm64(buf []byte, aReg, bReg uint8,
 }
 
 // EncodedSelfNodeHitArm64Len is the byte count of the arm64 PJ4 SELF NodeHit
-// template (200).
-const EncodedSelfNodeHitArm64Len = 200
+// template (252).
+const EncodedSelfNodeHitArm64Len = 252
 
 // EmitSelfNodeHitNoRetArm64 is the same as EmitSelfNodeHitArm64, except the
 // **success path does not emit ret** — it falls through to the subsequent
@@ -808,7 +949,7 @@ const EncodedSelfNodeHitArm64Len = 200
 //     to the segment's tail, falling through to the caller)
 //   - the deopt block is unchanged (writes x0=deoptCode + RET)
 //
-// Total byte count: 200 (same as NodeHit) — the RET (4B) is replaced by a B
+// Total byte count: 252 (same as NodeHit) — the RET (4B) is replaced by a B
 // (4B), so the length is identical.
 //
 // **deopt path**: when the Run side sees x0==deoptCode it calls host.GetTable
@@ -854,20 +995,30 @@ func EmitSelfNodeHitNoRetArm64(buf []byte, aReg, bReg uint8,
 	bNeShapeOff := len(buf)
 	buf = EmitBCond(buf, CondNE, 0)
 
+	// the frozen index has to lie inside this table's hash part → else deopt
+	var bLoBoundOff int
+	buf, bLoBoundOff = emitNodeIndexGuardArm64(buf, stableIndex)
+
 	// 18-20. **NodeHit branch**: load nodeRef (word3, offset 24) + new SIB base
 	buf = EmitLdrXtFromXnDisp(buf, 0, 2, 24)
+	// a table with no hash part has nodeRef 0 → deopt
+	cbzNoNodesOff := len(buf)
+	buf = EmitCbzX(buf, 0, 0)
 	buf = EmitMovXdFromXn(buf, 1, 0)
 	buf = EmitAddXdXnXm(buf, 2, 14, 1)
 
+	// x2 = address of node[stableIndex] (key at +0, value at +8)
+	buf = emitSlotAddrArm64(buf, uint64(stableIndex)*24)
+
 	// 21-24. NodeKey load + stableKey comparison + B.NE deopt
-	buf = EmitLdrXtFromXnDisp(buf, 0, 2, uint16(stableIndex*24))
+	buf = EmitLdrXtFromXnDisp(buf, 0, 2, 0)
 	buf = EmitMovXdImm64(buf, 3, stableKey)
 	buf = EmitCmpXnXm(buf, 0, 3)
 	bNeKeyOff := len(buf)
 	buf = EmitBCond(buf, CondNE, 0)
 
 	// 25-28. NodeVal load + nil check + B.EQ deopt
-	buf = EmitLdrXtFromXnDisp(buf, 0, 2, uint16(stableIndex*24+8))
+	buf = EmitLdrXtFromXnDisp(buf, 0, 2, 8)
 	buf = EmitMovXdImm64(buf, 3, qNanBoxNilImmArm64)
 	buf = EmitCmpXnXm(buf, 0, 3)
 	bEqNilOff := len(buf)
@@ -890,6 +1041,8 @@ func EmitSelfNodeHitNoRetArm64(buf []byte, aReg, bReg uint8,
 	// 32. patch B.cond imm19 = (deoptStart - this B.cond itself) / 4
 	patchBCondImm19(buf, bNeTagOff, int32(deoptStart-bNeTagOff)/4)
 	patchBCondImm19(buf, bNeShapeOff, int32(deoptStart-bNeShapeOff)/4)
+	patchBCondImm19(buf, bLoBoundOff, int32(deoptStart-bLoBoundOff)/4)
+	patchCbnzImm19(buf, cbzNoNodesOff, int32(deoptStart-cbzNoNodesOff)/4)
 	patchBCondImm19(buf, bNeKeyOff, int32(deoptStart-bNeKeyOff)/4)
 	patchBCondImm19(buf, bEqNilOff, int32(deoptStart-bEqNilOff)/4)
 
@@ -902,8 +1055,8 @@ func EmitSelfNodeHitNoRetArm64(buf []byte, aReg, bReg uint8,
 }
 
 // EncodedSelfNodeHitNoRetArm64Len is the byte count of the arm64 PJ4 SELF
-// NodeHit NoRet variant (200, same as NodeHit; RET 4B swapped for B 4B).
-const EncodedSelfNodeHitNoRetArm64Len = 200
+// NodeHit NoRet variant (252, same as NodeHit; RET 4B swapped for B 4B).
+const EncodedSelfNodeHitNoRetArm64Len = 252
 
 // EmitSpecArgLoadKArm64 writes R(dstReg) = K (a NaN-box u64) — byte-level
 // inline loading of args/recv for the PJ5 SELF spec template (the arm64

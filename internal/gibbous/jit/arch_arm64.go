@@ -279,14 +279,15 @@ func archEmitForLoopWithBody2(buf []byte, kS, kInit, kLimit, kStep, kBody1, kBod
 }
 
 // archEmitGetTableArrayHit is the arm64 PJ4 IC ArrayHit byte-level direct-slot
-// template (168 bytes: strict IsTable guard + SIB replacement + gen check +
-// array direct hit + nil check + write R(A) + deopt block). The arm64 side
-// proxies jitarm64.EmitGetTableArrayHitArm64.
+// template (216 bytes: strict IsTable guard + SIB replacement + gen check +
+// index guard + array direct hit + nil check + write R(A) + deopt block). The
+// arm64 side proxies jitarm64.EmitGetTableArrayHitArm64.
 //
 // **Hookup vs amd64 differences**: the arm64 side follows the trampoline_arm64.s
 // protocol (x26=vsBase / x27=jitContext / x28=Go G / x14=arena base); the template
-// is 36 bytes longer than amd64's 132 due to the SIB replacement (ADD+LDR
-// replacing a single SIB ldr) and the MOV imm64 sequence (movz+movk×3). The
+// is longer than amd64's 151 bytes due to the SIB replacement (ADD+LDR
+// replacing a single SIB ldr), the MOV imm64 sequence (movz+movk×3), and the
+// slot offset going through a register. The
 // arenaBaseOff signature is int32 on amd64 but uint16 on arm64 because arm64 LDR
 // uses an unsigned 12-bit scaled offset (int32 safely converts to uint16, since
 // the jitContext field offset is on the order of tens of bytes).
@@ -296,9 +297,9 @@ func archEmitGetTableArrayHit(buf []byte, aReg, bReg uint8, stableShape, stableI
 }
 
 // archEmitGetTableNodeHit is the arm64 PJ4 IC NodeHit byte-level direct-slot
-// template (196 bytes: IsTable guard + SIB + gen check + nodeRef +
-// node[stableIndex] + key compare + NodeVal load + nil check + write R(A) +
-// deopt block).
+// template (248 bytes: IsTable guard + SIB + gen check + index guard +
+// nodeRef, which must not be 0 + node[stableIndex] + key compare + NodeVal
+// load + nil check + write R(A) + deopt block).
 func archEmitGetTableNodeHit(buf []byte, aReg, bReg uint8,
 	stableShape, stableIndex uint32, stableKey uint64,
 	arenaBaseOff int32, deoptCode uint64) []byte {
@@ -307,7 +308,7 @@ func archEmitGetTableNodeHit(buf []byte, aReg, bReg uint8,
 }
 
 // archEmitSetTableArrayHit is the arm64 PJ4 SETTABLE IC ArrayHit byte-level
-// reverse-write template (180 bytes).
+// reverse-write template (228 bytes).
 func archEmitSetTableArrayHit(buf []byte, aReg, cReg uint8,
 	stableShape, stableIndex uint32, arenaBaseOff int32, deoptCode uint64) []byte {
 	return jitarm64.EmitSetTableArrayHitArm64(buf, aReg, cReg,
@@ -315,7 +316,7 @@ func archEmitSetTableArrayHit(buf []byte, aReg, cReg uint8,
 }
 
 // archEmitSelfArrayHit is the arm64 PJ4 SELF IC ArrayHit byte-level inline
-// template (172 bytes: GETTABLE ArrayHit 168 + R(A+1) copy segment 4).
+// template (220 bytes: GETTABLE ArrayHit 216 + R(A+1) copy segment 4).
 func archEmitSelfArrayHit(buf []byte, aReg, bReg uint8,
 	stableShape, stableIndex uint32, arenaBaseOff int32, deoptCode uint64) []byte {
 	return jitarm64.EmitSelfArrayHitArm64(buf, aReg, bReg,
@@ -323,7 +324,7 @@ func archEmitSelfArrayHit(buf []byte, aReg, bReg uint8,
 }
 
 // archEmitSetTableNodeHit is the arm64 PJ4 SETTABLE IC NodeHit byte-level
-// reverse-write template (208 bytes).
+// reverse-write template (260 bytes).
 func archEmitSetTableNodeHit(buf []byte, aReg, cReg uint8,
 	stableShape, stableIndex uint32, stableKey uint64,
 	arenaBaseOff int32, deoptCode uint64) []byte {
@@ -332,7 +333,7 @@ func archEmitSetTableNodeHit(buf []byte, aReg, cReg uint8,
 }
 
 // archEmitSelfNodeHit is the arm64 PJ4 SELF IC NodeHit byte-level inline
-// template (200 bytes: GETTABLE NodeHit 196 + R(A+1) copy segment 4).
+// template (252 bytes: GETTABLE NodeHit 248 + R(A+1) copy segment 4).
 func archEmitSelfNodeHit(buf []byte, aReg, bReg uint8,
 	stableShape, stableIndex uint32, stableKey uint64,
 	arenaBaseOff int32, deoptCode uint64) []byte {

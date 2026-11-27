@@ -174,6 +174,9 @@ const EncodedBLen = 4
 // **Parameter byteOff** is a byte offset (must be 8-byte aligned + ≤ 32760).
 // This function divides it by 8 automatically to encode the imm12 field.
 // Out-of-range or misaligned values fall back to imm12=0 (load Xt from [Xn+0]).
+// A caller therefore passes only offsets bounded by construction (a frame
+// slot, a struct field); an offset that grows with a table index goes through
+// a register instead (pj4_template.go's emitSlotAddrArm64).
 //
 // Use case: PJ4 table IC inline arm64 side — load arena base / table.word5 /
 // arrayRef / NodeKey/Val etc. (matching amd64 `mov rax, [r14+rcx+disp]`, 8 bytes).

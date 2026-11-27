@@ -200,7 +200,7 @@ type shapeInfo struct {
 	icSetCReg     uint8
 
 	// PJ4 SELF IC ArrayHit shape (the leading SELF of `function(obj) obj:method() end`):
-	//   - icSelfArrayHit = true: takes the PJ4 SELF IC byte-level inline template (139 bytes)
+	//   - icSelfArrayHit = true: takes the PJ4 SELF IC byte-level inline template
 	//   - reuses icAReg (SELF.A, the method result) / icBReg (SELF.B, obj) /
 	//     icStableShape / icStableIndex fields. R(A+1) is copied from R(B) by the template.
 	icSelfArrayHit bool
@@ -213,7 +213,7 @@ type shapeInfo struct {
 
 	// PJ4 SELF NodeHit shape (`function(obj) obj:method() end`, the truly common OOP call):
 	//   - icSelfNodeHit = true: takes the PJ4 SELF IC NodeHit byte-level inline template
-	//     (166 bytes, SELF ArrayHit 139 + key compare 27)
+	//     (SELF ArrayHit plus the key compare)
 	//   - reuses icAReg (SELF.A i.e. the method result) / icBReg (SELF.B i.e. obj) /
 	//     icStableShape / icStableIndex / icStableKey fields
 	icSelfNodeHit bool
@@ -341,6 +341,13 @@ type shapeInfo struct {
 	useFrameInline bool
 }
 
+// maxTemplateSlotIndex is the largest array or node index the single-access
+// table templates freeze into machine code. The amd64 templates address the
+// slot with a signed 32-bit displacement, which for a node's value is
+// index*24+8; a function whose inline cache holds an index past this one is
+// compiled without the template.
+const maxTemplateSlotIndex = (1<<31 - 1 - 8) / 24
+
 // analyzeGetTableArrayHit recognizes the PJ4 IC ArrayHit shape:
 // `function(t) return t[K] end` (GETTABLE A B C(constant K idx) + RETURN A 2).
 //
@@ -404,7 +411,7 @@ func analyzeGetTableArrayHit(proto *bytecode.Proto, feedback *bridge.TypeFeedbac
 	}
 	// stableShape / stableIndex must agree (feedback and IC slot are same-source,
 	// but a race may cause slight divergence; require strict agreement to speculate)
-	if pf.StableShape != icSlot.Shape || pf.StableIndex != icSlot.Index {
+	if pf.StableShape != icSlot.Shape || pf.StableIndex != icSlot.Index || pf.StableIndex > maxTemplateSlotIndex {
 		return shapeInfo{}, false
 	}
 
@@ -483,7 +490,7 @@ func analyzeGetTableNodeHit(proto *bytecode.Proto, feedback *bridge.TypeFeedback
 	if pf.Kind != bridge.FBTableMono || pf.Confidence < 0.99 {
 		return shapeInfo{}, false
 	}
-	if pf.StableShape != icSlot.Shape || pf.StableIndex != icSlot.Index {
+	if pf.StableShape != icSlot.Shape || pf.StableIndex != icSlot.Index || pf.StableIndex > maxTemplateSlotIndex {
 		return shapeInfo{}, false
 	}
 
@@ -588,7 +595,7 @@ func analyzeSetTableArrayHit(proto *bytecode.Proto, feedback *bridge.TypeFeedbac
 	if pf.Kind != bridge.FBTableMono || pf.Confidence < 0.99 {
 		return shapeInfo{}, false
 	}
-	if pf.StableShape != icSlot.Shape || pf.StableIndex != icSlot.Index {
+	if pf.StableShape != icSlot.Shape || pf.StableIndex != icSlot.Index || pf.StableIndex > maxTemplateSlotIndex {
 		return shapeInfo{}, false
 	}
 
@@ -673,7 +680,7 @@ func analyzeSelfArrayHit(proto *bytecode.Proto, feedback *bridge.TypeFeedback) (
 	if pf.Kind != bridge.FBSelfMono || pf.Confidence < 0.99 {
 		return shapeInfo{}, false
 	}
-	if pf.StableShape != icSlot.Shape || pf.StableIndex != icSlot.Index {
+	if pf.StableShape != icSlot.Shape || pf.StableIndex != icSlot.Index || pf.StableIndex > maxTemplateSlotIndex {
 		return shapeInfo{}, false
 	}
 
@@ -748,7 +755,7 @@ func analyzeSetTableNodeHit(proto *bytecode.Proto, feedback *bridge.TypeFeedback
 	if pf.Kind != bridge.FBTableMono || pf.Confidence < 0.99 {
 		return shapeInfo{}, false
 	}
-	if pf.StableShape != icSlot.Shape || pf.StableIndex != icSlot.Index {
+	if pf.StableShape != icSlot.Shape || pf.StableIndex != icSlot.Index || pf.StableIndex > maxTemplateSlotIndex {
 		return shapeInfo{}, false
 	}
 	// stableKey frozen at compile time (same as GetTable NodeHit)
@@ -836,7 +843,7 @@ func analyzeSelfNodeHit(proto *bytecode.Proto, feedback *bridge.TypeFeedback) (s
 	if pf.Kind != bridge.FBSelfMono || pf.Confidence < 0.99 {
 		return shapeInfo{}, false
 	}
-	if pf.StableShape != icSlot.Shape || pf.StableIndex != icSlot.Index {
+	if pf.StableShape != icSlot.Shape || pf.StableIndex != icSlot.Index || pf.StableIndex > maxTemplateSlotIndex {
 		return shapeInfo{}, false
 	}
 	// stableKey frozen at compile time
@@ -2712,7 +2719,7 @@ func analyzeSelfCallSpecForm(proto *bytecode.Proto, feedback *bridge.TypeFeedbac
 	if pf.Kind != bridge.FBSelfMono || pf.Confidence < 0.99 {
 		return shapeInfo{}, false
 	}
-	if pf.StableShape != icSlot.Shape || pf.StableIndex != icSlot.Index {
+	if pf.StableShape != icSlot.Shape || pf.StableIndex != icSlot.Index || pf.StableIndex > maxTemplateSlotIndex {
 		return shapeInfo{}, false
 	}
 	// stableKey frozen at compile time (SELF.C is a K constant index)
@@ -4419,8 +4426,8 @@ func (c *Compiler) Compile(proto *bytecode.Proto, feedback *bridge.TypeFeedback)
 		// **PJ4 IC NodeHit shape**: hash-section direct slot (`t["x"]` shape),
 		// reusing the same IC + feedback double-check as ArrayHit; the
 		// difference is IC[0].Kind=NodeHit + freezing stableKey from
-		// proto.Consts at compile time. The NodeHit template is 159 bytes (27
-		// bytes more than ArrayHit for the key-compare section); on a hit it
+		// proto.Consts at compile time. The NodeHit template is longer than
+		// ArrayHit by the key-compare section; on a hit it
 		// byte-inlines, on failure it falls through to host.GetTable byte-equal
 		// P1.
 		if icInfo, ok := analyzeGetTableNodeHit(proto, feedback); ok {
@@ -4434,7 +4441,7 @@ func (c *Compiler) Compile(proto *bytecode.Proto, feedback *bridge.TypeFeedback)
 			return c.compileIcSetArrayHit(proto, icInfo)
 		}
 		// **PJ4 SELF IC ArrayHit shape**: `local m = obj:method` and other
-		// SELF + RETURN shapes (rare but valid), 139-byte template:
+		// SELF + RETURN shapes (rare but valid):
 		// R(A+1) := R(B) + array[stableIndex] load → R(A); on failure falls
 		// through to host.GetTable byte-equal (R(A+1) already stored, byte-equal
 		// to the same steps in the P1 SELF case).
@@ -4999,7 +5006,7 @@ func (c *Compiler) Compile(proto *bytecode.Proto, feedback *bridge.TypeFeedback)
 var ErrCompileUnsupportedShape = errors.New("internal/gibbous/jit: P4 PJ7 unsupported shape (expected: single RETURN A B / single-BB MOVE|GETUPVAL|LOADK|LOADBOOL|LOADNIL|ADD..POW|UNM|LEN|NEWTABLE|GETTABLE|GETGLOBAL|SETTABLE|SETGLOBAL + RETURN A 2 (getter) / 1 (setter) / PJ5 MOVE+CALL+RETURN void)")
 
 // compileIcArrayHit compiles the PJ4 IC ArrayHit shape (per
-// analyzeGetTableArrayHit): emits a 129-byte IC inline template; on failure it
+// analyzeGetTableArrayHit): emits the IC ArrayHit inline template; on failure it
 // deopts → the Run side calls host.GetTable byte-equal with P1.
 //
 // **deopt path**: the Run side detects raxSpec==deoptCode → calls host.GetTable
@@ -5036,7 +5043,7 @@ func (c *Compiler) compileIcArrayHit(proto *bytecode.Proto, info shapeInfo) (bri
 }
 
 // compileIcNodeHit compiles the PJ4 IC NodeHit shape (per
-// analyzeGetTableNodeHit): it emits a 159-byte IC NodeHit inline template; on
+// analyzeGetTableNodeHit): it emits the IC NodeHit inline template; on
 // failure, deopt → the Run side calls host.GetTable byte-equal P1.
 //
 // Compared to compileIcArrayHit, it has one extra compile-time-fixed stableKey
@@ -5116,8 +5123,8 @@ func (c *Compiler) compileIcSetArrayHit(proto *bytecode.Proto, info shapeInfo) (
 }
 
 // compileIcSelfArrayHit compiles the PJ4 SELF IC ArrayHit shape (per
-// analyzeSelfArrayHit): it emits a 139-byte SELF IC inline template (GETTABLE
-// ArrayHit 132 + a 7-byte R(A+1) copy segment); on failure, deopt → the Run
+// analyzeSelfArrayHit): it emits the SELF IC inline template (GETTABLE
+// ArrayHit plus the R(A+1) copy segment); on failure, deopt → the Run
 // side calls host.GetTable byte-equal P1 (R(A+1) is already stored, and the P1
 // SELF case performs the same steps byte-equal).
 //
@@ -5195,8 +5202,8 @@ func (c *Compiler) compileIcSetNodeHit(proto *bytecode.Proto, info shapeInfo) (b
 }
 
 // compileIcSelfNodeHit compiles the PJ4 SELF IC NodeHit shape (per
-// analyzeSelfNodeHit): it emits a 166-byte SELF NodeHit IC inline template
-// (SELF ArrayHit 139 + a 27-byte key-comparison segment); on failure, deopt →
+// analyzeSelfNodeHit): it emits the SELF NodeHit IC inline template
+// (SELF ArrayHit plus the key-comparison segment); on failure, deopt →
 // the Run side calls host.GetTable byte-equal P1 (R(A+1) is already stored, and
 // the P1 SELF case performs the same steps; P1 icGetTable supports NodeHit).
 //
@@ -5237,7 +5244,7 @@ func (c *Compiler) compileIcSelfNodeHit(proto *bytecode.Proto, info shapeInfo) (
 // compileSpecSelfCall compiles the PJ5 SELF + CALL spec template shape (per
 // analyzeSelfCallSpecForm + §9.10 PJ4 EmitSelfNodeHit reuse):
 //
-// it emits a 166-byte SELF NodeHit IC inline template (SELF segment: IC NodeHit
+// it emits the SELF NodeHit IC inline template (SELF segment: IC NodeHit
 // guard + stableKey comparison + NodeVal store R(callA)=method + store
 // R(callA+1)=self); on failure, deopt → the Run side falls back to host.Self;
 // **on success, the Run side continues through host.CallBaseline +
