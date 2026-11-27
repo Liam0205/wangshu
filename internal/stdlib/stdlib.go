@@ -404,8 +404,9 @@ func registerIterFactory(st *crescent.State, name string, iter crescent.HostFn, 
 // reach it only as ipairs' first result; see registerIterFactory.
 func ipairsIter(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
 	// PUC ipairsaux: luaL_checkint(L, 2) FIRST, then checktype(L, 1, TABLE).
-	// luaL_checkint goes through lua_tonumber, so a numeric string is a valid
-	// control value: ipairs({})(t, "1") continues from 1.
+	// luaL_checkint goes through lua_tointeger, which converts a numeric
+	// string, so one is a valid control value: ipairs({})(t, "1") continues
+	// from 1.
 	ctl, ok := 0.0, false
 	if len(args) >= 2 {
 		ctl, ok = toNumberStr(st, args[1])
