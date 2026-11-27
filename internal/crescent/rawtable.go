@@ -16,9 +16,9 @@
 //     three ways: the same key is stored again (LIVE again, in the same
 //     node); a new key whose main position it is takes the node over; or a
 //     rehash drops it. A DEAD node does not keep its key's object alive,
-//     strings excepted: once the object is dead the collector replaces the
-//     key with object.DeadKey, which no lookup matches, and the node stays
-//     DEAD (internal/gc);
+//     the strings of a table that is not weak excepted: once the object is
+//     dead the collector replaces the key with object.DeadKey, which no
+//     lookup matches, and the node stays DEAD (internal/gc);
 //   - gen contract: BumpGen on every path that takes a LIVE node's value
 //     away or changes which key a node holds: rehash, Brent relocation and
 //     the takeover of a DEAD node in insertNewKey, key deletion in rawSet,
