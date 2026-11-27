@@ -292,6 +292,9 @@ func (t *Table) Len() int {
 // data structure), you may Release the composite val at the end of fn to prevent
 // pin-slot accumulation.
 //
+// fn may assign nil to the entry it is given (the iteration continues from it, as
+// with next in Lua); adding new keys to the table from fn is undefined, as in Lua.
+//
 // Errors: table already Released / internal RawNext error (rare: table structure
 // mutated mid-iteration) returns a Go error; otherwise returns nil.
 func (t *Table) ForEach(fn func(key, val Value) bool) error {
@@ -303,13 +306,30 @@ func (t *Table) ForEach(fn func(key, val Value) bool) error {
 		return fmt.Errorf("wangshu: Table.ForEach: table has been released")
 	}
 	key := value.Nil
+	// The next step continues from the key fn was just given, so the key stays
+	// rooted until then even if fn removes the entry, releases the Value it got
+	// and collects.
+	var pin uint32
+	pinned := false
+	defer func() {
+		if pinned {
+			t.st.core.UnpinRef(pin)
+		}
+	}()
 	for {
 		nextKey, nextVal, ok, e := t.st.core.RawNext(ref, key)
+		if pinned {
+			t.st.core.UnpinRef(pin)
+			pinned = false
+		}
 		if e != nil {
 			return fmt.Errorf("wangshu: Table.ForEach: %s", e.Msg)
 		}
 		if !ok {
 			return nil
+		}
+		if value.IsCollectable(nextKey) {
+			pin, pinned = t.st.core.PinRef(value.GCRefOf(nextKey)), true
 		}
 		pubKey := fromInnerWithPin(t.st, nextKey)
 		pubVal := fromInnerWithPin(t.st, nextVal)
