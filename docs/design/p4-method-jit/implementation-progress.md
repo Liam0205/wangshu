@@ -2865,8 +2865,10 @@ P1 成功、P4 抬 `SETLIST: not a table`。**根因不在 JIT 里**,而在共�
   （`bridge.MaxCompilableInsns`），更大的函数不升层，所以实际会碰到的只有 pc 256 到 1999 这一段的截断。
   ④ 重放路径的数值 for 在循环跳回处检查步数预算和取消（`LoopPreempt`）时，传的是 FORPREP 的 pc，解释器在 FORLOOP 上检查。luac 把 FORPREP
   记在 `do` 那一行、FORLOOP 记在 `for` 那一行，所以循环头跨行时 `instruction budget exceeded` 的行号差一行。记录里加上 FORLOOP 的 pc
-  （`forLoopBackPC`），`LoopPreempt` 用它；`ForPrep` 仍用 FORPREP 的 pc。
-- **同一个文件里其余的 `retPC - 1`**逐个核对过：方法调用和尾调用两种形式里 `retPC` 就是 CALL / TAILCALL 的下一条，不带多结果；
+  （`forLoopBackPC`），`LoopPreempt` 用它；`ForPrep` 仍用 FORPREP 的 pc。P3 在同一种报错上报的是循环体最后一条语句的行号，
+  修改前就这样，这次没有改，记在 [#357](https://github.com/Liam0205/wangshu/issues/357)。
+- **同一个文件里其余的 `retPC - 1`**逐个核对过：方法调用和尾调用两种形式里结果不经 MOVE 复制，RETURN 紧跟在 CALL / TAILCALL 后面，`retPC` 就是它的下一条
+  （方法调用形式也接受丢弃多个结果的 `CALL C = 3..16`，这时 RETURN 同样紧跟 CALL）；
   FORLOOP、单条表访问、比较折叠各自的注释里写明了位置的算法，没有问题。
 - **验证**：`test/difftest/tiered_error_names_test.go` 的 `TestTiered_ErrorNames`，十二种出错写法，内核都写成多行并保留行号比较（报错文本里的行号，以及 `debug.traceback` 给内核那一帧的行号），解释器、
   强制升层、调低升层阈值三种方式互相比较并与 `lua5.1` 比较（第三种不要求进入升层代码），并且逐段断言强制升层有没有进入升层代码：调用类五段在所有构建上都进入；
