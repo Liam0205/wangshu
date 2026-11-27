@@ -6,8 +6,9 @@ import "testing"
 
 // TestTiered_StepBudgetLineInNumericFor covers the pc a compiled numeric for hands the host when
 // the step budget runs out on its back edge: the error carries the line of the FORLOOP, as in the
-// interpreter, and so does the traceback that comes with it. The loop header spans two lines because luac gives the FORPREP the line of "do"
-// and the FORLOOP the line of "for", so a pc that is the FORPREP's reports the other line.
+// interpreter, and so does the traceback that comes with it. The loop header spans two lines so
+// that the FORPREP, which luac gives the line of "do", and the FORLOOP, which gets the line of
+// "for", differ: a pc that is the FORPREP's reports the other line.
 //
 // Two kernels: one short, which the native translators compile, and one behind errorNameFarPad,
 // whose loop runs through head-op replay on amd64 (handing the host the FORPREP's pc there fails
