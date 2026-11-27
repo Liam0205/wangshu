@@ -111,7 +111,7 @@ type shapeInfo struct {
 // rather than into the return-slot replay).
 type sideEffect struct {
 	kind sideEffectKind
-	pc   uint16 // index of the instruction this effect replays, for the kinds sideEffectFromIns and scratchFromIns build (the host helpers take the IC slot, the name of a faulting operand and the error's line from it); 0 for Closure, Call, Self, TailCall, LoadNil and Arith, which carry their pc in imm or need none
+	pc   uint16 // index of the instruction this effect replays, for the kinds sideEffectFromIns and scratchFromIns build (the host helpers take the IC slot, the name of a faulting operand and the error's line from it); 0 for Closure, Call, Self, TailCall and Arith, which carry their pc in imm, and for the LoadNil AnalyzeShape builds itself, which needs none
 	a    uint8  // op's A field (source register for SETUPVAL; first slot for LOADNIL; dest reg for MOVE/LOADK/SETTABLE/CALL/Arith; source reg for SETGLOBAL)
 	b    uint8  // op's B field (upvalue index for SETUPVAL; last slot for LOADNIL; source reg for MOVE; low 8 bits of RK key for SETTABLE; nargs+1 for CALL)
 	c    uint8  // op's C field (low 8 bits of RK value for SETTABLE; nresults+1 for CALL; Arith op tag)
