@@ -1053,6 +1053,9 @@ reviewer 另外列了三处修改前就过期、本分支没有碰的文字：`t
 这一轮还发现一项与 #329 无关、此前没有登记的存量差异：`collectgarbage("setpause")` 和 `("setstepmul")` 固定返回 0，官方返回设置之前的
 值，而设计文档把 `setpause` 列为完整提供。记在 [#345](https://github.com/Liam0205/wangshu/issues/345)。
 
+第二十五轮的 reviewer 复核第二十四轮改节号的那一条时，顺带指出 `internal/crescent/host.go` 文件头注释里写的 `HostFn` 签名带一个
+`*thread` 参数，同文件里实际的类型没有。这一行是修改前就不对的；本分支改过同一段注释里的节号，所以把签名也改成与类型一致。
+
 验证：`make all` 与 `make fuzz-oracle` 通过。把 `internal/stdlib` 的 `stdlib.go` 和 `tablelib.go` 一起换回修复前的版本：
 行为测试 10 个用例失败，`test/api` 的 `io.lines` 用例 4 个失败，`TestTiered_StdlibNames` 在 P3、P4 两种构建下十段脚本里
 六段失败（剩下的四段修复前后结果相同：迭代器对坏参数的报错、带文件名的 `io.lines`、从升层代码里调用两个工厂函数各一段，它们的作用是

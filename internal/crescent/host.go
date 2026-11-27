@@ -3,7 +3,7 @@
 //
 // Design: 05 §7.5 + 10 §1. Within M12 scope this provides a minimal host
 // function call:
-// - HostFn signature = func(*State, *thread, args []value.Value) (results []value.Value, err *LuaError);
+// - HostFn signature = func(st *State, args []value.Value) (results []value.Value, err *LuaError);
 // - registering a HostFn yields a HostFnID, wrapped into a closure via object.AllocHostClosure.
 package crescent
 
