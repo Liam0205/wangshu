@@ -2925,6 +2925,8 @@ P1 成功、P4 抬 `SETLIST: not a table`。**根因不在 JIT 里**,而在共�
   - arm64 取槽位改成先把字节偏移装进寄存器、与块的起始地址相加，再用偏移 0（节点的值是 8）访问，不再受立即数范围限制。
   - 分析阶段（`compiler.go` 七处）不接受超过 `maxTemplateSlotIndex` 的下标：amd64 的模板用 32 位有符号位移取槽位，节点的值是
     `index*24+8`。
+  - 七个模板里 SELF 的两个哈希模板不只用在「函数体只有一条 SELF」上：`obj:method(...)` 调用的 spec 模板（`compileSpecSelfCall`）拿它们
+    作前半段，其中 `EmitSelfNodeHitNoRet` 只用在那里。模板是同一份，这条路径一起改到了，七处分析里的 `analyzeSelfCallSpecForm` 就是它的。
   - `EmitLdrXtFromXnDisp` 这一组编码函数遇到编码不了的偏移仍然编成 0，这一点没有改，注释里写明调用方只能传有上界的偏移。
     `internal/gibbous` 下其余的调用点传的是栈槽偏移（寄存器编号不超过 255，加上参数个数之后偏移在 4200 以内）、`JITContext` 的
     字段偏移（结构体 232 字节）和调用缓存的字段偏移，没有随表的大小增长的。

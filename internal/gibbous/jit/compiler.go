@@ -5090,8 +5090,8 @@ func (c *Compiler) compileIcNodeHit(proto *bytecode.Proto, info shapeInfo) (brid
 // **setter shape retB=1** (SETTABLE, 0 return values) — the Run side's
 // DoReturn does not read R(A).
 //
-// Template: strict IsTable guard + arena base + gen check + arrayRef + the
-// slot's current value is not nil + load R(C) value, not nil + write-back store
+// Template: strict IsTable guard + arena base + gen check + index guard +
+// arrayRef + the slot's current value is not nil + load R(C) value, not nil + write-back store
 // + ret + deopt block (byte layout in the EmitSetTableArrayHit godoc).
 func (c *Compiler) compileIcSetArrayHit(proto *bytecode.Proto, info shapeInfo) (bridge.GibbousCode, error) {
 	const deoptCode uint64 = 0xFFFCDEAD_DEADBE02
@@ -5167,8 +5167,8 @@ func (c *Compiler) compileIcSelfArrayHit(proto *bytecode.Proto, info shapeInfo) 
 //
 // **setter shape retB=1**; the Run side's DoReturn does not read R(A).
 //
-// Template: strict IsTable guard + arena base + gen check + nodeRef +
-// node[stableIndex] + key comparison + NodeVal is not nil + load R(C), not nil
+// Template: strict IsTable guard + arena base + gen check + index guard +
+// nodeRef, which must not be 0 + node[stableIndex] + key comparison + NodeVal is not nil + load R(C), not nil
 // + write-back store NodeVal + ret + deopt block (byte layout in the
 // EmitSetTableNodeHit godoc).
 func (c *Compiler) compileIcSetNodeHit(proto *bytecode.Proto, info shapeInfo) (bridge.GibbousCode, error) {
