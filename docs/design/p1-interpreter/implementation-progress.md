@@ -730,7 +730,7 @@ nightly 的 go-fuzz（p1，`FuzzOracleDiff`）找到 `t={}table.unpack(t)`：官
 | 迭代器私有化 | 同文件 `registerIterFactory` | `pairs` / `ipairs` 各自在注册时建好迭代器的宿主闭包，由工厂函数的 Go 闭包捕获，同时挂在工厂函数的 upvalue 上让 GC 保活；不再有 `__ipairs_iter`，`pairs` 不再读全局 `next` |
 | fuzz 的 prelude | `internal/oracle/prelude.go` | 原来靠包装全局 `__ipairs_iter` 来拦 `luaL_checkint` 的未定义行为区间，改成包装 `ipairs`、发放同一个带检查的迭代器 |
 | 行为测试 | `test/language/stdlib_names_test.go`（新增） | 27 个用例，期望值逐个在 lua5.1 5.1.5 上实际执行核对过 |
-| 分层测试 | `test/difftest/tiered_stdlib_names_test.go`（新增） | 九段脚本在 P3 / P4 的升层代码里执行，与解释器、与 `lua5.1` 比对（带文件名的 `io.lines` 一段是已登记的差异，与记录的文本比对）；断言 `GibbousEntries() > 0`（arm64 的 P4 上有一段例外，见 10 §12.3） |
+| 分层测试 | `test/difftest/tiered_stdlib_names_test.go`（新增） | 十段脚本在 P3 / P4 的升层代码里执行，与解释器、与 `lua5.1` 比对（带文件名的 `io.lines` 一段是已登记的差异，与记录的文本比对）；断言 `GibbousEntries() > 0`（arm64 的 P4 上有一段例外，见 10 §12.3） |
 | 白盒探针 | `State.GibbousEntries()`（新增，testing-only） | 执行进入升层代码的次数；`PromotionCount()` 只说明编译过 |
 | 名字集合比对 | `test/difftest/corners_test.go` `TestDiff_StdlibNames`（新增） | 对着真实的 `lua5.1` 双向比对；望舒多出的名字一律失败，缺少的逐个登记在 `stdlibAbsent`（合入时 37 条）；清单里还包含哪些名字是同一个函数对象 |
 | 语料 | `test/fuzz/testdata/fuzz/FuzzOracleDiff/` | 加入 #329 的输入和七条回归语料；原来写着 `__ipairs_iter` 的两条改成经 `ipairs({})` 取迭代器 |
@@ -991,9 +991,15 @@ reviewer 在跑 P4 全量测试时还撞到一次 `TestIssue177_StringLimitConte
 我随后把这些注释和文档句子带着文件名和行号列出来（Go 文件 40 多行，Markdown 十余行），对着 `lbaselib.c`、`liolib.c`、
 `ltablib.c`、`lmathlib.c`、`lstrlib.c`、`lauxlib.c`、`lapi.c` 的对应函数逐条核对，没有找到第三处。
 
+第二十一轮独立审查（全范围，又一位 reviewer）没有阻塞问题和重要问题，一条小问题：分层测试里
+`factories_called_from_compiled_code` 一段有 `viaIpairs`、`viaPairs` 两个内核，断言只要求进入升层代码的次数大于 0。
+把其中一个内核改成不升层的写法，进入次数从 78 降到 39，这一段照常通过，那一半的覆盖就没有了。这一段拆成
+`ipairs_called_from_compiled_code` 和 `pairs_called_from_compiled_code` 两段，各一个内核；同样的变异现在让对应的一段在
+P3、P4 下失败。拆开后的十段在 amd64 和 linux/arm64（qemu）的 P3、P4 上通过。其余八段本来就各只有一个会升层的函数。
+
 验证：`make all` 与 `make fuzz-oracle` 通过。把 `internal/stdlib` 的 `stdlib.go` 和 `tablelib.go` 一起换回修复前的版本：
-行为测试 10 个用例失败，`test/api` 的 `io.lines` 用例 4 个失败，`TestTiered_StdlibNames` 在 P3、P4 两种构建下九段脚本里
-六段失败（剩下的三段修复前后结果相同：迭代器对坏参数的报错、带文件名的 `io.lines`、从升层代码里调用工厂函数，它们的作用是
+行为测试 10 个用例失败，`test/api` 的 `io.lines` 用例 4 个失败，`TestTiered_StdlibNames` 在 P3、P4 两种构建下十段脚本里
+六段失败（剩下的四段修复前后结果相同：迭代器对坏参数的报错、带文件名的 `io.lines`、从升层代码里调用两个工厂函数各一段，它们的作用是
 在升层路径上执行这几条路径），名字比对报出两个多余
 名字和一组缺少的别名，README 反方向的检查失败（README 写着不提供的 `table.unpack` 又有了），#329 的输入和四条回归语料失败。名字比对测试另做了两种变异（删一条登记、加一条过期登记），都会
 失败。去掉 prelude 里的检查，`TestIpairsIteratorGuard` 报 8 处、`TestIoLinesFilenameGuard` 报 5 处；`exemptions` 改一个
