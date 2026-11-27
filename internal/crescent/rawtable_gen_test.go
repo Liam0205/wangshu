@@ -15,6 +15,11 @@ import (
 // different key while gen stays put, such a consumer reads the other key's
 // value as if it were its own. Every path that changes which key a node holds
 // must therefore bump gen (rawtable.go header contract).
+//
+// The generation is read after the deletion, which bumps on its own account:
+// what is asserted is the bump at the moment the node changes its key. Which
+// of the two ways that happens here (takeover or rehash) depends on the string
+// hashes; TestRawTable_DeadNodeTakeoverBumpsGen constructs the takeover.
 func TestRawTable_SlotReuseAfterDeleteBumpsGen(t *testing.T) {
 	st := New()
 	tbl := st.allocTable(0, 4)
@@ -26,10 +31,10 @@ func TestRawTable_SlotReuseAfterDeleteBumpsGen(t *testing.T) {
 	if where != locNode {
 		t.Fatalf("expected node slot, got %v", where)
 	}
-	gen0 := object.TableGen(st.arena, tbl)
 	if e := st.rawSet(tbl, key, value.Nil); e != nil {
 		t.Fatal(e)
 	}
+	gen0 := object.TableGen(st.arena, tbl)
 	// Insert other keys until something occupies the dead slot (or the table
 	// rehashes, which also bumps gen).
 	for i := 0; i < 64; i++ {
@@ -50,7 +55,7 @@ func TestRawTable_SlotReuseAfterDeleteBumpsGen(t *testing.T) {
 		}
 	}
 	if object.TableGen(st.arena, tbl) == gen0 {
-		t.Fatalf("gen never bumped although %d inserts followed a delete", 64)
+		t.Fatalf("slot %d never changed its key in %d inserts after the delete: the test asserts nothing", idx, 64)
 	}
 }
 
