@@ -265,10 +265,13 @@ func TestDiff_NextFromKeysOfClearedEntries(t *testing.T) {
 }
 
 // nextFromFixedKeysOfClearedEntries is the same with keys lua5.1 never collects: it fixes the
-// reserved words and the metamethod names (luaS_fix in llex.c and ltm.c), so there the dead key of
-// a cleared entry goes on pointing at a live string and next accepts it every time. wangshu has
-// no such strings: the key goes like any other, and next raises. The script counts the calls
-// that succeed in 30 rounds, for a metamethod name and for a reserved word.
+// reserved words, the metamethod names listed in ltm.c and the "not enough memory" message
+// (luaS_fix in llex.c, ltm.c and lstate.c), so there the dead key of a cleared entry goes on
+// pointing at a live string and next accepts it every time. wangshu fixes no string: such a key
+// goes like any other, and next raises unless something else refers to the string. "__index" is
+// one that something else refers to (it is a key of the string metatable), so there the two
+// agree. The script counts the calls that succeed in 30 rounds, for "__call", "while",
+// "not enough memory" and "__index".
 const nextFromFixedKeysOfClearedEntries = `
 local function count(build)
   local ok = 0
@@ -281,12 +284,13 @@ local function count(build)
   end
   return ok
 end
-return count(function() return "__ca" .. "ll" end), count(function() return "whi" .. "le" end)`
+return count(function() return "__ca" .. "ll" end), count(function() return "whi" .. "le" end),
+  count(function() return "not enough" .. " memory" end), count(function() return "__ind" .. "ex" end)`
 
 // TestDiff_NextFromFixedKeysOfClearedEntries pins both sides of that: neither depends on where
 // the allocator puts anything.
 func TestDiff_NextFromFixedKeysOfClearedEntries(t *testing.T) {
-	const wantWangshu, wantOracle = "0\t0", "30\t30"
+	const wantWangshu, wantOracle = "0\t0\t0\t30", "30\t30\t30\t30"
 	for _, stress := range []bool{false, true} {
 		if got := runClearCase(t, nextFromFixedKeysOfClearedEntries, stress); got != wantWangshu {
 			t.Errorf("wangshu (collecting at every safepoint: %v):\n  got:  %q\n  want: %q", stress, got, wantWangshu)
@@ -394,7 +398,9 @@ collectgarbage()
 for i = 1, 5 do t[K[i]] = i end
 return (pcall(next, t, K[6]))`, "true", "false"},
 	// The same in a table whose keys and values are both weak: lua5.1 does not turn the removed
-	// keys into dead keys there, so the five go back into their nodes and the two agree.
+	// keys into dead keys there, so the five go back into their nodes and the two agree. K keeps
+	// the keys referenced; a removed string key nothing else refers to is collected by lua5.1, and
+	// stored again it is a new key unless the new string lands on the old address.
 	{"same_keys_stored_again_after_a_collection_weak_keys_and_values", `
 local K = {} for i = 1, 8 do K[i] = "key" .. i end
 local t = setmetatable({}, {__mode = "kv"})
