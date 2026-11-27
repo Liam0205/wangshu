@@ -42,11 +42,12 @@ local t = {1, 2, 3}
 local total = 0
 for i = 1, 60 do total = total + loop(ipairs(t)) + loop(pairs(t)) end
 return total`, true, true},
-	// pairs and ipairs themselves, called from a promoted function. A function that calls the global
-	// is not promoted, so the kernels reach the two factories as methods of the table, and are padded
-	// with arithmetic so that both P4 native translators accept them.
-	{"factories_called_from_compiled_code", `
-local x = {10, 20, 30, ipairs = ipairs, pairs = pairs}
+	// ipairs itself, called from a promoted function. A function that calls the global is not
+	// promoted, so the kernel reaches the factory as a method of the table, and is padded with
+	// arithmetic so that both P4 native translators accept it. One kernel per case: the entry count
+	// then says that this kernel ran compiled, not that one of several did.
+	{"ipairs_called_from_compiled_code", `
+local x = {10, 20, 30, ipairs = ipairs}
 local function viaIpairs(t, i)
   local a = i * 2 + 1
   local b = a - i
@@ -58,6 +59,12 @@ local function viaIpairs(t, i)
   for _, v in t:ipairs() do n = n + v end
   return n + g - g
 end
+local total = 0
+for i = 1, 40 do total = total + viaIpairs(x, i) end
+return total`, true, true},
+	// The same for pairs.
+	{"pairs_called_from_compiled_code", `
+local x = {10, 20, 30, pairs = pairs}
 local function viaPairs(t, i)
   local a = i * 2 + 1
   local b = a - i
@@ -70,7 +77,7 @@ local function viaPairs(t, i)
   return n + g - g
 end
 local total = 0
-for i = 1, 40 do total = total + viaIpairs(x, i) + viaPairs(x, i) end
+for i = 1, 40 do total = total + viaPairs(x, i) end
 return total`, true, true},
 	// The ipairs iterator narrows its control value like luaL_checkint, numeric strings included.
 	{"ipairs_iterator_string_control", `
