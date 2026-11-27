@@ -2863,8 +2863,10 @@ P1 成功、P4 抬 `SETLIST: not a table`。**根因不在 JIT 里**,而在共�
   三种方式的结果仍然相同。arm64 上用 `qemu-aarch64` 执行过。
   变异：只撤掉 ①，三段失败（两个结果、三个结果、宿主函数参数错误）；② 按分支逐个改回 pc 0，`SetTable` 两段失败，`GetTable` 两段失败，
   `DoSetGlobal` 一段失败（`store_to_global_reaches_newindex`），`DoGetGlobal` 一段失败（`read_of_global_reaches_index`）。
-  `SetList`、`Close`、`NewTable` 三个分支改回去没有测试失败，也没有补，因为脚本看不到差别：宿主的 `SetList` 只在 `C = 0`（批次号放在
-  下一条指令里）时才读 `Code[ci.pc]`，而重放路径不接受 `C = 0` 的 SETLIST（`sideEffectFromIns` 要求 `C` 在 1 到 255 之间）；宿主的
+  `SetList`、`Close`、`NewTable` 三个分支改回去没有测试失败，也没有补，因为脚本看不到差别：宿主的 `SetList` 用到 pc 的地方有三处，
+  一是 `C = 0`（批次号放在下一条指令里）时读 `Code[ci.pc]`，而重放路径不接受 `C = 0` 的 SETLIST（`sideEffectFromIns` 要求 `C` 在
+  1 到 255 之间）；二是 `doSetList` 报 `SETLIST: not a table` 时按 `ci.pc` 加行号，而从源码编译出来的字节码里，SETLIST 的 A 寄存器
+  总是刚由 NEWTABLE 建好的表，走不到这个报错；三是末尾的安全点，情况与下面的 `NewTable` 相同。宿主的
   `Close` 根本不用传进来的 pc；`NewTable` 只把它记进 `ci.pc`，自己不报错、不访问内联缓存，之后只有末尾的安全点，那里能读到这一帧
   位置的只有终结器，而脚本造不出带 `__gc` 的对象。`analyzeCallVoidForm` 新加的检查由 `TestPJ5_AnalyzeCallVoidForm_Reject` 的一段手工字节码覆盖，
   撤掉检查这一段失败。
