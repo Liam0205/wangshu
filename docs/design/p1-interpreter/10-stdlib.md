@@ -558,7 +558,7 @@ func gsubFunctionRepl(vm *VM, th *Thread, captures []value.Value, repl value.Val
 > **stdlib 纪律总则(三条范例归纳)**:① **优先 Go 缓冲累积**(concat/format/rep),把 arena 分配压缩到末尾一次,
 > 根本规避中间持有窗口;② **不可避免地在 arena 持有中间引用跨分配/跨重入时,Pin/defer Unpin**(gsub 捕获);
 > ③ **能尽早把引用送进 Lua 栈/表的就送**(进栈即 R5 可达,免 Pin)。差分测试的 **GC 压力 fuzz**(06 §11:压力模式,
-> 每个安全点都 GC)是捕获漏 Pin 的主要自动化防线——漏 Pin 在正常 pacing 下偶发,高频 GC 下必现。
+> 每个安全点都 GC)是捕获漏 Pin 的主要自动化防线——漏 Pin 在正常 pacing 下偶发,持有窗口里有安全点(回调 Lua 函数)时高频 GC 下必现(§13.3)。
 
 ---
 
