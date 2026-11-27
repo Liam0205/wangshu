@@ -3,14 +3,11 @@
 // pj4_template.go —— PJ8 arm64 PJ4 table IC six-path byte-level templates
 // (mirrors amd64 pj4_template.go, the complete set of six paths).
 //
-// **Not wired in yet** (per §9.12 remaining engineering work): the arm64
-// trampoline asm + mmap+RX end-to-end path awaits a physical self-hosted
-// runner; this batch only assembles the byte-level templates and validates
-// the layout via byte-level unit tests, laying the groundwork for the next
-// stage that actually wires it in.
+// The P4 arm64 backend emits these through the archEmit* wrappers in
+// jit/arch_arm64.go; the byte-level unit tests next to this file pin the
+// layout, and the jit package runs each template as machine code.
 //
-// **arm64 register protocol** (per 06-backends.md §4.2; this batch keeps the
-// templates in inline form that can only run once the trampoline is connected):
+// **arm64 register protocol** (per 06-backends.md §4.2):
 //   - x26 = valueStackBase (mirrors amd64 rbx)
 //   - x27 = jitContext (mirrors amd64 r15)
 //   - x28 = Go G (reserved by the Go runtime)
@@ -105,10 +102,6 @@ func emitSlotAddrArm64(buf []byte, byteOff uint64) []byte {
 
 // EmitGetTableArrayHitArm64 assembles the arm64 PJ4 IC ArrayHit byte-level
 // direct-slot template (the arm64 mirror of the amd64 EmitGetTableArrayHit).
-//
-// **Not wired in yet** (the arm64 trampoline asm + mmap+RX end-to-end path
-// awaits a physical self-hosted runner); this batch is pure byte-level
-// template assembly plus byte-level unit tests to validate the layout.
 //
 // **Byte layout** (216 bytes, strict IsTable guard version):
 //
@@ -269,11 +262,6 @@ const EncodedGetTableArrayHitArm64Len = 216
 
 // EmitGetTableNodeHitArm64 assembles the arm64 PJ4 IC NodeHit byte-level
 // direct-slot template (the arm64 mirror of the amd64 EmitGetTableNodeHit).
-//
-// **Not wired in yet** (same as the file header note): the arm64 trampoline
-// asm + mmap+RX end-to-end path awaits a physical self-hosted runner; this
-// batch is pure byte-level template assembly plus byte-level unit tests to
-// validate the layout.
 //
 // **NodeHit vs ArrayHit differences** (same as amd64 NodeHit):
 //   - reads word3=nodeRef (offset 24) instead of word2=arrayRef (offset 16)
