@@ -362,6 +362,32 @@ func TestCollect_CompactFollowsThePauseRatio(t *testing.T) {
 	}
 }
 
+// TestCollect_CompactKeepsTheSlabWhenThePauseRatioHasNoBound: a negative ratio means no automatic
+// collection and a huge one puts the next threshold beyond any arena, so Compact leaves the slab
+// alone. For a negative ratio that is the doing of the 4 GiB cap on the size to keep: without it
+// live plus the threshold wraps to less than live, and the slab is shrunk to fit the live bytes.
+func TestCollect_CompactKeepsTheSlabWhenThePauseRatioHasNoBound(t *testing.T) {
+	for _, pause := range []int{-1, math.MinInt32, math.MaxInt32} {
+		a := arena.New(arena.Options{InitialBytes: 64 * 1024})
+		c := New(a, Options{})
+		g := object.AllocTable(a, 0, 0)
+		c.LinkSweep(g)
+		c.SetRoots(Roots{Globals: g})
+		// A live 64 KiB table rooted on the shadow stack, and a dead 8 MiB one.
+		keep := object.AllocTable(a, 8*1024, 0)
+		c.LinkSweep(keep)
+		c.Push(value.MakeGC(value.TagTable, keep))
+		dead := object.AllocTable(a, 1<<20, 0)
+		c.LinkSweep(dead)
+		before := a.Cap()
+		c.SetPause(pause)
+		c.Collect()
+		if a.Cap() != before {
+			t.Errorf("pause %d: Collect replaced the slab: %d → %d", pause, before, a.Cap())
+		}
+	}
+}
+
 // TestSetPauseDrivesTheThreshold: the pause ratio set through SetPause is what the next collection
 // uses for its threshold, SetPause and SetStepMul return the previous value, and a ratio a script
 // can pass (negative, huge) neither wraps the threshold nor makes it zero.
