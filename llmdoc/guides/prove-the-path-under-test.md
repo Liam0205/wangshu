@@ -28,7 +28,7 @@
 被测对象 inline 与 helper 输出等价时,把 helper 改成「无副作用但断言不该到」/「不写目标寄存器」/「返回 error」,使被测路径走到 helper 时**输出可分辨**。例:PW5 inline-proof 测试把 `h_getglobal` 改成毒化助手,inline 命中则 R(A) 写入正确值,inline 漏掉走 helper 时 R(A) 仍是 nil(哨兵不写),断言区分。
 
 **(b) 正向 tier / 命中计数器(升层 / 快路径类)**
-对 tier-vs-tier 基准 / wasm 快路径 / inline IC,加**白盒计数器**(`atomic.AddInt64(&fastCallHits, 1)` 等),测试断言计数器单调增。例:PW10 ③b emitReturn 守卫快路径加 `doReturnHits` 计数,`TestPW9_ZeroCross_ReturnFastHit` 经 helper→f 不增计数验快路径命中;PW10 顶层升层加 `TopLevelUplift` 探针(DoReturn 增量证 wasm 入口被走)。也包含**直接断言 tier 状态**:`TestPW9_ForceAllPromoteReal` 断言 proto 真到达 `TierGibbous` 不是 `TierStuck` no-op skip。同族解药还包括**自然触发路径的兜底断言**:测试套自称覆盖 auto/natural 升层(而非 force-all)时,配 `PromotionCount>0` 一类断言证明该 run 里确实发生过至少一次真实升层——否则短用例语料可能在收益门调整后悄悄退化成纯解释器覆盖而无人发现(issue #67 auto-mode 覆盖轮:第一版语料立刻就没通过这条断言,逼语料从短核换成能通过收益密度门的长纯算术核)。同一条 `PromotionCount>0` 断言也把**能力级静默回退**抓出来:issue #91 relooper diamond 修复配的白盒 `TestP3_TopLevelDiamondPromotes` 断言 `PromotionCount>0`——byte-equal 分不清「真升层了」和「静默 CFAIL 回退解释器仍产出正确值」,顶层 diamond 永远升不了 P3 这个 bug 藏了这么久正是因为全成功语料的 difftest 全绿、没人有正交证据看它到底升没升(fixture 随判据多维化演进的配套纪律见 [[backend-capability-vs-profitability]] §6)。
+对 tier-vs-tier 基准 / wasm 快路径 / inline IC,加**白盒计数器**(`atomic.AddInt64(&fastCallHits, 1)` 等),测试断言计数器单调增。例:PW10 ③b emitReturn 守卫快路径加 `doReturnHits` 计数,`TestPW9_ZeroCross_ReturnFastHit` 经 helper→f 不增计数验快路径命中;PW10 顶层升层加 `TopLevelUplift` 探针(DoReturn 增量证 wasm 入口被走)。也包含**直接断言 tier 状态**:`TestPW9_ForceAllPromoteReal` 断言 proto 真到达 `TierGibbous` 不是 `TierStuck` no-op skip。同族解药还包括**自然触发路径的兜底断言**:测试套自称覆盖 auto/natural 升层(而非 force-all)时,配 `PromotionCount>0` 一类断言证明该 run 里确实发生过至少一次真实升层(这是编译侧的证据;要证明升层代码执行过,断言 `GibbousEntries`,见 §2.2c)——否则短用例语料可能在收益门调整后悄悄退化成纯解释器覆盖而无人发现(issue #67 auto-mode 覆盖轮:第一版语料立刻就没通过这条断言,逼语料从短核换成能通过收益密度门的长纯算术核)。同一条 `PromotionCount>0` 断言也把**能力级静默回退**抓出来:issue #91 relooper diamond 修复配的白盒 `TestP3_TopLevelDiamondPromotes` 断言 `PromotionCount>0`——byte-equal 分不清「真升层了」和「静默 CFAIL 回退解释器仍产出正确值」,顶层 diamond 永远升不了 P3 这个 bug 藏了这么久正是因为全成功语料的 difftest 全绿、没人有正交证据看它到底升没升(fixture 随判据多维化演进的配套纪律见 [[backend-capability-vs-profitability]] §6)。
 
 ⚠️ **白盒命中计数器要按稳态窗口(跨 Run)统计,不按单 Run 统计**(详见 §8)。「命中 N 次」是「机制被触发过」的证据,不是「机制在稳态生效」的证据——若快路径带一道会因跨 Run 重建而失效的身份 guard,它可能在第一个 Run 里碰巧命中(表还是 promotion 那一刻的那张)、后续 Run 全落空,单 Run 计数器看着漂亮但稳态下从没真正生效。读命中计数器时选跨 Run 窗口,别拿单个 Run 的命中数下结论。
 
@@ -531,13 +531,13 @@ internal/value/value.go::Nil」,值却是 `0xFFFE<<48`(TagUserdata);`value.Nil` 
 
 **适用场景**:收到「某机制 X 没生效」的指控(外部 review / issue / 用户报告),要写复现测试验证它是否属实时。
 
-**核心断言**:复现测试与被指控路径是两回事——若复现测试实际走的是另一条路径,「budget 生效了 / 没复现」产出的是**伪证据**,会直接把一个真 bug 关掉。验证「机制 X 没生效」之前,必须先用白盒探针(`SafepointCalls` / `PromotionCount` 等)证明复现测试的执行路径就是被指控的那条路径。这是 §2「路径真被走到」在**复现方向**的应用:测试侧走错路径产出假绿,复现侧走错路径产出假「无 bug」——后者更危险,因为它以「验证过了」的姿态终结调查。
+**核心断言**:复现测试与被指控路径是两回事——若复现测试实际走的是另一条路径,「budget 生效了 / 没复现」产出的是**伪证据**,会直接把一个真 bug 关掉。验证「机制 X 没生效」之前,必须先用白盒探针(`SafepointCalls` / `GibbousEntries` 等)证明复现测试的执行路径就是被指控的那条路径。这是 §2「路径真被走到」在**复现方向**的应用:测试侧走错路径产出假绿,复现侧走错路径产出假「无 bug」——后者更危险,因为它以「验证过了」的姿态终结调查。
 
 **实例(2026-07-18 review 修复轮,PR #161)**:外部 review 指控「P3 loop fuel 在预算开启后不重新武装」(`Safepoint` 无预算时把 fuel 字填成 `loopFuelUnlimited`,`SetStepBudget` 只改 Go 侧字段,先无预算跑热 P3 循环再开预算,新预算要等约十亿次 back-edge 后才被查询)。第一版复现测试用 `local function spin()` + FORLOOP 循环 + `SetForceAllPromote`,结果 budget 居然生效报错——差点据此把真问题判为「不存在」。原因是那个循环写法的 back-edge 没有在段内跑,预算走的是解释器路径,测的根本不是被指控的路径。换成既有 `test/regression/loop_stepbudget_p3_test.go` 已用 `SafepointCalls > 0` 证明「back-edge 在段内跑」的写法后,bug 稳定复现(warm 后 `SetStepBudget(10)`,100 万次段内循环照常跑完、err=nil、safepoints-delta=0)。反思 [[2026-07-18-review-p3-loopfuel-rearm-round]]。
 
-**手法**:写「验证机制没生效」的复现测试时,第一条断言不是「机制是否生效」,而是「本测试的执行路径就是被指控路径」的白盒证据(段内路径用 `SafepointCalls`、升层用 `PromotionCount`、快路径用命中计数器);优先复用仓内已经证明过路径的既有测试写法,而不是新造一个未证明的载体。复现失败时,先怀疑复现路径走错,再考虑「问题不存在」。
+**手法**:写「验证机制没生效」的复现测试时,第一条断言不是「机制是否生效」,而是「本测试的执行路径就是被指控路径」的白盒证据(段内路径用 `SafepointCalls`、升层用 `PromotionCount`、在升层代码里执行过用 `GibbousEntries`、快路径用命中计数器;`PromotionCount` 只说明编译过,见 §2.2c);优先复用仓内已经证明过路径的既有测试写法,而不是新造一个未证明的载体。复现失败时,先怀疑复现路径走错,再考虑「问题不存在」。
 
-**同错误文本也可能是静默替身(issue #177,2026-07-24)**:验证 P4 deopt loop 是否保留 step budget / cancel context 时，auto 路径如果因促升阈值、shape matcher 或 timeout 先后关系变化而留在 P1，解释器也会产生相同的 `instruction budget exceeded` / `context canceled` 文本。只比错误文本会假绿。此类「自然促升后命中特定 deopt 分支」测试至少需要两层正交证据：`PromotionCount` 证明离开解释器，分支专用 hit counter（本例 `SpecForLoopDeoptHits`）证明命中被测 deopt；两个计数都应比较本次运行前后的 delta，避免其他 case 的累计命中污染证据。与 §2 的原则一致，但这里强调错误路径的最终输出完全相同，单一 probe 仍不足以排除静默替身。反思 [[2026-07-24-p4-template-forprep-deopt-round]] 教训 5。
+**同错误文本也可能是静默替身(issue #177,2026-07-24)**:验证 P4 deopt loop 是否保留 step budget / cancel context 时，auto 路径如果因促升阈值、shape matcher 或 timeout 先后关系变化而留在 P1，解释器也会产生相同的 `instruction budget exceeded` / `context canceled` 文本。只比错误文本会假绿。此类「自然促升后命中特定 deopt 分支」测试至少需要两层正交证据：`PromotionCount` 证明发生过升层（它是编译侧的量，单独不能证明执行离开了解释器，见 §2.2c），分支专用 hit counter（本例 `SpecForLoopDeoptHits`）证明命中被测 deopt；两个计数都应比较本次运行前后的 delta，避免其他 case 的累计命中污染证据。与 §2 的原则一致，但这里强调错误路径的最终输出完全相同，单一 probe 仍不足以排除静默替身。反思 [[2026-07-24-p4-template-forprep-deopt-round]] 教训 5。
 
 **与 §7 主体的对偶关系**:§7 主体是「退化归因前先证被怪罪的路径存在」,本节是「否证指控前先证复现走的是被指控的路径」——一个防「错怪」,一个防「错放」。
 
@@ -1306,13 +1306,14 @@ bug 会**对称地**打坏两侧,于是「相等」这个结论仍然成立,只�
 - **上游修掉了某个缺陷、要判断为它加的兜底机制(条件重试 / 宽松判据 / fallback / 额外守卫)能不能删时**(§4.6a) → 先算「按这层兜底的历史触发频率,这一轮跑这么久本来该出现几次」;答案接近 0 就说明这一轮什么都没证明(#180:一次 30 秒 fuzz smoke 报 0 次 #75804 重试,而历史频率是约 450 个 job 里 9 次,两者不在一个量级)。证据要与触发频率同量级,并优先取**生产环境的自然观测**(nightly)而不是一次专门跑的验证;再问撤错的失效方向 —— 失效是「真失败被当噪声吞掉」或「一类输入退出比对」时门槛要高,因为这两种错误都不会自己报出来。checklist 上的「评估并删除」,**「评估结论是证据还不够」也算合格执行**,把撤除条件(**两条**:历史同量级的归零观测,且确认没有别的机制会产生同样症状)写成一个可观测的量即可。后续（2026-09-26）：nightly 上升级后 2199 次运行 0 次重试，升级前同一条 grep 在 1851 次运行里数到 14 次作对照，「没有别的机制产生同样症状」这一条靠读源码确认，重试已删除。**用 0 次观测支持撤除时，要有一段同一统计方法数到非 0 的对照期**；撤除时如果连带删掉的测试是某个脚本唯一的端到端覆盖，要在同一次改动里补一个同时断言退出码**和调用次数**的端到端测试（本例 `scripts/test-go-fuzz.sh`）
 - **测格式化 / 转换 / 解析类接口时**(§4.7) → 把「不给可选参数」当成一个独立维度扫,而不只是扫各种参数值;对每个可选参数问「省略时参照实现取什么、那个取值是谁定的」(`%g` 的显式精度一直是对的,只有默认精度 C 是 6 而 Go 是最短往返)
 - **写 force-all / 缓存裁决 / IC 命中类** → 同时 (a) 白盒断言「真到达加速 tier 不是 stuck no-op」+ (b) 输入侧也加结构盲区用例(vararg 顶层 / 字符串常量值 / 协程不升层)
-- **写「auto / 自然触发路径」测试套(不带 force-all)** → 配 `PromotionCount>0` 一类白盒兜底断言,证明该 run 里确实发生过真实升层;否则短用例语料可能悄悄退化成纯解释器覆盖(见 §1「未强制测试静默退化」)
+- **写「auto / 自然触发路径」测试套(不带 force-all)** → 配 `PromotionCount>0` 一类白盒断言,证明该 run 里确实发生过真实升层;否则短用例语料可能悄悄退化成纯解释器覆盖(见 §1「未强制测试静默退化」)。这条断言只说明编译过;要证明升层代码执行过,再断言 `GibbousEntries() > 0`(见 §2.2c)
+- **给 P3 / P4 写「同一段脚本在解释器和升层代码里结果一致」的测试，尤其是出错路径的测试时**（§2.2c） → 断言 `GibbousEntries()` 在升层的各格大于 0、在只用解释器的一格等于 0，不要停在 `PromotionCount() > 0`；需要出错的内核经 Lua 包装函数（不能是尾调用）调用，不直接放在 `pcall` 下面；一段脚本里只让一个函数进入升层代码；写完做一次只改升层路径的变异，并在 arm64 上也执行一遍
 - **测 tier 状态机的吸收态分类断言**(`StuckNotCompilable` 类)→ 载体调用次数要显式跨过 force-all 的 warm-up retry window(当前 64),否则测的是 `TierInterp` 状态不是 Stuck 状态(见 §2 补丁)
 - **测运行期开关 / kill switch 类切换语义**(`SetTierEnabled` 一类)→ 三段式(promote→off→on),每段各配路径断言(`NativeRunCount` delta > 0 / == 0 / > 0)+ 第三段的「缓存指标不变」断言把「重开不重编译」隐性约定固定下来(见 §2(d));只断言「结果一致」等价于没测
 - **机制叠加多档崩点诊断**(§6) → 第一步不是穷举 N 档分别诊断,是写 minimal payload bypass 末档跳一档,把 N 档收敛到一档;多后端/多平台首次「真机 execute」上线时配真机 runner
 - **收到「某条路径导致 N 倍退化」类归因,准备写止血/修复计划前**(§7) → 先 grep build tag / 读函数头注 / 跑白盒探针证该路径在当前二进制里真的存在且可达,再动手修
 - **分诊某 P4 tier bug 时**(§7 同源) → 先跑白盒探针(`NativeRunCount` / `DispatchHelperCount` / PerOpCode debug 打印)分类走的是 PerOpCode / nativeCode / p4Code 哪一类,再挖对应 emit;traceback 直觉锁定的是「触发前提」不是「代码路径」
-- **收到「某机制没生效」的指控,要写复现测试时**(§7.1) → 第一条断言是「复现测试走的就是被指控路径」的白盒证据(`SafepointCalls` / `PromotionCount` / 命中计数器),优先复用已证明路径的既有测试写法;复现失败先怀疑路径走错,再考虑「问题不存在」
+- **收到「某机制没生效」的指控,要写复现测试时**(§7.1) → 第一条断言是「复现测试走的就是被指控路径」的白盒证据(`SafepointCalls` / `GibbousEntries` / 命中计数器;`PromotionCount` 只说明编译过,见 §2.2c),优先复用已证明路径的既有测试写法;复现失败先怀疑路径走错,再考虑「问题不存在」
 - **扩接受面(opSupported 加 op) / 换新硬件跑 fuzz / 改 fuzz 参数(-parallel、-race、GOMAXPROCS)时**(§5) → 立刻跑一轮 60~120s 相关 fuzz smoke,把它当 `go test` 必经步骤,不要延后到「专门的 fuzz 里程碑」;三个独立实例都在维度动的第一次 fuzz 里就抓到既有 bug
 - **读一个投机 / inline 快路径的性能收益数字、或复查一个历史 perf 裁决时**(§8) → 度量单位选跨 Run 稳态 dispatch 计数而非单 Run 命中数;看到「命中 N 次」漂亮但整体数字反而回归,默认怀疑「机制被触发过但稳态下从没真正生效」;给「把身份快照固化进段」的 guard 前先问会不会因跨 Run 重建而失效
 - **想在差分 harness 里接受 / 跳过某类平台差异时**(§9.0,**先过这一条再看下面几条**) → 先判差异属于哪一类:「同一个抽象值的不同书写方式」(NaN 符号位)→ 在**渲染处**消除,别设计判据,因为这类差异会流入普通数据(`string.len(0/0)*100` 是 400 对 300,输出里没有可锚定的 token);「两侧本来就是不同的东西」(引用值地址、两侧独立选定的实现上限)→ 才在比较时归一或跳过。判在渲染侧时先查那一侧的**供给链**(源码在哪、谁编译的、已经打过什么补丁、改它会不会破坏它作为基准的意义)
