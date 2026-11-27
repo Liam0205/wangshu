@@ -281,7 +281,8 @@ var exemptions = []struct {
 	{"collectgarbage step/setstepmul 精确语义", "10 §4.6:GC 是 stop-the-world,没有增量步进。step 做一次完整回收并返回 true(官方返回这一步有没有结束一轮回收);setstepmul 的值会保存并在下次调用时返回,但不影响回收"},
 	{"collectgarbage setpause 的比例含义", "10 §4.6：返回值和参数转换与官方一致，比例的含义不同。望舒拿 live × 比例 / 100 与上次回收以来新分配的字节数比较，官方拿它与总字节数比较，所以望舒的比例 p 大约相当于官方的 p + 100（200 在官方是总量翻倍时回收，在望舒是总量到三倍时回收）；0 在望舒是每分配 arena 容量的 1/16 回收一次，在官方是几乎不停地回收。要不要改成官方的口径见 issue #353。TestDiff_GCPauseMeaning 固定两边各自的结果"},
 	{"pattern 灾难性回溯有界失败", "回溯预算 1<<20 步:`.*.+%A*x` 级灾难回溯报 'pattern too complex',oracle 慢速算完——嵌入式防挂起裁量(官方成功/本实现报错的有意分歧)"},
-	{"next 接受已删除、原字符串对象已被回收的键", "已删除的哈希节点让它的字符串键一直存活到所在的表下一次 rehash（06 §8.4），所以 `t[k] = nil` 之后用内容相同的字符串调用 next(t, k) 总能从原位置继续，结果与中间有没有发生过回收无关。官方的回收器不让这样的键存活，回收之后 next 只按对象地址认它，重新拼出来的字符串会报 invalid key to 'next'；没有发生回收时两边相同。TestDiff_NextFromCollectedStringKey 固定两边各自的结果"},
+	{"next 接受已删除、原字符串对象已被回收的键", "已删除的哈希节点让它的字符串键一直存活到所在的表下一次 rehash（06 §8.4），所以 `t[k] = nil` 之后用内容相同的字符串调用 next(t, k) 总能从原位置继续，结果与中间有没有发生过回收无关。官方的回收器不让这样的键存活，回收之后 next 只按对象地址认它：重新拼出来的字符串如果没有正好分配在原对象的地址上，就报 invalid key to 'next'，分配在原地址上则成功；没有发生回收时两边相同。代价是内存：被删除的字符串键要到所在的表下一次 rehash 才能回收，原地清空之后闲置的表会一直占着它放过的全部字符串键（要不要改见 issue #352）。TestDiff_NextFromCollectedStringKey 固定望舒一侧的结果"},
+	{"删除之后又插入了别的键，再对已删除的键调用 next", "已删除的键所在的节点还在不在，取决于哈希部分的布局：主位置正好是它的新键会接管这个节点，找不到空闲节点的插入会 rehash。望舒哈希部分的大小和主位置与官方不同（issue #349），所以同一段脚本里 next(t, 已删除的键) 可能一边报 invalid key to 'next'、另一边继续，两个方向都有。手册规定遍历过程中给不存在的字段赋值之后行为未定义。TestDiff_NextAfterInsertingOtherKeys 固定三段脚本两边各自的结果"},
 	{"loadfile/dofile 默认禁用", "文件系统读默认关(不可信脚本越权探测面);Options.AllowFileLoad 显式开启后行为对齐官方"},
 }
 
@@ -557,6 +558,7 @@ var readmeListsProvided = map[string]string{
 	"dofile":          "provided, off by default",
 	"io.lines":        "provided; the filename form raises",
 	"string.char":     "provided; the row is about arguments outside the int range",
+	"next":            "provided; the row is about calling it with a removed key after other keys were inserted",
 	"type":            "not listed itself: the abbreviation of math.type on the 5.3 row reads as the global",
 }
 
