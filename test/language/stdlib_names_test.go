@@ -75,7 +75,8 @@ local s = 0 for _, v in ip({1, 2, 3}) do s = s + v end for _, v in pr({x = 10}) 
 		// The two LUA_COMPAT aliases official 5.1.5 ships are the same function object as what they
 		// alias, not a second function that behaves alike.
 		{"compat aliases are one function", `return tostring(math.mod == math.fmod) .. " " .. tostring(string.gfind == string.gmatch)`, "true true"},
-		// luaL_checkint reads through lua_tonumber, so a numeric string is a valid control value.
+		// luaL_checkint reads through lua_tointeger, which converts a numeric string, so one is a valid
+		// control value.
 		{"ipairs iterator coerces a numeric string", `local f = ipairs({}) local a, b = f({10, 20, 30}, "1") local c, d = f({10, 20, 30}, "0x1")
 local n = 0 for _, v in f, {7, 8}, "0" do n = n + v end
 return a .. "," .. b .. " " .. c .. "," .. d .. " " .. n .. " " .. tostring(select(2, pcall(f, {}, "x")))`,
