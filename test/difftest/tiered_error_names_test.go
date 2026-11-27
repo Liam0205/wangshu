@@ -14,7 +14,8 @@ import (
 // host helper that raises takes both from the pc the compiled code hands it, so a pc that is off
 // names another variable (or none) and reports another line.
 //
-// Every kernel spans several lines with the faulting expression on the first, and the comparison
+// Every kernel spans several lines, with the faulting expression on a line of its own (the
+// instructions that follow it, the MOVEs and the RETURN, are on later lines), and the comparison
 // keeps the line number: only the chunk name is cut off the position prefix. The kernel is called
 // through a Lua wrapper that is not a tail call, and four times, because the call that compiles it
 // still runs in the interpreter (see tieredStdlibNameCases). A fifth call goes through xpcall with
