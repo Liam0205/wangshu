@@ -28,21 +28,22 @@ import (
 // (the interpreter fills the cache of a store only when the stored value is not nil, and P4
 // compiles a table access only where the cache is filled).
 var tieredClearCases = []struct{ name, warm, run string }{
-	// A promoted generic-for clears the table it walks.
+	// A promoted generic-for clears the table it walks. During the warm-up z is not nil, so the
+	// loop only changes values and the store's inline cache is filled.
 	{"clear_in_generic_for", `
-function clear338(f, s, c)
+function clear338(f, s, z)
   local n = 0
-  for k in f, s, c do
-    s[k] = nil
+  for k in f, s do
+    s[k] = z
     n = n + 1
   end
   return n
 end
-clear338(next, {a = 1, [1.5] = 2})`, `
+clear338(next, {a = 1, [1.5] = 2}, 0)`, `
 local total = 0
 for i = 1, 60 do
   local t = {a = 1, b = 2, c = 3, [1.5] = 4, [true] = 5, [{}] = 6}
-  total = total + clear338(next, t)
+  total = total + clear338(next, t, nil)
   if next(t) ~= nil then return "not empty in round " .. i end
 end
 return total`},
