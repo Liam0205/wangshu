@@ -202,7 +202,7 @@ word4: metaRef   (GCRef→ metatable Table,或 Nil)
 word5: [31:0] lastfree(哈希空闲槽搜索游标) | [63:32] gen(IC 代次,单调递增)
 ```
 
-**`gen` 代次字段**(承 [05](./05-interpreter-loop.md) §6.6 回填请求,IC 失效机制的实际载体):任何改变表"形状"的操作(rehash、增删 metatable、键的数组↔哈希迁移)递增 `gen`;已存在键改值**不**递增。`object.Table` 暴露 `Gen()`/`bumpGen()`。初始 0。详见 [05](./05-interpreter-loop.md) §6。
+**`gen` 代次字段**(承 [05](./05-interpreter-loop.md) §6.6 回填请求,IC 失效机制的实际载体):任何改变表"形状"的操作(rehash、增删 metatable、键的数组↔哈希迁移、删除键、节点换键)递增 `gen`;已存在键改值**不**递增。`object.Table` 暴露 `Gen()`/`bumpGen()`。初始 0。详见 [05](./05-interpreter-loop.md) §6。
 
 **Node(哈希槽,3 字 = 24 字节):**
 ```
@@ -210,6 +210,21 @@ word0: key  (Value)
 word1: val  (Value)
 word2: [31:0] next(int32,链入同主位置冲突链的下一槽索引,-1=无) | [63:32] reserved
 ```
+
+**节点的三种状态**（转换规则的唯一出处是 `internal/crescent/rawtable.go` 的文件头）：
+
+| 状态 | key | val | 含义 |
+|---|---|---|---|
+| 空闲 | Nil | Nil | 没有用过（`next` 为 -1），可以分给任何新键 |
+| 有值 | 非 Nil | 非 Nil | 一个存在的键值对 |
+| 已删除 | 非 Nil | Nil | 键被赋成了 nil：值清掉，键和 `next` 留在原处 |
+
+删除时保留键，与官方 `luaH_set` 相同（官方称 dead key）。这样 `next(t, k)` 在 `t[k] = nil` 之后仍然能找到 `k` 所在的节点，
+`for k in pairs(t) do t[k] = nil end` 这种手册明确允许的写法才能正常遍历完。已删除的节点有三种去向：同一个键再次写入，值放回原节点；
+主位置正好是它的新键接管这个节点（保留 `next`，它可能在别的冲突链中间）；rehash 时被丢弃。找空闲节点时不会选中它。
+
+已删除节点里的键不让它指向的对象存活，字符串除外：对象在某一轮回收里死亡时，回收器在 sweep 之前把这个键换成
+`object.DeadKey`（canonical NaN，不可能是表的键，与任何键比较都不相等），节点仍然是已删除状态。见 [06](./06-memory-gc.md) §8.4。
 
 **键归类规则:**
 - 数字键 `k`:若 `k == floor(k)` 且 `1 <= k <= asize`,走数组槽 `array[k-1]`;否则走哈希。
