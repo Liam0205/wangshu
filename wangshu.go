@@ -393,10 +393,12 @@ func (st *State) MarkGlobalsBaseline() { st.core.MarkGlobalsBaseline() }
 //     semantics `_G[k] = nil`)
 //   - baseline string keys are written back to their value at baseline time
 //
-// Only the globals table's string keys are restored. What a script changed elsewhere on the
-// State stays for the next Borrow: non-string keys of _G, and the collector's settings
-// (collectgarbage("stop"), collectgarbage("setpause", n) -- a negative ratio means no automatic
-// collection). Whether Reset should restore those is issue #353.
+// Only the globals table's string keys are restored, each to the value it had: a library table
+// is the same table as before. Everything else a script changed on the State stays for the next
+// Borrow. That includes the fields of the library tables (string.format = nil; issue #337),
+// metatables (of _G, of the library tables, the one all strings share), non-string keys of _G,
+// and the collector's settings (collectgarbage("stop"), collectgarbage("setpause", n) -- a
+// negative ratio means no automatic collection; issue #353).
 //
 // When `MarkGlobalsBaseline` was never called (empty baseline), this is
 // equivalent to "clear all string-key globals" — use with care, it clears stdlib
