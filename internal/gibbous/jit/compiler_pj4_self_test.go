@@ -154,10 +154,13 @@ func TestPJ4_SelfArrayHit_FormGuards(t *testing.T) {
 		p.IC[0] = bytecode.ICSlot{Kind: bytecode.ICKindArrayHit, Shape: 7, Index: 1}
 		f := &bridge.TypeFeedback{
 			Points: []bridge.PointFeedback{
-				{Kind: bridge.FBTableMono, Confidence: 1.0, StableShape: 7, StableIndex: 1},
+				{Kind: bridge.FBSelfMono, Confidence: 1.0, StableShape: 7, StableIndex: 1},
 			},
 		}
 		return p, f
+	}
+	if _, ok := analyzeSelfArrayHit(mkValid()); !ok {
+		t.Fatal("the form the cases start from is not accepted, so none of them tests its guard")
 	}
 
 	cases := []struct {
