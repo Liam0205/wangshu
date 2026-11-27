@@ -303,6 +303,47 @@ func TestDiff_NextFromFixedKeysOfClearedEntries(t *testing.T) {
 	}
 }
 
+// nextFromRemovedFixedKeys is the case of nextFromCollectedStringKey with keys lua5.1 never
+// collects: a reserved word, a metamethod name and "not enough memory", each built at run time,
+// stored in a table that is not weak and removed by a store of nil. lua5.1 does not collect such
+// a string and wangshu's node keeps it alive, so next accepts the rebuilt key on both sides
+// whatever was allocated and collected in between. The script counts the calls that succeed in
+// 30 rounds for each key.
+const nextFromRemovedFixedKeys = `
+local function count(build)
+  local ok = 0
+  for round = 1, 30 do
+    local t = {}
+    for i = 1, 4 do t["pad" .. i .. "_" .. round] = true end
+    t[build()] = true
+    t[build()] = nil
+    local junk = {}
+    for i = 1, round do junk[i] = string.rep("x", i) end
+    junk = nil
+    collectgarbage() collectgarbage()
+    if pcall(next, t, build()) then ok = ok + 1 end
+  end
+  return ok
+end
+return count(function() return "wh" .. "ile" end), count(function() return "__g" .. "c" end),
+  count(function() return "not enough mem" .. "ory" end)`
+
+// TestDiff_NextFromRemovedFixedKeys requires the two sides to agree on that, with the collector in
+// its normal mode and collecting at every safepoint.
+func TestDiff_NextFromRemovedFixedKeys(t *testing.T) {
+	const want = "30\t30\t30"
+	for _, stress := range []bool{false, true} {
+		if got := runClearCase(t, nextFromRemovedFixedKeys, stress); got != want {
+			t.Errorf("wangshu (collecting at every safepoint: %v):\n  got:  %q\n  want: %q", stress, got, want)
+		}
+	}
+	if oracle := findOracle(); oracle != "" {
+		if got := strings.TrimSuffix(runOracle(t, oracle, wrapForOracle(nextFromRemovedFixedKeys)), "\n"); got != want {
+			t.Errorf("lua5.1 no longer answers as recorded:\n  got:      %q\n  recorded: %q", got, want)
+		}
+	}
+}
+
 // removedStringKeysOfWeakValuedTable removes string keys built at run time from a weak-valued
 // table and from a strong one, collects (or not), and stores the keys again. A key the script
 // removed is kept alive whether or not the table is weak, so it goes back into its node: the
