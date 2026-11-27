@@ -136,8 +136,9 @@ k2621 = 7
 local b = read338(1)
 return a, b, k2621`},
 	// A field is deleted by other code while a single-store function is compiled for it: the next
-	// store is a store to an absent field and must reach __newindex. The key is still in its node,
-	// so what tells the P4 template apart from a store to an existing field is the node's value.
+	// store is a store to an absent field and must reach __newindex. The deletion changes the
+	// table's generation, so the P4 template misses on its generation check here. The cases in which
+	// only the node's value tells such a store apart are in TestTiered_SingleStoreTemplate.
 	{"single_store_function_after_delete_elsewhere", `
 log338 = 0
 S338 = setmetatable({x = 0, y = 0}, {__newindex = function(t, k, v) log338 = log338 + 1 rawset(t, k, v) end})
