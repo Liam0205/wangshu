@@ -53,18 +53,17 @@
 机制)。审查时的 P1 微基准(`t.a=nil t.a=i` 交替 20 万次,`-cpu=1`)慢约 5%~6%。另一条同样满足约定
 的路线是给**所有** gen-only 消费者补 NodeKey 比对(键是常量,一条 `cmp`)之后再让删键与 Brent 重定位
 不 bump——注意「所有」:不只是 P4 GETGLOBAL/SETGLOBAL NodeHit,还有 P3 wasm GETGLOBAL/SETGLOBAL
-NodeHit 和 P3 wasm 常量键 GETTABLE/SETTABLE/SELF NodeHit(`translate_table.go` 的 `tableInlineable`
-对常量键 NodeHit 只做 IsTable + TableRef + gen 三道守卫,注释明写「skipping the key match, same as
-GETGLOBAL」);P4 amd64/arm64 的 GETTABLE/SETTABLE NodeHit 有 NodeKey 比对(amd64 Guard 5 / arm64 Guard 4),是消费者里的少数。漏掉
+NodeHit;有 NodeKey 比对的是 P4 amd64/arm64 的 GETTABLE/SETTABLE NodeHit(amd64 Guard 5 / arm64 Guard 4)
+和 P3 wasm 常量键 GETTABLE/SETTABLE/SELF NodeHit(`translate_table.go` 的 `emitSlotInTable`,#362 起)。漏掉
 任何一个就把 #260 的别名缺陷重新引进那个后端。本轮取正确性优先;若 IC 抖动成为问题,先看这里。
 
 #338 之后删除不再清键，同一个键删了再写会回到原节点，键→槽位的映射在删除时并没有变。删除仍然 bump，
 但它不是任何消费者的正确性所依赖的：gen 没有变说明不了节点仍然有值（P3 的 `emitSetGlobal` 内联写 nil
 不 bump），也说明不了拿到的还是原来那张表（不比对 TableRef 的消费者会遇到 gen 数值相同的另一张表，
 用同一个构造函数建出来的对象 gen 本来就相同；比对 TableRef 的消费者也会遇到，原来那张表被回收之后，
-新建的表可以分配在同一个地址上，gen 也相同，这是修改前就有的问题，记在 [#362](https://github.com/Liam0205/wangshu/issues/362)
-和 [#364](https://github.com/Liam0205/wangshu/issues/364)）。所以每个内联消费者都自己检查节点的值，下表的守卫列
-每一行都有「slot != Nil」。删除时不 bump 可以让同一张表的内联路径在删除之后继续有效，要不要这样改
+新建的表可以分配在同一个地址上，gen 也相同，[#362](https://github.com/Liam0205/wangshu/issues/362)、
+[#364](https://github.com/Liam0205/wangshu/issues/364)）。所以每个内联消费者都自己检查节点的值，下表的守卫列
+每一行都有「slot != Nil」；固化了下标、访问的又不是全局表的消费者，还要检查下标在拿到的这张表之内。删除时不 bump 可以让同一张表的内联路径在删除之后继续有效，要不要这样改
 记在 [[doc-gaps]]。
 
 **gen-only consumer 清单**(与上面 producer 表配对,改任何一侧都要对照另一侧。SET 类消费者里,P4 的
@@ -77,7 +76,7 @@ SETGLOBAL / SETTABLE NodeHit 和 P3 wasm 常量键 SETTABLE NodeHit 还会检查
 | P4 native GETGLOBAL / SETGLOBAL NodeHit | gen + slot != Nil | `peroptranslator/emit_ops_amd64.go` `emitInlineGetGlobalNodeHit` / `emitInlineSetGlobalNodeHit`;arm64 见 `emit_arm64.go` `emitInlineGetGlobalNodeHitArm64` / `emitInlineSetGlobalNodeHitArm64` |
 | P4 native GETTABLE / SETTABLE NodeHit | gen + 下标在表内(`index <= hmask` 且 `nodeRef != 0`) + **NodeKey** + slot != Nil | `emit_ops_amd64.go` Guard 5;`emit_arm64.go` `emitInlineGetTableNodeHitArm64` / `emitInlineSetTableNodeHitArm64`(那里编号 Guard 4) |
 | P3 wasm GETGLOBAL / SETGLOBAL NodeHit | gen + slot != Nil | `wasm/translate_table.go` `emitGetGlobal` / `emitSetGlobal` |
-| P3 wasm 常量键 GETTABLE / SETTABLE / SELF NodeHit | IsTable + TableRef + gen + slot != Nil | `wasm/translate_table.go` `tableInlineable` → `emitTableGuard` + `emitSlotBase` |
+| P3 wasm GETTABLE / SETTABLE / SELF(常量键 NodeHit;ArrayHit 的常量键和寄存器键) | IsTable + TableRef + gen + 下标在表内 + **NodeKey** + slot != Nil(ArrayHit 没有 NodeKey 这一项,寄存器键另外比对键的数值) | `wasm/translate_table.go` `tableInlineable` → `emitTableGuard` + `emitSlotInTable` + `emitSlotBase`。TableRef 和 gen 都相同也不一定是原来那张表(地址被新表重用,#362),所以「下标在表内」和 NodeKey 不能省;`TestPW5_InlineSlotGuards`、`TestTiered_TableAtAReusedAddress` 断言 |
 | 解释器 `icGetTable` / `icSetTable` | gen + NodeKey 复验 + slot != Nil | `crescent/ic.go`(不是 gen-only,gen 只是快速否决) |
 | P4 单条 GETTABLE / SELF 的模板（整个函数只有一条表访问；SELF 的哈希模板还用作 SELF + CALL spec 模板的前半段） | gen + 下标在表内 + NodeKey + slot != Nil（数组部分的模板没有键，是 gen + 下标在表内 + slot != Nil） | `jit/amd64/pj4_template.go` `EmitGetTableNodeHit` / `EmitSelfNodeHit` / `EmitSelfNodeHitNoRet`，数组部分是 `EmitGetTableArrayHit` / `EmitSelfArrayHit`；arm64 对应 `jit/arm64/pj4_template.go` |
 | P4 单条 SETTABLE 的模板 | gen + 下标在表内 + NodeKey + slot != Nil（数组部分的模板没有键，是 gen + 下标在表内 + slot != Nil） | `EmitSetTableNodeHit` / `EmitSetTableArrayHit`（arm64 同）。不比对 TableRef，所以「slot != Nil」这一项挡住的不只是同一张表上的删除，还有 gen 相同、这个字段已经删除的另一张表；`TestTiered_SingleStoreTemplate` 断言。「下标在表内」（本行和上一行）：数组部分是 `index < asize`，哈希部分是 `index <= hmask` 且 `nodeRef != 0`。不比对 TableRef 的消费者遇到的可以是 gen 相同但更小的表，少了这一项，后面几项读的就是表外的内存；`TestPJ4Templates_Execute`、`TestTiered_TemplateOnShorterTable` 断言 |

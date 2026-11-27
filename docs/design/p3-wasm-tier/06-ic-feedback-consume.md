@@ -166,6 +166,10 @@ GETTABLE 的形式比 ADD 复杂(IC 快照固化是 §2 主题),但语义分发�
 | 失败时是否仍在 Wasm 函数 | **是**(call helper 是 imported 调用,Go 助手返回后继续 Wasm) | **否**(离开 JIT 函数,crescent 接管) |
 | 与解释器相同判定的证据 | [../p1-interpreter/05-interpreter-loop](../p1-interpreter/05-interpreter-loop.md) §6.3 `slot.tableRef == ... && slot.shape == t.Gen()` 是**同一组判定** | (P4 复用此判定但语义异化为 guard) |
 
+> **实现现状**：上面的伪码只列了三项判定。实现在这三项之后还检查固化的下标在这张表之内，哈希部分再比对节点里的键（`translate_table.go` 的 `emitSlotInTable`）：
+> 地址和 gen 都相同也不一定是原来那张表，原来的表被回收之后新表可以分配在同一个地址上（[#362](https://github.com/Liam0205/wangshu/issues/362)，[implementation-progress §15](./implementation-progress.md)）。
+> 这几项失败同样走 `$h_gettable`，仍然是语义分发。
+
 **关键**:P3 的「同表同代次」就是把解释器 IC 命中流程([../p1-interpreter/05-interpreter-loop](../p1-interpreter/05-interpreter-loop.md) §6.3 doGetTable 中段)的判定逻辑,把里面的运行期 `slot.tableRef`/`slot.shape` 替换成编译期立即数 `SNAP_TABLEREF`/`SNAP_GEN`。**判定逻辑同构,只是数据来源从「运行期 slot」变成「编译期立即数」**。
 
 ### 1.4 feedback 只影响代码形状,不影响语义覆盖面
@@ -409,6 +413,7 @@ Time T3..Tn: 同样比对失败(SNAP_GEN 永远是 42,t.gen() 永远 ≥43)
 1. **三层校验依次失败都走同一个 helper**(`$h_gettable`)——helper 内部走 [../p1-interpreter/05-interpreter-loop](../p1-interpreter/05-interpreter-loop.md) §6.3 完整 doGetTable(含哈希查找 + `__index` 元方法 + nil 处理)。**任何 IC miss 形式都正确**。
 2. **SNAP_KIND 编译期单态选定**——在 emit_gettable 内 `switch fb.kind { case 1: emit_array_at; case 2: emit_node_val_at; case 3: emit_meta_invoke }`,**不发 runtime switch**(代码体积省 + 分支预测无干扰)。
 3. **校验顺序遵循 [../p1-interpreter/05-interpreter-loop](../p1-interpreter/05-interpreter-loop.md) §6.3 的 doGetTable**:先 IsTable → 再 tableRef 同表 → 再 shape 同代次。**三层与解释器一致,是语义分发**。
+4. **实现在三层之后还有两项**（§1.3 的实现现状）：固化的下标在这张表之内；哈希部分的节点里放的是这条指令的常量键。解释器的 `icGetTable` 同样比对键、用运行时的大小，所以这两项也与解释器一致。
 
 #### 3.2.2 GETGLOBAL 的 FBGlobalStable 翻译形式
 
@@ -470,6 +475,7 @@ Time T3..Tn: 同样比对失败(SNAP_GEN 永远是 42,t.gen() 永远 ≥43)
 | R(B) 不是 table(GETTABLE/SELF) | IsTable 层 | `$h_gettable` / `$h_self` → 走 `__index` 元方法 |
 | 缓存目标表已不是当前表 | tableRef 层(GETTABLE/SELF;GETGLOBAL 无此层) | `$h_gettable` / `$h_self` → 走完整哈希 |
 | 表已 rehash(gen bump) | shape 层 | `$h_gettable` / `$h_getglobal` / `$h_self` → 走完整哈希 |
+| 同一个地址上已经是另一张表(原表被回收,新表分配在原地址,gen 相同) | 下标在表内 / 节点的键(GETTABLE/SETTABLE/SELF;GETGLOBAL 的全局表不会被回收) | `$h_gettable` / `$h_settable` / `$h_self` → 走完整哈希 |
 
 **helper 内部都是 [../p1-interpreter/05-interpreter-loop](../p1-interpreter/05-interpreter-loop.md) §6.3/§6.4 解释器完整流程**,语义层面与解释器逐字节一致([07-tests](./08-testing-strategy.md) 差分检查保证)。
 
@@ -571,7 +577,7 @@ func (e *Emitter) emitGettable(pc int32, ins bytecode.Instruction, fb *bridge.Ty
 | FeedbackKind | P3 翻译形式 | 失效降级路径 | 关键引用 |
 |---|---|---|---|
 | FBArithStableNumber | 双 number 快路径放 if-then,helper 放 else | else 分支 → `$h_arith` → metamethod / coercion | §3.1 |
-| FBTableMono | 三层校验(IsTable + tableRef + gen)+ SNAP_KIND 单态选定的直达槽 | 任一层失败 → `$h_gettable` → 完整哈希 + `__index` | §3.2.1 |
+| FBTableMono | 三层校验(IsTable + tableRef + gen),实现另加下标在表内和节点的键(§1.3)+ SNAP_KIND 单态选定的直达槽 | 任一层失败 → `$h_gettable` → 完整哈希 + `__index` | §3.2.1 |
 | FBGlobalStable | 单层校验(globals gen)+ SNAP_INDEX 直达 globals node 槽 | gen miss → `$h_getglobal` → 完整哈希 | §3.2.2 |
 | FBSelfMono | self 传递 + GETTABLE 同构(三层校验 + 直达) | 同 FBTableMono → `$h_self` → 完整 SELF 流程 | §3.2.3 |
 | FBTableMega | 不内联快照,直接发 helper 调用 | n/a(本来就是慢路径) | §3.3 |
