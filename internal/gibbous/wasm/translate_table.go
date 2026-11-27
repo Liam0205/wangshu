@@ -7,10 +7,11 @@ package wasm
 //
 // Core mechanism: **compile-time freezing of the IC snapshot** — at compile
 // time we read Proto.IC[pc] to obtain (Kind, Shape=gen, Index, TableRef) and
-// bake them into Wasm immediates; at runtime "same table, same generation
-// (+ key match)" reaches the array/node slot directly, **skipping the hash**;
-// on invalidation (rehash → gen bump / table swap / slot nil) it falls back to
-// the helper (full lookup + metamethods, byte-equal, 06 §1/§2).
+// bake them into Wasm immediates; at runtime "same address, same generation,
+// the frozen slot inside this table (+ key match)" reaches the array/node slot
+// directly, **skipping the hash**; on invalidation (rehash → gen bump / table
+// swap / slot nil / another table at the address) it falls back to the helper
+// (full lookup + metamethods, byte-equal, 06 §1/§2).
 //
 // Iron rule (06 §1): the fast-path checks are semantic dispatch, not
 // speculative guards — the helper always sits at the end of the block as a
@@ -20,7 +21,8 @@ package wasm
 // Inline addressing of the table object (object/table.go layout,
 // arena = linear memory, GCRef = byte offset):
 //   taddr = GCRefOf(tbl) = the low 48 bits of the value; gen = high 32 bits of
-//   word5 (offset40); nodeRef = word3 (offset24); array = word2 (offset16);
+//   word5 (offset40); asize / hmask = low / high 32 bits of word1 (offset8 /
+//   offset12); nodeRef = word3 (offset24); array = word2 (offset16);
 //   node slot has a 24-byte stride: key=+0 val=+8 next=+16; array slot =
 //   arrayRef + idx*8.
 
@@ -229,11 +231,18 @@ func (c *Compiler) emitSetGlobal(em *emitter, proto *bytecode.Proto, ins bytecod
 //	  <helper>
 //	end ; $done
 //
-// Inline only covers byte-equal-provable forms: ① constant key (same table,
-// same gen ⟹ the cached Index still maps to the same key, skipping the key
-// match, same as GETGLOBAL); ② register key + ArrayHit (numeric f64 ==
-// Index+1). Register key + NodeHit (normKey/keyEqual inline is fragile) /
-// MonoMeta → pure helper.
+// Inline only covers byte-equal-provable forms: ① constant key; ② register
+// key + ArrayHit (numeric f64 == Index+1). Register key + NodeHit
+// (normKey/keyEqual inline is fragile) / MonoMeta → pure helper.
+//
+// The table guard (a table at the frozen address with the frozen gen) does not
+// identify the table the interpreter saw: once that table is collected, a new
+// one can be allocated at the same address and have the same gen, with a
+// shorter array part or other keys in its nodes. So every inline path also
+// checks that the frozen Index lies inside the table it was handed, and a
+// NodeHit path compares the node's key (emitSlotInTable). GETGLOBAL and
+// SETGLOBAL need neither: the globals table is never collected, and it bumps
+// its gen whenever a key moves to another node.
 
 // tableInlineable decides whether a given table IC point takes the inline fast
 // path (otherwise pure helper). regKey=true means the key is a register
@@ -286,6 +295,55 @@ func (c *Compiler) emitTableGuard(em *emitter, regB int, snap icSnapshot) {
 	em.i32Eq()
 	em.i32Eqz()
 	em.brIf(0)
+}
+
+// emitSlotInTable emits the checks that the frozen Index addresses a slot of
+// the table in localI32b and that the slot holds the key this point reads (any
+// failure br_if 0 → $slow):
+//
+//	ArrayHit: Index < asize
+//	NodeHit:  Index <= hmask, nodeRef != 0, node[Index].key == key
+//
+// key is the constant key of the point; tableInlineable admits a NodeHit only
+// with a constant key, and an ArrayHit does not use it. A table without a hash
+// part has hmask 0 and nodeRef 0, so Index 0 passes the first NodeHit check and
+// the second is the one that stops it. Precondition: after emitTableGuard,
+// inside block $slow (depth 0). localI32b is left unchanged.
+func (c *Compiler) emitSlotInTable(em *emitter, snap icSnapshot, key uint64) {
+	if snap.kind == bytecode.ICKindArrayHit {
+		em.localGet(localI32b)
+		em.i32Load(tblAsizeOff)
+		em.i32Const(int32(snap.index))
+		em.i32LeU() // asize <= Index
+		em.brIf(0)
+		return
+	}
+	// NodeHit
+	em.localGet(localI32b)
+	em.i32Load(tblHmaskOff)
+	em.i32Const(int32(snap.index))
+	em.i32LtU() // hmask < Index
+	em.brIf(0)
+	em.localGet(localI32b)
+	em.i64Load(tblNodeOff)
+	em.i64Eqz() // no hash part
+	em.brIf(0)
+	em.localGet(localI32b)
+	em.i64Load(tblNodeOff)
+	em.i32WrapI64()
+	em.i64Load(snap.index * nodeStrideBytes)
+	em.i64Const(key)
+	em.i64Ne()
+	em.brIf(0)
+}
+
+// constKey returns the constant an RK operand names, or 0 for a register
+// operand (an ArrayHit with a register key matches the key at run time).
+func constKey(proto *bytecode.Proto, rk int) uint64 {
+	if !bytecode.IsK(rk) {
+		return 0
+	}
+	return uint64(proto.Consts[bytecode.KIdx(rk)])
 }
 
 // emitArrayKeyMatch emits the numeric match for a register-key ArrayHit:
@@ -351,6 +409,7 @@ func (c *Compiler) emitGetTable(em *emitter, proto *bytecode.Proto, ins bytecode
 	if regKey && snap.kind == bytecode.ICKindArrayHit {
 		c.emitArrayKeyMatch(em, int(cc), snap)
 	}
+	c.emitSlotInTable(em, snap, constKey(proto, int(cc)))
 	// slot value → localI64c; non-nil check
 	slotOff := c.emitSlotBase(em, snap)
 	em.i64Load(slotOff)
@@ -401,6 +460,7 @@ func (c *Compiler) emitSetTable(em *emitter, proto *bytecode.Proto, ins bytecode
 	if regKey && snap.kind == bytecode.ICKindArrayHit {
 		c.emitArrayKeyMatch(em, int(b), snap)
 	}
+	c.emitSlotInTable(em, snap, constKey(proto, int(b)))
 	// Current slot non-nil (key already exists, change-value fast path); push
 	// slotBase onto the stack, kept as the base address for the later store.
 	slotOff := c.emitSlotBase(em, snap)
@@ -452,6 +512,7 @@ func (c *Compiler) emitSelf(em *emitter, proto *bytecode.Proto, ins bytecode.Ins
 	if regKey && snap.kind == bytecode.ICKindArrayHit {
 		c.emitArrayKeyMatch(em, int(cc), snap)
 	}
+	c.emitSlotInTable(em, snap, constKey(proto, int(cc)))
 	slotOff := c.emitSlotBase(em, snap)
 	em.i64Load(slotOff)
 	em.localTee(localI64c)
