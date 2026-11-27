@@ -688,9 +688,13 @@ type Collector struct {
    重新拼出来的字符串正好分配在原地址上时官方的 `next` 成功，望舒一律报错，`TestDiff_NextFromKeysOfClearedEntries` 固定望舒一侧的结果。
    官方有一类永远不回收的字符串：保留字、`ltm.c` 列的 17 个元方法名（没有 `__tostring` 和 `__metatable`）和 `"not enough memory"`（`llex.c`、`ltm.c`、`lstate.c` 里的 `luaS_fix`）。它们作键时，被清掉的条目的 dead key 一直指向
    还活着的对象，官方的 `next` 每次都成功；望舒不固定任何字符串：键没有别的引用时照常被回收，`next` 报错；另有引用时（`__index` 是字符串元表的键，`__mode` 是弱表自己元表的键）两边都成功。这一种两边的结果都是确定的，
-   `TestDiff_NextFromFixedKeysOfClearedEntries` 固定两边各自的结果。运行时自己引用的字符串两边不一样多，效果相同：官方的库表、`package` 表和
-   注册表引用着 `execute`、`tmpname`、`path`、`_LOADED`、`FILE*` 这类名字，望舒没有提供对应的库或函数时就没有这个引用，这些字符串作键的条目
-   被清掉之后官方的 `next` 成功、望舒报错（`TestDiff_NextFromRuntimeHeldKeysOfClearedEntries`）。脚本用 `t[k] = nil` 删掉的键是这几种字符串时，官方不回收它、望舒由节点保活，
+   `TestDiff_NextFromFixedKeysOfClearedEntries` 固定两边各自的结果。一个字符串在两边是否另有引用不一定相同，效果相同，
+   而且两个方向都有：官方的库表、`package` 表和注册表引用着 `execute`、`tmpname`、`path`、`_LOADED`、`FILE*` 这类名字，官方的函数原型还
+   引用着自己的局部变量名和 upvalue 名（调试信息；望舒的这些名字是 Go 字符串，不在 arena 里，[01](./01-value-object-model.md) §5.7），
+   望舒没有这些引用，这些字符串作键的条目被清掉之后官方的 `next` 成功、望舒报错（`TestDiff_NextFromRuntimeHeldKeysOfClearedEntries`、
+   `TestDiff_NextFromDebugNamesOfClearedEntries`）；反过来，望舒让加载过的每个代码块的字符串常量一直存活（§5.1 的 R6，函数丢掉之后也是，
+   [#359](https://github.com/Liam0205/wangshu/issues/359)），官方随函数一起回收，这样的字符串作键的条目被清掉之后望舒的 `next` 成功
+   （`TestDiff_NextFromConstantsOfDroppedChunks`）。脚本用 `t[k] = nil` 删掉的键是这几种字符串时，官方不回收它、望舒由节点保活，
    两边的 `next` 都成功，`TestDiff_NextFromRemovedFixedKeys` 固定。
    同一个原则还带来一处差异：官方标记一张表时（`traversetable`；键和值都弱的表整张跳过，不在此列）对**每个**键可回收的已删除节点都执行
    `removeentry`，键指向的对象还活着也一样，键被改成 `LUA_TDEADKEY`
