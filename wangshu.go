@@ -31,22 +31,19 @@ import (
 
 // Options configures a State (11 §1.2).
 //
-// Fields implemented in P1: GCPause (passed to the collector), AllowFileLoad
-// (gate on loadfile/dofile reading the host filesystem, off by default),
-// HideFileLoaders (strip the loader quartet out of globals, matching gopher-lua).
-// The remaining fields keep the interface shape and get wired in at later milestones.
+// NewState reads InitialArenaBytes and MaxArenaBytes (the arena's initial size and its
+// cap), AllowFileLoad (gate on loadfile/dofile reading the host filesystem, off by default)
+// and HideFileLoaders (strip the loader quartet out of globals, matching gopher-lua).
+// MaxCallDepth, MaxCCalls and GCPause are not read: setting them has no effect (issue #356).
 type Options struct {
 	InitialArenaBytes uint32
 	MaxArenaBytes     uint32
-	MaxCallDepth      int
-	MaxCCalls         int
-	// GCPause is the collector's pause ratio in percent: the next automatic collection runs
-	// once the bytes allocated since the last one reach live * GCPause / 100. 0 selects the
-	// default, 200 (unlike collectgarbage("setpause", 0), which sets the ratio to 0); a
-	// negative value means no automatic collection. A script changes the same ratio with
-	// collectgarbage("setpause", n). The ratio is measured against the bytes allocated since
-	// the last collection, where lua5.1 measures against the total, so a ratio p here behaves
-	// roughly like p + 100 there (issue #353).
+	// MaxCallDepth and MaxCCalls are not read. The limits are fixed: 20000 nested Lua calls
+	// and 200 nested calls from host functions back into Lua (issue #356).
+	MaxCallDepth int
+	MaxCCalls    int
+	// GCPause is not read: every State's collector starts with a pause ratio of 200, which a
+	// script changes with collectgarbage("setpause", n) (issue #356).
 	GCPause int
 	// AllowFileLoad enables loadfile/dofile to read the host filesystem.
 	// Default false: when an embedded VM runs untrusted scripts, file reads
