@@ -57,7 +57,7 @@
 
 - **per-item 风格的简易 API 子集已完成**(对标 gopher-lua 易用性):`State.SetGlobal/GetGlobal/Call(fn, args...)` + `Register/RegisterModule`(见上差异标注 ⑥);
 - **Table 读写全闭环已完成**:`NewTable` / `Set/SetIndex/Get/GetIndex/Len` + `ForEach` 任意 key 迭代(见差异标注 ⑦ ⑩)——写入与迭代读出对称,宿主端完整操作 Lua table 无需 Push/Pop;
-- **globals baseline 状态隔离已完成**:`MarkGlobalsBaseline/ResetGlobalsToBaseline`(见差异标注 ⑪)——sync.Pool 复用 State 形式下宿主端一行调用恢复干净 _G,drop-in 配套能力;
+- **globals baseline 状态隔离已完成**:`MarkGlobalsBaseline/ResetGlobalsToBaseline`(见差异标注 ⑪)——sync.Pool 复用 State 形式下宿主端一行调用恢复全局表的字符串键(不恢复的部分见下文「sync.Pool 复用 State 配套」),drop-in 配套能力;
 - **`CallInto` 零分配边界路径已完成**(issue #8):`State.CallInto(dst []Value, fn, args...) (n int, err)` 让调用方拥有返回值 buffer,标量(bool/number)round-trip 0 alloc。旧 `Call` 每次固定 72 B / 2 allocs(VM 栈→inner→public 双拷贝,与脚本复杂度无关),boundary-dominated 嵌入(per-item 短调用)被这地板成本主导、在对标场景反被 gopher-lua 超过;`CallInto` 消除双拷贝(内部零拷贝切复用栈 `th.stack`,门面复用 `innerArgsBuf` + 写调用方 dst),两档边界基准均反超 gopher-lua。⚠️ 约定:返回值底层是复用栈,下次进入 VM 前消费完;string 仍拷 arena 字节、复合值仍经 pin 表。**这是「实现浪费」的消除,非架构成本——不违背列内核前提(前提一仍成立:列内核完全摊薄边界成本是高吞吐首选),而是补上无法列内核化的 per-item 形式的零分配通道**;
 - **boundary-dominated 嵌入快路径已完成**(issue #13,parity-friendly,不破跨引擎 `lua_script` 字节对等):
   - **类型化 array table 族**:`State.NewFloatArrayTable / NewInt64ArrayTable / NewBoolArrayTable / NewStringArrayTable` —— 从 typed slice 一次性 NaN-box 进 arena 数组段,跳过 `[]Value` 中转。脚本侧看到普通 array table(`xs[i]` / `#xs` / `pairs`),**不是** arena 列轨的 `__index` 代理 —— pineapple 一类 common-mode 灌列形式(`SetGlobal(field, []any) → makeArrayTable`)的下层中转可消,无需脚本改动;Int64 承袭 `Arena.AddInt64Column` 的 |v|>2^53 报错规则。
