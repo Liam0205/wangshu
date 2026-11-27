@@ -57,6 +57,13 @@ func baseFnCollectGarbage(st *crescent.State, args []value.Value) ([]value.Value
 		}
 		opt = string(object.StringBytes(st.Arena(), value.GCRefOf(args[0])))
 	}
+	// luaL_checkoption runs before luaL_optint: an unknown option is reported even when
+	// argument 2 is bad as well.
+	switch opt {
+	case "collect", "step", "count", "stop", "restart", "setpause", "setstepmul":
+	default:
+		return nil, crescent.NewArgError(1, "invalid option '"+opt+"'")
+	}
 	// PUC's luaB_collectgarbage reads arg 2 with luaL_optint unconditionally, so a
 	// non-number there raises even though this implementation has no incremental
 	// knobs to apply it to. Ignoring the argument entirely meant
@@ -93,10 +100,9 @@ func baseFnCollectGarbage(st *crescent.State, args []value.Value) ([]value.Value
 		return []value.Value{value.NumberValue(0)}, nil
 	case "setpause":
 		return []value.Value{value.NumberValue(float64(st.GCSetPause(ex)))}, nil
-	case "setstepmul":
+	default: // "setstepmul"; the option was validated above
 		return []value.Value{value.NumberValue(float64(st.GCSetStepMul(ex)))}, nil
 	}
-	return nil, crescent.NewArgError(1, "invalid option '"+opt+"'")
 }
 
 // baseFnGcInfo: gcinfo() = the 5.1 legacy integer form of collectgarbage("count") (10 §4.6).

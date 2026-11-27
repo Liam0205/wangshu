@@ -1550,20 +1550,29 @@ func fileFnWrite(st *crescent.State, args []value.Value) ([]value.Value, *cresce
 // rather than raising, so a pcall around it succeeds.
 //
 // The handle method close is liolib.c's io_close, the function io.close would also be: called
-// with no argument at all it first pushes the default output, and only then checks that
-// argument 1 is a file. The method table's environment holds no default output, so what it
-// pushes is nil and the error says "got nil" where every other handle method says
-// "got no value".
+// with no argument at all it first pushes the default output, lua_rawgeti(LUA_ENVIRONINDEX,
+// IO_OUTPUT), and only then checks that argument 1 is a file. The methods are registered before
+// luaopen_io installs the private environment that holds the default files, so their
+// environment is the globals table and what gets pushed is its raw field [2] (IO_OUTPUT is 2).
+// That is nil unless a script has stored something there, hence "got nil" where every other
+// handle method says "got no value"; a value stored there is checked like an argument.
 func fileFnClose(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
-	if _, ok := streamKind(st, args); !ok {
-		got := "nil"
-		if len(args) > 0 {
-			got = crescent.TypeNameOf(args[0])
+	if len(args) == 0 {
+		v, e := st.RawGet(st.Globals(), value.NumberValue(ioOutputEnvIndex))
+		if e != nil {
+			return nil, e
 		}
-		return nil, crescent.NewArgError(1, "FILE* expected, got "+got)
+		args = []value.Value{v}
+	}
+	if _, ok := streamKind(st, args); !ok {
+		return nil, crescent.NewArgError(1, "FILE* expected, got "+crescent.TypeNameOf(args[0]))
 	}
 	return []value.Value{value.Nil, intern(st, "cannot close standard file")}, nil
 }
+
+// ioOutputEnvIndex is liolib.c's IO_OUTPUT, the index of the default output in the io
+// library's environment.
+const ioOutputEnvIndex = 2
 
 // fileFnFlush is a no-op that returns the success flag: writes to the standard streams are
 // not buffered here, so there is nothing to flush.

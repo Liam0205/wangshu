@@ -1,0 +1,2 @@
+go test fuzz v1
+string("print(pcall(io.stdout.close)) rawset(_G, 2, 5) print(pcall(io.stdout.close)) rawset(_G, 2, {}) print(pcall(io.stdout.close)) rawset(_G, 2, io.stderr) print(pcall(io.stdout.close)) print(pcall(io.stdout.flush)) rawset(_G, 2, nil) print(pcall(io.stdout.close)) print(pcall(collectgarbage, 'bogus', 'x'))")
