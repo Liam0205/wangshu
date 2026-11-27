@@ -350,8 +350,8 @@ followup。P4 靠 e2e 自然覆盖侥幸没出事,但 spec 的深度验证从未
 
 ### 3.6 GC 压力联合验证(依据 P4 08 §7.4)
 
-deopt 期间 unsink 会分配(§5 P5 host 扩展 `UnsinkAlloc`)——若配合高频 GC(压力模式 `SetGCStressMode`),unsink 中途触
-发 GC:
+deopt 期间 unsink 会分配(§5 P5 host 扩展 `UnsinkAlloc`)——配合高频 GC(压力模式 `SetGCStressMode`)时,unsink 序列里的每个安全点都触发 GC
+(分配本身只记账、不回收,[P1 06 §7.1](../p1-interpreter/06-memory-gc.md)):
 
 ```go
 func TestDeoptGCStress(t *testing.T) {
@@ -368,7 +368,8 @@ func TestDeoptGCStress(t *testing.T) {
 ```
 
 如果 `UnsinkAlloc` 内部有未上 shadow stack 的中间对象(违反 [P1 06 §6.3](../p1-interpreter/06-memory-gc.md)
-纪律),高频 GC 会必然发现——把偶发变必现(依据 [P1 12 §5.2](../p1-interpreter/12-testing-difftest.md))。
+纪律),而且持有它的窗口里有安全点,高频 GC 必然发现——把偶发变必现(依据 [P1 12 §5.2](../p1-interpreter/12-testing-difftest.md));
+窗口里只有分配、没有安全点的,压力模式碰不到。
 
 ---
 

@@ -893,7 +893,7 @@ state.Register("foo", fooFn):
 
 ### 10.3 shadow stack 纪律([06](./06-memory-gc.md) §6.3)
 
-HostFn 在 Go 栈持有 arena 引用的窗口期,**必须 `ctx.Pin`/`defer ctx.Unpin`**([06](./06-memory-gc.md) §6.3 的纪律):host 代码新分配的中间对象(如拼出的新串、新建的表)在写回 Lua 栈/表之前,处于 Go 栈持有窗口,若此时下一次分配触发 GC,未 Pin 的中间对象会被误回收([06](./06-memory-gc.md) §5.1 R7:GC 精确栈扫描看不见 arena 引用是整数)。规则([06](./06-memory-gc.md) §6.3 简记):**「下一次可能触发 GC 的分配之前,所有已持有但未上 Lua 栈/表的 arena 引用都要在 shadow stack 上」**。
+HostFn 在 Go 栈持有 arena 引用的窗口期,**必须 `ctx.Pin`/`defer ctx.Unpin`**([06](./06-memory-gc.md) §6.3 的纪律):host 代码新分配的中间对象(如拼出的新串、新建的表)在写回 Lua 栈/表之前,处于 Go 栈持有窗口,若此时发生 GC(分配本身只记账,回收发生在安全点,[06](./06-memory-gc.md) §6.3 列了持有窗口里会回收的地方),未 Pin 的中间对象会被误回收([06](./06-memory-gc.md) §5.1 R7:GC 精确栈扫描看不见 arena 引用是整数)。规则([06](./06-memory-gc.md) §6.3 简记):**「下一次可能触发 GC 的分配之前,所有已持有但未上 Lua 栈/表的 arena 引用都要在 shadow stack 上」**。
 
 ```go
 func myHostFn(ctx *wangshu.HostCtx) int {

@@ -614,7 +614,7 @@ V19 是这条不变式的端到端校验:
 - **若运行期查 snapshot 配方**(P5 trace JIT 形式):V19 仍可能 byte-equal(若 snapshot 写得对),但 V19 通过不能反推 P4 没用 snapshot ——V19 只是必要条件不是充分条件;**P4 实现时 review 必须额外检查物化序列是编译期烧入的固定 store 序列**(`internal/gibbous/jit/osr.go` 的 emit 函数审查)。
 - **若 exit 路径上做分配**:可能触发 GC + 违反 [../p3-wasm-tier/05-safepoint-gc.md](../p3-wasm-tier/05-safepoint-gc.md) 「分配只在受控点」哲学——V19 在 GC 压力 + V13 locals 写回 A/B 对照下能暴露脏读,但需要 §7 GC 压力联合验。
 
-**V19 + GC 压力联合验**(承 §7.4):**deopt 注入 + 高频 GC 双开**——每 guard 强制失败时若 exit 路径有未上根的临时分配,高频 GC 期内必被回收,后续读栈槽必脏读 → 差分破。这是 V19 与 V13 的交叉,也是 P4 比 P3 多的「物化期 GC 触发」专门验证目标。
+**V19 + GC 压力联合验**(承 §7.4):**deopt 注入 + 高频 GC 双开**——每 guard 强制失败时若 exit 路径有未上根的临时分配、而且持有它的窗口里有安全点(分配本身只记账、不回收,[P1 06 §7.1](../p1-interpreter/06-memory-gc.md)),高频 GC 期内必被回收,后续读栈槽必脏读 → 差分破。这是 V19 与 V13 的交叉,也是 P4 比 P3 多的「物化期 GC 触发」专门验证目标。
 
 ---
 
@@ -822,7 +822,7 @@ jobs:
 | P3 | + locals 缓存写回遗漏(若启用)/ imported 助手内 Pin 漏 |
 | **P4** | + JIT 持 arena base 跨 safepoint / back edge 检查点漏布 / 物化期 GC 触发 + 物化序列内的临时分配漏根 / 寄存器→栈槽写回遗漏 |
 
-高频 GC 把概率拉到 1,漏根对象必被回收,后续用必崩/脏读(承 P1 12 §5)。**P4 GC 压力 fuzz 把上述目标全覆盖**——既继承 P1/P3 套也叠加 P4 独有的「JIT 世界 GC 协议」目标。
+高频 GC 把概率拉到 1:持有窗口里有安全点的漏根对象必被回收,后续用必崩/脏读(承 P1 12 §5)。**P4 GC 压力 fuzz 把上述目标全覆盖**——既继承 P1/P3 套也叠加 P4 独有的「JIT 世界 GC 协议」目标。
 
 ### 7.2 专打「JIT 持 arena base 跨 safepoint」(05-system-pipeline §5)
 
@@ -844,7 +844,7 @@ jobs:
 
 承 §4.4(V19 + GC 压力联合验)+ [./04-osr-deopt.md](./04-osr-deopt.md) §3.7 物化期 GC 触发的禁止项。
 
-**物化期 GC 触发的 bug 形式**:① OSR exit 物化序列内若有「未上根的临时分配」(违反 §3.7 不变式)——高频 GC 期内必然触发,临时分配被回收 → 物化写到陈旧栈槽 → exit 后 crescent 读栈槽脏值;② 物化序列内寄存器写回到栈槽期间触发 GC——若写回未完成 GC 扫描看到部分新部分旧的栈槽,根可见性不一致。
+**物化期 GC 触发的 bug 形式**:① OSR exit 物化序列内若有「未上根的临时分配」(违反 §3.7 不变式)——持有它的窗口里有安全点时高频 GC 期内必然触发,临时分配被回收 → 物化写到陈旧栈槽 → exit 后 crescent 读栈槽脏值;② 物化序列内寄存器写回到栈槽期间触发 GC——若写回未完成 GC 扫描看到部分新部分旧的栈槽,根可见性不一致。
 
 **联合验形式**:每条 guard kind ∈ {IsNumberB, tableRef, gen, globalsGen} × 每条 alloc-heavy OSR 脚本 × 正常 pacing 与压力模式(`SetGCStressMode`)双档对照——任一档 != crescent oracle 即 V19+V13 物化期 GC 触发破透明性 / 物化序列 unsafe。
 

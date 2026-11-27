@@ -466,7 +466,7 @@ host function 签名(见 [10-stdlib](./10-stdlib.md))拿到一个执行上下文
 - **host 从 Lua 栈读参数 → 操作 → 写返回值回 Lua 栈**,这个过程中**新分配**的中间对象(如 `string.format` 拼出的新串、
   `table.create` 新建的表)在「写回 Lua 栈之前」处于 Go 栈持有窗口,**必须 `Push`/`defer Pop`**。
 - 一旦中间对象**写回到 Lua 栈槽 / 已存活的表 / 全局**,它就经 R5/R1 等可达,可从 shadow stack `Pop`(此后栈/表当根)。
-- **多步分配**:host 连续分配 A 再分配 B(分配 B 时可能触发 GC),A 必须先 Push,否则分配 B 触发的 GC 会回收 A。
+- **多步分配**:host 连续分配 A 再分配 B(纪律上按分配 B 时可能触发 GC 来写),A 必须先 Push,否则这中间发生的 GC 会回收 A。
   分配本身只记账、不在分配处收集(§7.1)。host function 执行期间会收集的地方有三种:它调用了另一个 host function(作回调、作元方法都算,如 `string.gsub(s, ".", string.upper)`、
   `pcall(string.rep, s, n)`;每次 host function 调用返回之后检查一次,`collectgarbage("collect")` 自己还直接回收)或调用了会收集的公开 API;
   它回调的 Lua 函数(含元方法)自己执行到了安全点,即执行了 SETGLOBAL、SETTABLE、NEWTABLE、CONCAT、SETLIST、CLOSURE 之一,
@@ -613,8 +613,8 @@ updatePacing():
 
 - `GCPAUSE`（默认 **200**）：存活 `live` 字节后，再分配 `2*live` 字节（总量到 `3*live`）触发下次 GC。
   默认值与 Lua 5.1 `LUAI_GCPAUSE` 相同，**含义不同**：官方拿 `estimate/100 * gcpause` 与总字节数比较，200 是总量到 `2*live` 时回收。
-  所以这里的比例 `p` 大约相当于官方的 `p + 100`。脚本的 `collectgarbage("setpause")` 设置的是这个量；公开的 `Options.GCPause` 目前没有接到回收器上，设了不起作用（[#356](https://github.com/Liam0205/wangshu/issues/356)）
-  （[10](./10-stdlib.md) §4.6）；要不要改成官方的口径见 [#353](https://github.com/Liam0205/wangshu/issues/353)。
+  所以这里的比例 `p` 大约相当于官方的 `p + 100`。脚本的 `collectgarbage("setpause")` 设置的是这个量（[10](./10-stdlib.md) §4.6）；公开的 `Options.GCPause` 目前没有接到回收器上，设了不起作用（[#356](https://github.com/Liam0205/wangshu/issues/356)）；
+  要不要改成官方的口径见 [#353](https://github.com/Liam0205/wangshu/issues/353)。
 - **首次触发**:`threshold` 初值 = 创建 collector 时 arena 容量的 1/4(既不过早 GC,也不拖到太晚)。
 - **下限**：每轮回收之后算出的 `threshold` 不低于 arena 容量的 1/16。所以比例再小（包括 0），两次自动回收之间也要分配这么多字节；
   要让每个安全点都回收，用的是压力模式（`Collector.SetStressMode`，公开入口 `State.SetGCStressMode`，§11），不是把比例调小。
@@ -690,6 +690,7 @@ func (st *StringTable) Intern(b []byte) value.GCRef {
 **Intern 内分配触发 GC 的隐患**:`allocString` 可能触发 GC;若此刻 `b` 对应的新串尚未入任何根,
 而 GC 又恰好…… 实则**安全**:新串还没分配出来,GC 回收的是别的死对象;新串分配成功后立即 `append` 入 bucket。
 但若 `b` 是从某个**即将被回收的源串**借来的字节切片,需保证源在 Intern 期间存活——调用方责任(通常 `b` 来自 Lua 栈槽,R5 可达)。
+现在的实现里 `allocString` 只记账、不在分配处收集(§7.1),这一段说的情况不会发生;上面的分析保证分配处将来若增加回收时仍然安全。
 
 ### 9.2 string table 是 GC 根还是弱表?——定稿(任务点名,纠正二选一)
 
