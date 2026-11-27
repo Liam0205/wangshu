@@ -97,6 +97,22 @@ local t = {[{}] = 1, [{}] = 2, [{}] = 3, x = 4}
 local n = 0
 table.foreach(t, function(k) t[k] = nil k = nil collectgarbage() n = n + 1 end)
 return n, next(t)`, "4\tnil"},
+	// The callback drops its own reference to the value and every other one before collecting:
+	// table.foreach still holds the value, so the entry of the weak-valued table is not cleared
+	// while its callback runs.
+	{"table_foreach_keeps_the_current_value", `
+local w = setmetatable({}, {__mode = "v"})
+local hold = {}
+for i = 1, 5 do hold[i] = {} w["k" .. i] = hold[i] end
+local n, seen = 0, 0
+table.foreach(w, function(k, v)
+  n = n + 1
+  hold, v = nil, nil
+  collectgarbage()
+  if rawget(w, k) ~= nil then seen = seen + 1 end
+  return true
+end)
+return n, seen`, "1\t1"},
 	{"globals_table", `
 for i = 1, 30 do _G["zz338_" .. i] = i end
 local n = 0
@@ -371,14 +387,65 @@ for _, mode in ipairs({"v", ""}) do
 end
 return same, accepted`
 
-// TestRemovedStringKeysOfWeakValuedTable pins that, in both collection modes. Tables with weak
-// keys are left out: there the collector also clears the entries whose string keys nothing else
-// refers to (#348), so whether such a key is still in the table when the script removes it
-// already depends on when collections ran.
+// TestRemovedStringKeysOfWeakValuedTable pins that, in both collection modes. The values are
+// numbers, so the collector clears no entry; once it does, later insertions depend on when it
+// did (TestDiff_InsertionsAfterClearedEntries). Tables with weak keys are left out: there the
+// collector also clears the entries whose string keys nothing else refers to (#348), so whether
+// such a key is still in the table when the script removes it already depends on when
+// collections ran.
 func TestRemovedStringKeysOfWeakValuedTable(t *testing.T) {
 	for _, stress := range []bool{false, true} {
 		if got := runClearCase(t, removedStringKeysOfWeakValuedTable, stress); got != "2\t8" {
 			t.Errorf("wangshu (collecting at every safepoint: %v):\n  got:  %q\n  want: %q", stress, got, "2\t8")
+		}
+	}
+}
+
+// insertionsAfterClearedEntries removes a string key from a weak-valued table whose other keys are
+// strings too, lets the values of three entries die, and inserts two more string keys. With
+// collect true a collection runs before the insertions. The entries it clears become removed
+// nodes, so the new keys land differently, and whether the table rehashes, which drops the node
+// of the key the script removed, depends on it. No key here is hashed by address.
+func insertionsAfterClearedEntries(collect bool) string {
+	step := ""
+	if collect {
+		step = "collectgarbage()\n"
+	}
+	return `
+local t = setmetatable({}, {__mode = "v"})
+local hold = {}
+for i = 1, 3 do hold[i] = {} t["b1_" .. i] = hold[i] end
+t.A1 = 1
+t.A1 = nil
+hold = nil
+` + step + `for i = 1, 2 do t["c1_" .. i] = i end
+return (pcall(next, t, "A1"))`
+}
+
+// TestDiff_InsertionsAfterClearedEntries pins that a collection changes what next answers for a
+// key the script removed from a weak table, in wangshu as in lua5.1: the same script gives false
+// without the collection and true with it, and collecting at every safepoint gives true for both.
+// In a weak table, when the collector clears entries decides where later keys go.
+func TestDiff_InsertionsAfterClearedEntries(t *testing.T) {
+	oracle := findOracle()
+	for _, c := range []struct {
+		collect              bool
+		normal, stress, lua5 string
+	}{
+		{false, "false", "true", "false"},
+		{true, "true", "true", "true"},
+	} {
+		src := insertionsAfterClearedEntries(c.collect)
+		if got := runClearCase(t, src, false); got != c.normal {
+			t.Errorf("wangshu (explicit collection: %v):\n  got:  %q\n  want: %q", c.collect, got, c.normal)
+		}
+		if got := runClearCase(t, src, true); got != c.stress {
+			t.Errorf("wangshu, collecting at every safepoint (explicit collection: %v):\n  got:  %q\n  want: %q", c.collect, got, c.stress)
+		}
+		if oracle != "" {
+			if got := strings.TrimSuffix(runOracle(t, oracle, wrapForOracle(src)), "\n"); got != c.lua5 {
+				t.Errorf("lua5.1 no longer answers as recorded (explicit collection: %v):\n  got:      %q\n  recorded: %q", c.collect, got, c.lua5)
+			}
 		}
 	}
 }
