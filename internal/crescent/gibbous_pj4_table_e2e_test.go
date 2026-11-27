@@ -25,7 +25,7 @@ import (
 //     feedback.Points[0] (Kind=FBTableMono, Confidence=1.0, StableShape/Index);
 //  3. jit.Compile goes through analyzeGetTableArrayHit to check "proto shape + IC slot
 //     filled + feedback mono + shape/index consistent"; on a hit → compileIcArrayHit;
-//  4. compileIcArrayHit emits the 129-byte template + incSpecTableHits() ++, and Run
+//  4. compileIcArrayHit emits the template + incSpecTableHits() ++, and Run
 //     dispatches straight to the mmap segment via callJITSpec.
 //
 // **Step 1 is the key one**: if SetForceAllPromote(true) makes outer promote on entry,

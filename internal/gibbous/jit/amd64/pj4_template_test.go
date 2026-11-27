@@ -150,10 +150,8 @@ func TestPJ4_EmitGetTableArrayHit_NoSimplifiedGuard(t *testing.T) {
 	}
 }
 
-// TestPJ4_EmitGetTableNodeHit_Length verifies the NodeHit template byte-level
-// length consistency. Expected length ~159 bytes (ArrayHit 132 bytes + key
-// comparison 27 bytes: NodeKey load 8 + mov rdx imm64 10 + cmp rax rdx 3 + jne
-// rel32 6).
+// TestPJ4_EmitGetTableNodeHit_Length verifies the NodeHit template is emitted
+// and ends with ret; TestPJ4_TableTemplates_IndexGuards pins its exact length.
 func TestPJ4_EmitGetTableNodeHit_Length(t *testing.T) {
 	var buf []byte
 	buf = EmitGetTableNodeHit(buf,
@@ -256,7 +254,7 @@ func TestPJ4_EmitGetTableNodeHit_KeyComparison(t *testing.T) {
 }
 
 // TestPJ4_EmitSetTableArrayHit_Length verifies the PJ4 SETTABLE ArrayHit
-// template's exact byte length (159, see the layout in the EmitSetTableArrayHit
+// template's exact byte length (178, see the layout in the EmitSetTableArrayHit
 // godoc).
 func TestPJ4_EmitSetTableArrayHit_Length(t *testing.T) {
 	var buf []byte
@@ -268,7 +266,7 @@ func TestPJ4_EmitSetTableArrayHit_Length(t *testing.T) {
 		16,         // arenaBaseOff
 		0xCAFEBABE, // deoptCode
 	)
-	const wantLen = 159
+	const wantLen = 178
 	if len(buf) != wantLen {
 		t.Fatalf("EmitSetTableArrayHit emitted %d bytes, want %d", len(buf), wantLen)
 	}
@@ -342,7 +340,7 @@ func TestPJ4_EmitSetTableArrayHit_NilChecks(t *testing.T) {
 	var buf []byte
 	// stableIndex=3 → the slot is at r14+rcx+24; cReg=1 → R(C) is at rbx+8
 	buf = EmitSetTableArrayHit(buf, 0, 1, 7, 3, 16, 0xCAFEBABE)
-	checkSetTableNilChecks(t, buf, 86, 24, 8, 148)
+	checkSetTableNilChecks(t, buf, 105, 24, 8, 167)
 }
 
 // TestPJ4_EmitSetTableArrayHit_StrictIsTableGuard verifies the SETTABLE
@@ -408,10 +406,9 @@ func TestPJ4_EmitSetTableArrayHit_ReverseStore(t *testing.T) {
 	wantBytesAt(t, buf, found+7+9, []byte{0x49, 0x89, 0x94, 0x0E, 0x18, 0x00, 0x00, 0x00}, "reverse store")
 }
 
-// TestPJ4_EmitSelfArrayHit_Length verifies the PJ4 SELF ArrayHit template
-// byte-level length self-consistency. Expected ~141 bytes (getter ArrayHit
-// 132 + R(A+1) copy segment 7 bytes; the measured value depends on the
-// EmitMovqMemRegFromRax disp encoding).
+// TestPJ4_EmitSelfArrayHit_Length verifies the PJ4 SELF ArrayHit template is
+// emitted and ends with ret; TestPJ4_TableTemplates_IndexGuards pins its exact
+// length.
 func TestPJ4_EmitSelfArrayHit_Length(t *testing.T) {
 	var buf []byte
 	buf = EmitSelfArrayHit(buf,
@@ -461,7 +458,7 @@ func TestPJ4_EmitSelfArrayHit_SelfStore(t *testing.T) {
 }
 
 // TestPJ4_EmitSetTableNodeHit_Length verifies the SETTABLE NodeHit template
-// byte-level length self-consistency. Expected 186 bytes (see the layout in
+// byte-level length self-consistency. Expected 218 bytes (see the layout in
 // the EmitSetTableNodeHit godoc).
 //
 // **Exact length assertion** (per external review 🟢 feedback): locks down the
@@ -479,7 +476,7 @@ func TestPJ4_EmitSetTableNodeHit_Length(t *testing.T) {
 		16,         // arenaBaseOff
 		0xCAFEBABE, // deoptCode
 	)
-	const wantLen = 186
+	const wantLen = 218
 	if len(buf) != wantLen {
 		t.Errorf("EmitSetTableNodeHit emitted %d bytes, want %d(精确长度契约)",
 			len(buf), wantLen)
@@ -567,12 +564,13 @@ func TestPJ4_EmitSetTableNodeHit_KeyCompareAndReverseStore(t *testing.T) {
 	// right after the key comparison (mov rdx 10 + cmp 3 + jne 6 = 19 bytes):
 	// the two nil checks, the store and the deopt block.
 	// stableIndex=2 → NodeVal at r14+rcx+56; cReg=1 → R(C) at rbx+8
-	checkSetTableNilChecks(t, buf, movRdxOff+19, 56, 8, 175)
+	checkSetTableNilChecks(t, buf, movRdxOff+19, 56, 8, 207)
 }
 
 // TestPJ4_EmitSelfNodeHit_Length verifies the SELF NodeHit template byte-level
-// length self-consistency. Expected 166 bytes (SELF ArrayHit 139 + key
-// comparison segment 27).
+// length self-consistency. Expected 198 bytes (SELF ArrayHit 158 + key
+// comparison segment 27 + the nodeRef guard 9 + 4 more bytes in the index
+// guard, which shifts hmask down first).
 //
 // **Exact length assertion** (per external review 🟢 feedback): locks down the
 // layout contract, preventing a future accidental change to the primitive that
@@ -589,7 +587,7 @@ func TestPJ4_EmitSelfNodeHit_Length(t *testing.T) {
 		16,         // arenaBaseOff
 		0xCAFEBABE, // deoptCode
 	)
-	const wantLen = 166
+	const wantLen = 198
 	if len(buf) != wantLen {
 		t.Errorf("EmitSelfNodeHit emitted %d bytes, want %d(精确长度契约)",
 			len(buf), wantLen)
@@ -647,6 +645,83 @@ func TestPJ4_EmitSelfNodeHit_SelfStoreAndKeyCompare(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("SELF NodeHit 模板未含 stableKey=0x%x 烧入字节", stableKey)
+	}
+}
+
+// TestPJ4_TableTemplates_IndexGuards verifies, for each of the seven
+// single-access table templates, its exact length and the bytes of the guards
+// that keep the frozen index inside the table: right after the gen check, the
+// array forms compare asize with the index, and the node forms compare hmask
+// with it and then send a zero nodeRef to the deopt block too.
+func TestPJ4_TableTemplates_IndexGuards(t *testing.T) {
+	const (
+		shape = 7
+		index = 0x01020304
+		key   = 0xFFFB_1234_5678_9ABC
+		deopt = 0xCAFEBABE
+	)
+	cases := []struct {
+		name    string
+		node    bool
+		guardAt int // offset of the first guard byte: the byte after the gen check's jne
+		wantLen int
+		buf     []byte
+	}{
+		{"GetTableArrayHit", false, 75, 151, EmitGetTableArrayHit(nil, 1, 0, shape, index, 16, deopt)},
+		{"GetTableNodeHit", true, 75, 191, EmitGetTableNodeHit(nil, 1, 0, shape, index, key, 16, deopt)},
+		{"SetTableArrayHit", false, 75, 178, EmitSetTableArrayHit(nil, 0, 1, shape, index, 16, deopt)},
+		{"SetTableNodeHit", true, 75, 218, EmitSetTableNodeHit(nil, 0, 1, shape, index, key, 16, deopt)},
+		{"SelfArrayHit", false, 82, 158, EmitSelfArrayHit(nil, 2, 0, shape, index, 16, deopt)},
+		{"SelfNodeHit", true, 82, 198, EmitSelfNodeHit(nil, 2, 0, shape, index, key, 16, deopt)},
+		{"SelfNodeHitNoRet", true, 82, 202, EmitSelfNodeHitNoRet(nil, 2, 0, shape, index, key, 16, deopt)},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			buf := c.buf
+			if len(buf) != c.wantLen {
+				t.Fatalf("emitted %d bytes, want %d", len(buf), c.wantLen)
+			}
+			// Every form ends with its deopt block: mov rax, deoptCode; ret.
+			deoptStart := len(buf) - 11
+			wantBytesAt(t, buf, deoptStart, []byte{0x48, 0xB8, 0xBE, 0xBA, 0xFE, 0xCA, 0, 0, 0, 0, 0xC3}, "deopt block")
+			rel := func(jccEnd int) []byte {
+				d := uint32(deoptStart - jccEnd)
+				return []byte{byte(d), byte(d >> 8), byte(d >> 16), byte(d >> 24)}
+			}
+			idx := []byte{0x04, 0x03, 0x02, 0x01}
+			off := c.guardAt
+			// The gen check ends right before: cmp eax, shape; jne deopt.
+			wantBytesAt(t, buf, off-11, []byte{0x3D, shape, 0, 0, 0, 0x0F, 0x85}, "gen check")
+			// mov rax, [r14+rcx+8]
+			wantBytesAt(t, buf, off, []byte{0x49, 0x8B, 0x84, 0x0E, 0x08, 0x00, 0x00, 0x00}, "load table.word1")
+			off += 8
+			if !c.node {
+				// cmp eax, index; jbe deopt
+				wantBytesAt(t, buf, off, append([]byte{0x3D}, idx...), "cmp asize, index")
+				off += 5
+				wantBytesAt(t, buf, off, append([]byte{0x0F, 0x86}, rel(off+6)...), "jbe deopt")
+				off += 6
+				// mov rax, [r14+rcx+16]: the arrayRef load follows
+				wantBytesAt(t, buf, off, []byte{0x49, 0x8B, 0x84, 0x0E, 0x10, 0x00, 0x00, 0x00}, "load arrayRef")
+				return
+			}
+			// shr rax, 32; cmp eax, index; jb deopt
+			wantBytesAt(t, buf, off, []byte{0x48, 0xC1, 0xE8, 0x20}, "shr rax, 32")
+			off += 4
+			wantBytesAt(t, buf, off, append([]byte{0x3D}, idx...), "cmp hmask, index")
+			off += 5
+			wantBytesAt(t, buf, off, append([]byte{0x0F, 0x82}, rel(off+6)...), "jb deopt")
+			off += 6
+			// mov rax, [r14+rcx+24]; test rax, rax; je deopt
+			wantBytesAt(t, buf, off, []byte{0x49, 0x8B, 0x84, 0x0E, 0x18, 0x00, 0x00, 0x00}, "load nodeRef")
+			off += 8
+			wantBytesAt(t, buf, off, []byte{0x48, 0x85, 0xC0}, "test rax, rax")
+			off += 3
+			wantBytesAt(t, buf, off, append([]byte{0x0F, 0x84}, rel(off+6)...), "je deopt")
+			off += 6
+			// mov rcx, rax: the node block's offset
+			wantBytesAt(t, buf, off, []byte{0x48, 0x89, 0xC1}, "mov rcx, rax")
+		})
 	}
 }
 

@@ -24,7 +24,7 @@ import (
 //   1. analyzeSelfArrayHit form recognition returns true (SELF + RETURN A 2 +
 //      IC ArrayHit + feedback FBTableMono + Confidence>=0.99 + matching
 //      stableShape/Index)
-//   2. compileIcSelfArrayHit emits the 139-byte template + incSpecTableHits()
+//   2. compileIcSelfArrayHit emits the template + incSpecTableHits()
 //   3. the returned GibbousCode.Proto() points to the input proto, Slot()
 //      returns (0, false)
 //
@@ -120,7 +120,7 @@ func TestPJ4_SelfArrayHit_MainPath_Synthesized(t *testing.T) {
 	}
 
 	// Verify SpecTableHits really increments (SELF template really compiled,
-	// via archEmitSelfArrayHit emitting 139 bytes + archMmapCode mmap+RX)
+	// via archEmitSelfArrayHit + archMmapCode mmap+RX)
 	hitsAfter := SpecTableHits()
 	if hitsAfter <= hitsBefore {
 		t.Errorf("SpecTableHits 未增长(%d → %d) → SELF compileIc 路径未真触达",
