@@ -115,7 +115,7 @@ local n = 0
 for k, v in pairs(w) do v = nil keep = nil collectgarbage() n = n + 1 end
 return n, next(w)`, "1\tnil"},
 	// A cache with string keys and weak values releases its keys once the values are gone: the
-	// entries the collector cleared do not keep their keys alive.
+	// entries the collector cleared do not keep their keys alive, unlike keys the script removed.
 	{"weak_valued_cache_releases_its_string_keys", `
 local w = setmetatable({}, {__mode = "v"})
 local hold = {}
@@ -207,7 +207,7 @@ func TestDiff_ClearWhileTraversing(t *testing.T) {
 
 // nextFromCollectedStringKey removes a string key that nothing else refers to, collects, and then
 // hands next a string with the same contents. In wangshu a collection in between changes nothing
-// about the node: in a strong table a removed node keeps its string key alive, so the rebuilt
+// about the node: a node emptied by a store of nil keeps its string key alive, so the rebuilt
 // string finds it as long as no later insertion has taken the node over or rehashed the table
 // (06 §8.4). lua5.1 lets the string die and marks the node's key dead, after which next matches
 // that key by object address only: the call then fails unless the rebuilt string happens to be
@@ -233,12 +233,12 @@ func TestDiff_NextFromCollectedStringKey(t *testing.T) {
 	}
 }
 
-// nextFromCollectedKeysOfWeakTables count, for 50 string keys each, how often next accepts a
-// rebuilt key whose string was collected. A weak table does not keep the string key of a removed
-// node alive, whether the script removed the key or the collector cleared the entry: once the
-// string is gone the node holds a key that matches nothing, and next raises.
-var nextFromCollectedKeysOfWeakTables = []struct{ name, src string }{
-	{"entries_cleared_by_the_collector", `
+// nextFromKeysOfClearedEntries fills a weak-valued table with 50 entries whose keys are strings
+// built at run time, lets the values die, collects three times and counts how often next accepts
+// a rebuilt key. An entry the collector cleared does not keep its string key alive (06 §8.4): the
+// key survives the collection that clears the entry and goes with the next one, after which the
+// node holds a key that matches nothing.
+const nextFromKeysOfClearedEntries = `
 local w = setmetatable({}, {__mode = "v"})
 local hold = {}
 for i = 1, 50 do local o = {} hold[i] = o w["wk" .. i] = o end
@@ -246,36 +246,59 @@ hold = nil
 collectgarbage() collectgarbage() collectgarbage()
 local ok = 0
 for i = 1, 50 do if pcall(next, w, "wk" .. i) then ok = ok + 1 end end
-return ok`},
-	{"keys_removed_by_the_script", `
-local ok = 0
-for _, mode in ipairs({"k", "v", "kv"}) do
-  local w = setmetatable({}, {__mode = mode})
-  for i = 1, 50 do w["wd" .. mode .. i] = i end
-  for i = 1, 50 do w["wd" .. mode .. i] = nil end
-  collectgarbage() collectgarbage()
-  for i = 1, 50 do if pcall(next, w, "wd" .. mode .. i) then ok = ok + 1 end end
-end
-return ok`},
+return ok`
+
+// TestDiff_NextFromKeysOfClearedEntries pins wangshu's side: no call succeeds, with the collector
+// in its normal mode and collecting at every safepoint. lua5.1 lets these strings die too and
+// then matches a dead key by address, so there a call succeeds when the rebuilt string happens to
+// be allocated where the old one was; its count is logged and not asserted.
+func TestDiff_NextFromKeysOfClearedEntries(t *testing.T) {
+	for _, stress := range []bool{false, true} {
+		if got := runClearCase(t, nextFromKeysOfClearedEntries, stress); got != "0" {
+			t.Errorf("wangshu (collecting at every safepoint: %v):\n  got:  %q\n  want: %q", stress, got, "0")
+		}
+	}
+	if oracle := findOracle(); oracle != "" {
+		t.Logf("lua5.1 here: %s", strings.TrimSuffix(runOracle(t, oracle, wrapForOracle(nextFromKeysOfClearedEntries)), "\n"))
+	}
 }
 
-// TestDiff_NextFromCollectedKeysOfWeakTables pins wangshu's side: no call succeeds, with the
-// collector in its normal mode and collecting at every safepoint. lua5.1 lets these strings die
-// too and then matches a dead key by address, so there a call succeeds when the rebuilt string
-// happens to be allocated where the old one was; its count is logged and not asserted.
-func TestDiff_NextFromCollectedKeysOfWeakTables(t *testing.T) {
-	oracle := findOracle()
-	for _, c := range nextFromCollectedKeysOfWeakTables {
-		t.Run(c.name, func(t *testing.T) {
-			for _, stress := range []bool{false, true} {
-				if got := runClearCase(t, c.src, stress); got != "0" {
-					t.Errorf("wangshu (collecting at every safepoint: %v):\n  got:  %q\n  want: %q", stress, got, "0")
-				}
-			}
-			if oracle != "" {
-				t.Logf("lua5.1 here: %s", strings.TrimSuffix(runOracle(t, oracle, wrapForOracle(c.src)), "\n"))
-			}
-		})
+// removedStringKeysOfWeakValuedTable removes string keys built at run time from a weak-valued
+// table and from a strong one, collects (or not), and stores the keys again. A key the script
+// removed is kept alive whether or not the table is weak, so it goes back into its node: the
+// traversal order afterwards is the same with and without the collection, and next accepts every
+// removed key after it. The values are numbers, so the collector clears no entry.
+const removedStringKeysOfWeakValuedTable = `
+local function key(i) return "wr" .. i .. "zz" end
+local same, accepted = 0, 0
+for _, mode in ipairs({"v", ""}) do
+  local order = {}
+  for round = 1, 2 do
+    local t = setmetatable({}, {__mode = mode})
+    for i = 1, 12 do t[key(i)] = i end
+    for i = 1, 12, 3 do t[key(i)] = nil end
+    if round == 2 then
+      collectgarbage() collectgarbage()
+      for i = 1, 12, 3 do if pcall(next, t, key(i)) then accepted = accepted + 1 end end
+    end
+    for i = 1, 12, 3 do t[key(i)] = -i end
+    local out = {}
+    for k in pairs(t) do out[#out + 1] = k end
+    order[round] = table.concat(out, ",")
+  end
+  if order[1] == order[2] then same = same + 1 end
+end
+return same, accepted`
+
+// TestRemovedStringKeysOfWeakValuedTable pins that, in both collection modes. Tables with weak
+// keys are left out: there the collector also clears the entries whose string keys nothing else
+// refers to (#348), so whether such a key is still in the table when the script removes it
+// already depends on when collections ran.
+func TestRemovedStringKeysOfWeakValuedTable(t *testing.T) {
+	for _, stress := range []bool{false, true} {
+		if got := runClearCase(t, removedStringKeysOfWeakValuedTable, stress); got != "2\t8" {
+			t.Errorf("wangshu (collecting at every safepoint: %v):\n  got:  %q\n  want: %q", stress, got, "2\t8")
+		}
 	}
 }
 
@@ -286,10 +309,12 @@ func TestDiff_NextFromCollectedKeysOfWeakTables(t *testing.T) {
 //   - the layout of the hash part: a new key whose main position is that node takes it over, and an
 //     insertion that finds no free node rehashes, which drops every removed key. wangshu's hash
 //     part is not laid out like lua5.1's (#349);
-//   - collections: lua5.1 turns the key of every removed node into a dead key at each collection,
-//     whether or not the key's object is alive. next still finds such a node, a store does not, so
-//     the same key stored again is inserted as a new key and can cause a rehash. wangshu puts a
-//     removed key back into its node however many collections ran in between (06 §8.4);
+//   - collections: at each collection lua5.1 turns the key of every removed node into a dead key
+//     if it is collectable (a string, a table, a function; not a number or a boolean), whether or
+//     not the key's object is alive. next still finds such a node, a store does not, so the same
+//     key stored again is inserted as a new key and can cause a rehash. wangshu puts a removed
+//     key back into its node as long as the key's object is alive, however many collections ran
+//     in between, and a string the script removed stays alive (06 §8.4);
 //   - stores that leave no value behind: lua5.1's luaH_set creates a node for a key before it
 //     knows that the value is nil or that __newindex will take the store, so such a store to an
 //     absent key leaves a removed key behind, uses up a free node and can cause a rehash. In
