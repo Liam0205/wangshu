@@ -341,21 +341,17 @@ func archEmitSelfNodeHit(buf []byte, aReg, bReg uint8,
 		stableShape, stableIndex, stableKey, arenaBaseOffArm64(arenaBaseOff), deoptCode)
 }
 
-// archEmitSelfNodeHitNoRet is the arm64 implementation of the NoRet variant
-// (following the C5 commit wrap-up PR comment 8b4ff8e placeholder-backfill lesson):
+// archEmitSelfNodeHitNoRet is the arm64 implementation of the NoRet variant:
 // same as archEmitSelfNodeHit but **the success path does not emit ret**; instead
 // it emits a B (unconditional jump) to skip the deopt block, falling through at
 // the segment tail into the BuildVoid0Arg segment emitted by the caller.
 //
 // **Hookup path**: in the archEmitFrameInlineExitHelperRequest + archCallJITSpec
 // form, after the SELF segment succeeds it falls through into BuildVoid0Arg +
-// ExitHelperRequest + PopVoid0Arg + ret; enabled once archSupportsFrameInline
-// flips to true.
-//
-// **vs the original panic placeholder** (retired): the old panic killed the entire
-// NoRet path when archSupportsFrameInline=true; this implementation replaces it so
-// SELF NodeHit is byte-equal to amd64's EmitSelfNodeHitNoRet in the useFrameInline
-// form (the same length as EmitSelfNodeHitArm64, with the 4B RET swapped for a 4B B).
+// ExitHelperRequest + PopVoid0Arg + ret. archSupportsFrameInline is true on
+// arm64, so the Compile side emits this form for the calls whose frame it
+// builds inline (useFrameInline). The template has the same length as
+// EmitSelfNodeHitArm64, with the 4B RET swapped for a 4B B.
 func archEmitSelfNodeHitNoRet(buf []byte, aReg, bReg uint8,
 	stableShape, stableIndex uint32, stableKey uint64,
 	arenaBaseOff int32, deoptCode uint64) []byte {
