@@ -1603,9 +1603,6 @@ func fileFnLines(st *crescent.State, args []value.Value) ([]value.Value, *cresce
 	if !ok {
 		return nil, crescent.NewArgError(1, "FILE* expected, got "+argTypeName(args, 0))
 	}
-	// The iterator must carry the stream kind. Checking only "is it a handle" meant
-	// io.stdout:lines() returned an iterator that happily read STDIN -- handing back
-	// someone else's input data, which is worse than raising.
 	// The iterator must carry the stream kind: checking only "is it a handle" meant
 	// io.stdout:lines() returned an iterator that happily read STDIN, handing back someone
 	// else's input, which is worse than raising.
