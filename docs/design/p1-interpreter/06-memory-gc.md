@@ -681,6 +681,9 @@ type Collector struct {
    登记在 `test/difftest/corners_test.go` 的 `exemptions` 和 README 的差异表里，`TestDiff_NextFromCollectedStringKey` 固定望舒一侧的结果
    （官方一侧取决于分配器，只记录、不断言）。回收器清掉的条目，两边都不让它的字符串键存活，剩下的差别只在官方按地址认已回收的键：
    重新拼出来的字符串正好分配在原地址上时官方的 `next` 成功，望舒一律报错，`TestDiff_NextFromKeysOfClearedEntries` 固定望舒一侧的结果。
+   官方有一类永远不回收的字符串：保留字和元方法名（`llex.c`、`ltm.c` 里的 `luaS_fix`）。它们作键时，被清掉的条目的 dead key 一直指向
+   还活着的对象，官方的 `next` 每次都成功；望舒没有这样的字符串，键照常被回收，`next` 报错。这一种两边的结果都是确定的，
+   `TestDiff_NextFromFixedKeysOfClearedEntries` 固定两边各自的结果。
    同一个原则还带来一处差异：官方标记一张表时（`traversetable`；键和值都弱的表整张跳过，不在此列）对**每个**键可回收的已删除节点都执行
    `removeentry`，键指向的对象还活着也一样，键被改成 `LUA_TDEADKEY`
    之后，同一个键再次写入时找不到原节点、按新键插入（可能引起 rehash，丢掉其他已删除的键）。望舒只替换对象已死的键，活着的键不管

@@ -1202,7 +1202,8 @@ arena 大小跟着比例变。`TestTiered_StdlibNames` 加一段
   占着它们（10 万个约 105 字节的键，清空并回收之后官方剩 5402KB，望舒仍是 15584KB）。这个取舍要不要保留记在
   [#352](https://github.com/Liam0205/wangshu/issues/352)。`TestDiff_NextFromCollectedStringKey` 固定望舒一侧的结果。
   回收器清掉的弱表条目不保活（上面第 5 条），所以这个代价不落在弱值缓存上；这种条目上剩下的差别是官方按地址认已回收的键，
-  `TestDiff_NextFromKeysOfClearedEntries` 固定望舒一侧的结果。
+  `TestDiff_NextFromKeysOfClearedEntries` 固定望舒一侧的结果。键是官方永远不回收的字符串（保留字、元方法名）时，官方的 `next` 总是成功、
+  望舒报错，这一种修改前就有，`TestDiff_NextFromFixedKeysOfClearedEntries` 固定两边各自的结果。
 - 上面第 6 条。`TestDiff_NextOnRemovedKeyAfterStores` 固定八段脚本两边各自的结果：前三段的原因是布局，#349 解决之后应当变成两边
   相同；第四段的原因是回收，它与上一条是同一个取舍（回收本身不改变已删除的键能不能找回节点），第五段是同一段脚本换成键和值都弱的表，
   官方在这种表上不把已删除的键标成 dead key，两边相同；后三段的原因是官方给「不留下值的赋值」
