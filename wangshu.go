@@ -40,7 +40,14 @@ type Options struct {
 	MaxArenaBytes     uint32
 	MaxCallDepth      int
 	MaxCCalls         int
-	GCPause           int
+	// GCPause is the collector's pause ratio in percent: the next automatic collection runs
+	// once the bytes allocated since the last one reach live * GCPause / 100. 0 selects the
+	// default, 200 (unlike collectgarbage("setpause", 0), which sets the ratio to 0); a
+	// negative value means no automatic collection. A script changes the same ratio with
+	// collectgarbage("setpause", n). The ratio is measured against the bytes allocated since
+	// the last collection, where lua5.1 measures against the total, so a ratio p here behaves
+	// roughly like p + 100 there (issue #353).
+	GCPause int
 	// AllowFileLoad enables loadfile/dofile to read the host filesystem.
 	// Default false: when an embedded VM runs untrusted scripts, file reads
 	// are an out-of-bounds probing surface.
