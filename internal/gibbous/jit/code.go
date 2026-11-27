@@ -729,9 +729,9 @@ func (c *p4Code) Run(stack []uint64, base uint32) int32 {
 			c.host.SetReg(int32(c.callA), srcVal)
 			// SELF inline preprocessing: host.Self completes method fetch + self loading
 			if c.isSelfCall {
-				// pc argument: SELF's own pc. CALL is at retPC-1, SELF is one
-				// instruction before CALL + args (callArgCount LOADK/MOVE instructions).
-				// So SELF.pc = callPC - 1 - callArgCount.
+				// pc argument: SELF's own pc. SELF is one instruction before CALL
+				// + args (callArgCount LOADK/MOVE instructions), and callPC is the
+				// CALL's pc as computed above. So SELF.pc = callPC - 1 - callArgCount.
 				selfPC := callPC - 1 - int32(c.callArgCount)
 				st := c.host.Self(int32(base), selfPC, int32(c.selfCallA),
 					int32(c.selfCallA), int32(c.selfMethodRK))
