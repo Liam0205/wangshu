@@ -44,13 +44,30 @@ func tableFnForeach(st *crescent.State, args []value.Value) ([]value.Value, *cre
 	}
 	t := value.GCRefOf(tv)
 	key := value.Nil
+	// The callback may assign nil to the field it is given, drop every other reference to the key
+	// and collect. The next step still continues from that key, so the key stays rooted until
+	// then, as lua_next keeps it on the C stack.
+	var pin uint32
+	pinned := false
+	defer func() {
+		if pinned {
+			st.UnpinRef(pin)
+		}
+	}()
 	for {
 		k, v, ok, err := st.RawNext(t, key)
+		if pinned {
+			st.UnpinRef(pin)
+			pinned = false
+		}
 		if err != nil {
 			return nil, err
 		}
 		if !ok {
 			break
+		}
+		if value.IsCollectable(k) {
+			pin, pinned = st.PinRef(value.GCRefOf(k)), true
 		}
 		rs, e := st.ProtectedCallDirect(args[1], []value.Value{k, v})
 		if e != nil {
