@@ -239,6 +239,29 @@ for i = 1, 40 do
   end
 end
 return table.concat(order, " | ")`, true, false},
+	// collectgarbage("setpause") / ("setstepmul") return the previous value, called from a promoted
+	// function. collectgarbage is not one of the library calls a promoted function may make, so it
+	// is stored in the table library and reached as an upvalue, like the handle methods above. The
+	// option names are upvalues too: P3 does not compile a function that loads a string constant.
+	// Under natural heat P4 runs the kernel compiled and P3 does not, hence auto = false.
+	{"collectgarbage_set_returns_previous", `
+table.cg345 = collectgarbage
+local cg, setpause, setstepmul = table.cg345, "setpause", "setstepmul"
+local function kernel(x)
+  local a = x * 2 + 1
+  local b = a - x
+  local c = b * 3 - a
+  local d = c + b - x
+  local e = d * 2 + c
+  local f = e - d + a
+  local p = cg(setpause, 100 + x)
+  local m = cg(setstepmul, 300 + x)
+  return p * 1000 + m + f - f
+end
+local out = {}
+for i = 1, 40 do out[#out + 1] = kernel(i) end
+cg("setpause", 200)
+return table.concat(out, " ")`, true, false},
 	// math.mod is fmod's 5.0 name and the same function object. A promoted function sees the two equal
 	// and gets the same results from either. The kernel reaches them as upvalues and is padded with
 	// arithmetic, a form both tiers promote under force-all. Under natural heat P4 runs it compiled

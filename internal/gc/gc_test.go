@@ -1,6 +1,7 @@
 package gc
 
 import (
+	"math"
 	"strings"
 	"testing"
 
@@ -329,5 +330,70 @@ func TestCollect_CompactKeepsWatermarkHeadroom(t *testing.T) {
 	c.Collect()
 	if a.Cap() != before {
 		t.Fatalf("steady-state Collect replaced the slab: %d → %d", before, a.Cap())
+	}
+}
+
+// TestSetPauseDrivesTheThreshold: the pause ratio set through SetPause is what the next collection
+// uses for its threshold, SetPause and SetStepMul return the previous value, and a ratio a script
+// can pass (negative, huge) neither wraps the threshold nor makes it zero.
+func TestSetPauseDrivesTheThreshold(t *testing.T) {
+	a := arena.New(arena.Options{InitialBytes: 1 << 20})
+	c := New(a, Options{})
+	g := object.AllocTable(a, 0, 0)
+	c.LinkSweep(g)
+	c.SetRoots(Roots{Globals: g})
+	// Enough live data for live * ratio / 100 to clear the lower bound of cap/16.
+	big := object.AllocTable(a, 1<<14, 0)
+	c.LinkSweep(big)
+	h := c.Push(value.MakeGC(value.TagTable, big))
+	defer c.Pop(h)
+
+	if old := c.SetPause(200); old != 200 {
+		t.Fatalf("the default pause ratio is %d, want 200", old)
+	}
+	c.Collect()
+	live := c.liveBytesAfterSweep
+	if live < 1<<17 {
+		t.Fatalf("setup: only %d live bytes", live)
+	}
+	if c.threshold != live*2 {
+		t.Fatalf("pause 200: threshold %d, want %d (twice the %d live bytes)", c.threshold, live*2, live)
+	}
+	if old := c.SetPause(400); old != 200 {
+		t.Fatalf("SetPause returned %d, want the previous ratio 200", old)
+	}
+	if c.threshold != live*2 {
+		t.Fatalf("SetPause changed the threshold before the next collection")
+	}
+	c.Collect()
+	if c.threshold != live*4 {
+		t.Fatalf("pause 400: threshold %d, want %d", c.threshold, live*4)
+	}
+	if old := c.SetPause(-1); old != 400 {
+		t.Fatalf("SetPause returned %d, want 400", old)
+	}
+	c.Collect()
+	if c.threshold != math.MaxUint64 {
+		t.Fatalf("a negative pause ratio gave threshold %d, want the maximum (no automatic collection)", c.threshold)
+	}
+	c.SetPause(math.MaxInt32)
+	c.Collect()
+	if want := live * uint64(math.MaxInt32) / 100; c.threshold != want {
+		t.Fatalf("pause MaxInt32: threshold %d, want %d", c.threshold, want)
+	}
+	c.SetPause(0)
+	c.Collect()
+	if want := uint64(a.Cap()) / 16; c.threshold != want {
+		t.Fatalf("pause 0: threshold %d, want the lower bound %d", c.threshold, want)
+	}
+	if a.Cap() < 1<<17 {
+		t.Fatalf("the arena shrank to %d bytes below its live data", a.Cap())
+	}
+
+	if old := c.SetStepMul(300); old != 200 {
+		t.Fatalf("the default step multiplier is %d, want 200", old)
+	}
+	if old := c.SetStepMul(-7); old != 300 {
+		t.Fatalf("SetStepMul returned %d, want 300", old)
 	}
 }

@@ -179,7 +179,7 @@ Wangshu implements the Lua 5.1 core language, with the same syntax surface as Lu
 | Bytecode serialisation | `string.dump` | Wangshu's bytecode format is not compatible with the official `.luc` |
 | Environment ops | `getfenv` / `setfenv` | Conflicts with the shape analysis that tiered execution relies on |
 | Undocumented function | `newproxy` | Not in the official 5.1 manual; not provided |
-| Incremental GC | `collectgarbage("step")` / `collectgarbage("setstepmul")` | The GC is stop-the-world with no incremental parameters; the calls return placeholder values |
+| Incremental GC | `collectgarbage("step")` / `collectgarbage("setstepmul")` | The GC is stop-the-world with no incremental stepping: `step` runs a full collection and returns `true`; the `setstepmul` value is stored and returned by the next call, but does not affect collection |
 | Hang protection | Catastrophic pattern backtracking (e.g. `.*.+%A*x`) | Past `1<<20` backtracking steps it reports `pattern too complex`; the official implementation keeps going |
 | C undefined behaviour | `string.char` given a number outside the int range (including NaN, ±inf) | The official result comes from C undefined behaviour and differs between x86-64 and arm64; Wangshu always uses the x86-64 result |
 | Time zones | A few `os.time{isdst=...}` inputs right at a DST transition | Every platform uses glibc's rule, so results agree across platforms; on macOS / BSD they can differ from a locally built official Lua |

@@ -34,9 +34,10 @@ func registerBaseEnv(st *crescent.State) {
 
 // baseFnCollectGarbage: collectgarbage([opt [, arg]]) (10 §4.6; 06 GC control).
 //
-// P1 support: collect (full GC) / count (KB) / stop / restart / setpause (no-op
-// placeholder, STW GC has no incremental knobs) / step (= collect, STW has no
-// stepping).
+// collect (full GC) / count (KB) / stop / restart behave as in 5.1. setpause sets the
+// collector's pause ratio and setstepmul stores a value the collector does not use; both return
+// the previous value, as lua_gc does. step runs a full collection (there is no incremental
+// collector to step) and returns true, where 5.1 returns whether the step finished a cycle.
 func baseFnCollectGarbage(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
 	opt := "collect"
 	if len(args) >= 1 && args[0] != value.Nil {
@@ -60,10 +61,13 @@ func baseFnCollectGarbage(st *crescent.State, args []value.Value) ([]value.Value
 	// non-number there raises even though this implementation has no incremental
 	// knobs to apply it to. Ignoring the argument entirely meant
 	// collectgarbage("count", "x") succeeded where PUC raises.
+	ex := 0 // luaL_optint(L, 2, 0)
 	if len(args) >= 2 && args[1] != value.Nil {
-		if _, ok := toNumberStr(st, args[1]); !ok {
+		f, ok := toNumberStr(st, args[1])
+		if !ok {
 			return nil, crescent.NewArgError(2, "number expected, got "+st.TypeName(args[1]))
 		}
+		ex = int(cCharCastInt32(f))
 	}
 	switch opt {
 	case "collect", "step":
@@ -87,9 +91,10 @@ func baseFnCollectGarbage(st *crescent.State, args []value.Value) ([]value.Value
 	case "restart":
 		st.GCSetStopped(false)
 		return []value.Value{value.NumberValue(0)}, nil
-	case "setpause", "setstepmul":
-		// STW GC has no incremental tuning; placeholder returns 0 (observable but not byte-comparable, 10 §13)
-		return []value.Value{value.NumberValue(0)}, nil
+	case "setpause":
+		return []value.Value{value.NumberValue(float64(st.GCSetPause(ex)))}, nil
+	case "setstepmul":
+		return []value.Value{value.NumberValue(float64(st.GCSetStepMul(ex)))}, nil
 	}
 	return nil, crescent.NewArgError(1, "invalid option '"+opt+"'")
 }
