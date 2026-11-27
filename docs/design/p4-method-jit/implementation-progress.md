@@ -2867,6 +2867,10 @@ P1 成功、P4 抬 `SETLIST: not a table`。**根因不在 JIT 里**,而在共�
   记在 `do` 那一行、FORLOOP 记在 `for` 那一行，所以循环头跨行时 `instruction budget exceeded` 的行号差一行。记录里加上 FORLOOP 的 pc
   （`forLoopBackPC`），`LoopPreempt` 用它；`ForPrep` 仍用 FORPREP 的 pc。P3 在同一种报错上报的是循环体最后一条语句的行号，
   修改前就这样，这次没有改，记在 [#357](https://github.com/Liam0205/wangshu/issues/357)。
+  ⑤ 重放路径的泛型 for（迭代器是宿主函数时）在同一处检查时，传的是 TFORLOOP 的 pc，解释器在它后面那条向回跳的 JMP 上检查。luac 把
+  TFORLOOP 记在 `in ... do` 那一行、JMP 记在循环体最后一条语句那一行，所以循环体与循环头不在同一行时行号不同。记录里加上那条 JMP 的 pc
+  （`tforLoopBackPC`，等于 TFORLOOP 的 pc 加 1，形状分析保证 JMP 紧跟 TFORLOOP），`LoopPreempt` 用它；`TForLoop` 仍用 TFORLOOP 的 pc。
+  原生翻译在回跳指令自己的出口上检查，传的就是它的 pc，不受影响。
 - **同一个文件里其余的 `retPC - 1`**逐个核对过：方法调用和尾调用两种形式里结果不经 MOVE 复制，RETURN 紧跟在 CALL / TAILCALL 后面，`retPC` 就是它的下一条
   （方法调用形式也接受丢弃多个结果的 `CALL C = 3..16`，这时 RETURN 同样紧跟 CALL）；
   FORLOOP、单条表访问、比较折叠各自的注释里写明了位置的算法，没有问题。
@@ -2890,5 +2894,8 @@ P1 成功、P4 抬 `SETLIST: not a table`。**根因不在 JIT 里**,而在共�
   arm64 的 P4 上没有这条路径，十二段里八段进入升层代码、四段不升层，结果都与解释器相同（`qemu-aarch64` 下执行过）。
   ④ 由 `TestTiered_StepBudgetLineInNumericFor`（只在 P4 构建）验证：循环头跨两行的数值 for，一段短内核走原生翻译，一段垫了 300 条赋值的在
   amd64 上走重放，步数预算用完时的报错和栈回溯与解释器逐字相同；把 `LoopPreempt` 的 pc 改回 FORPREP，垫过的那段失败。arm64 上执行过。
+  ⑤ 由 `TestTiered_StepBudgetLineInGenericFor`（只在 P4 构建）验证：用 `next` 遍历一张 30 万个元素的表，循环体与 `in ... do` 不在同一行，
+  短内核和垫过的各一段；amd64 上两段的循环都走重放，把 `LoopPreempt` 的 pc 改回 TFORLOOP，两段都失败（差一行）。arm64 上两段由原生翻译
+  编译，执行过。
 - **为什么长期没被发现**：`p4Corpus` 里出错的用例大多把内核直接放在 `pcall` 下面，升了层也不在升层代码里执行（#333）；比较报错文本的测试
   又常把整段位置前缀去掉，行号错了看不出来；用例的内核都只有几条指令，到不了 pc 256。
