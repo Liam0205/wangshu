@@ -668,7 +668,7 @@ type Collector struct {
    `TestWeak_ClearedEntryInATableMadeStrong` 和 `weak_valued_cache_releases_its_string_keys` 断言。
    保活脚本删掉的字符串键与官方不同，是有意保留的差异，有两面：
    - **`next` 的结果**：官方的 `removeentry` 不让已删除节点里的字符串键存活，这个字符串没有别的引用时就被回收，回收之后 `next` 只按对象地址
-     认这个键（另有引用时，比如它是某个函数的常量，它还活着，两边相同）。所以 `t[k] = nil`、
+     认这个键（另有引用时，比如它是某个函数的常量，它还活着，两边相同；官方永远不回收的那几种字符串也一直活着，两边相同，见下）。所以 `t[k] = nil`、
      回收、再用重新拼出来的同内容字符串调用 `next(t, k)`，望舒从原位置继续；官方在新字符串没有正好分配到原对象的地址上时报
      `invalid key to 'next'`，分配到原地址上时成功（实测 216 种键长、键个数、回收次数的组合里成功 46 次、报错 170 次）。没有发生回收时
      两边相同。官方的结果取决于回收有没有在中间发生，与「普通回收和每个安全点都回收两种方式下结果相同」的测试要求不能同时满足。
@@ -684,12 +684,13 @@ type Collector struct {
    重新拼出来的字符串正好分配在原地址上时官方的 `next` 成功，望舒一律报错，`TestDiff_NextFromKeysOfClearedEntries` 固定望舒一侧的结果。
    官方有一类永远不回收的字符串：保留字、`ltm.c` 列的 17 个元方法名（没有 `__tostring` 和 `__metatable`）和 `"not enough memory"`（`llex.c`、`ltm.c`、`lstate.c` 里的 `luaS_fix`）。它们作键时，被清掉的条目的 dead key 一直指向
    还活着的对象，官方的 `next` 每次都成功；望舒不固定任何字符串：键没有别的引用时照常被回收，`next` 报错；另有引用时（`__index` 是字符串元表的键，`__mode` 是弱表自己元表的键）两边都成功。这一种两边的结果都是确定的，
-   `TestDiff_NextFromFixedKeysOfClearedEntries` 固定两边各自的结果。
+   `TestDiff_NextFromFixedKeysOfClearedEntries` 固定两边各自的结果。脚本用 `t[k] = nil` 删掉的键是这几种字符串时，官方不回收它、望舒由节点保活，
+   两边的 `next` 都成功，`TestDiff_NextFromRemovedFixedKeys` 固定。
    同一个原则还带来一处差异：官方标记一张表时（`traversetable`；键和值都弱的表整张跳过，不在此列）对**每个**键可回收的已删除节点都执行
    `removeentry`，键指向的对象还活着也一样，键被改成 `LUA_TDEADKEY`
    之后，同一个键再次写入时找不到原节点、按新键插入（可能引起 rehash，丢掉其他已删除的键）。望舒只替换对象已死的键，活着的键不管
    隔了几次回收都写回原节点。`TestDiff_NextOnRemovedKeyAfterStores` 的 `same_keys_stored_again_after_a_collection` 固定两边各自的结果，
-   `…_weak_keys_and_values` 固定键和值都弱的表上、键另有引用时两边相同（删掉的字符串键没有别的引用时官方把它回收，写回去的新字符串不在原地址上就按新键插入）。
+   `…_weak_keys_and_values` 固定键和值都弱的表上、键另有引用时两边相同（删掉的字符串键没有别的引用、又不是官方永远不回收的那几种时，官方把它回收，写回去的新字符串不在原地址上就按新键插入）。
    遍历过程中继续使用某个键的调用方（`next` 的调用者、`table.foreach`、公开 API 的 `Table.ForEach`）自己保证这个键可达。
 4. **可观察性**:cleartable 移除 entry 影响后续 `pairs`/`next` 产出,与 `pairs` 序、`tostring` 地址同类,纳入 §11 / [12](./12-testing-difftest.md) 的差分口径。
 
