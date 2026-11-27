@@ -1030,6 +1030,19 @@ reviewer 同时说明，doc-gaps 里其余几个 issue 的说明它只读过、�
 「七件套」的个数）。本分支只在两边的 `all:` 里各加了 `check-readme`。记在
 [#344](https://github.com/Liam0205/wangshu/issues/344)。
 
+第二十四轮独立审查（全范围，又一位 reviewer）没有阻塞问题和重要问题，三条小问题是同一种情况：本分支改了一处，
+说同一件事的另一处没有跟着改。
+
+| 审查意见 | 处理 |
+|---|---|
+| 10 §8.6 写「`mathExtraFns` 里 `fmod` 与 `mod` 也指向同一个实现」。`mod` 已经不在那张表里，改由 `OpenAll` 设成 `fmod` 的闭包 | 改成指向 `OpenAll`。本分支从注册表里删掉的条目（`pairs`、`ipairs`、`mod`）和删掉的函数（`baseFnPairs`、`baseFnIpairs`）在文档和注释里的引用都查了一遍，没有别的残留 |
+| `internal/stdlib/baseenv.go` 的文件头注释还把范围总表写成「10 §11」。同一种引用本分支在另外两个文件里改成了 §14，这里漏了 | 改成 §14。接着把 Go 文件里所有「10 §N」的引用用脚本对着 10 号文档的章节标题核对了一遍，又找到三个文件里四处指错了节（模式匹配写成 §7，应为 §6；string 库写成 §7-§8，应为 §5-§6；宿主函数调用约定写成 §3，应为 §1）。10 号文档的章节编号从第一版起没有变过，这几处是写下时就错的，一并改了。本分支新增的 Markdown 行里 71 处章节引用也核对过，都存在 |
+| 两个 README 列举 `make all` 的内容时没有 `check-readme` | 补上，同时补上修改前就漏列的 `test-scripts`，现在与 Makefile 的 `all:` 逐项相同 |
+
+reviewer 另外列了三处修改前就过期、本分支没有碰的文字：`test/difftest/doc.go` 还写着「Currently a placeholder」；
+`docs/design/architecture.md` 的目录树列的工作流（`nightly-benchmark`、`release`）与 `.github/workflows/` 里实际的文件不符；
+`docs/design/p3-wasm-tier/08-testing-strategy.md` 引用的 `all:` 一行是旧的。它们与 #344 是同一类问题，补在那个 issue 的评论里。
+
 验证：`make all` 与 `make fuzz-oracle` 通过。把 `internal/stdlib` 的 `stdlib.go` 和 `tablelib.go` 一起换回修复前的版本：
 行为测试 10 个用例失败，`test/api` 的 `io.lines` 用例 4 个失败，`TestTiered_StdlibNames` 在 P3、P4 两种构建下十段脚本里
 六段失败（剩下的四段修复前后结果相同：迭代器对坏参数的报错、带文件名的 `io.lines`、从升层代码里调用两个工厂函数各一段，它们的作用是
