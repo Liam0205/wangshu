@@ -2855,10 +2855,14 @@ P1 成功、P4 抬 `SETLIST: not a table`。**根因不在 JIT 里**,而在共�
   和写临时寄存器的 GETGLOBAL、GETTABLE、NEWTABLE 时，pc 一律写成 0。pc 0 是函数的第一条指令（这里是 GETUPVAL），从它找不到被索引的那个
   寄存器的名字；内联缓存也读写在 0 号槽位上。记录里加上 `pc` 字段，重放时传真实的位置。CLOSURE、CALL、SELF、TAILCALL、算术这几种
   记录的 pc 一直放在 `imm` 里，没有动。
+  ③ 同一条旧式路径把另外几种指令的 pc 存在 8 位的字段里：返回值的来源指令（`slotSource.arithPC`，GETTABLE、GETGLOBAL、算术、取负、
+  取长度、连接、比较都用它）、数值 for 的 FORPREP（`forLoopPC`）、泛型 for 的 TFORLOOP（`tforLoopPC`）和 RETURN（`retPC`）。出错的指令在
+  pc 256 以后时，传给宿主的是 pc 的低 8 位，症状与 ② 相同：名字丢失，行号是前面某一行的。这些字段改成 16 位，与记录里的 `pc` 字段和
+  算术记录在 `imm` 里的 pc 宽度一致；`AnalyzeShape` 不接受 RETURN 在 pc 65535 之后的函数（`maxShapePC`），所以 16 位放得下每一个记录的 pc。
 - **同一个文件里其余的 `retPC - 1`**逐个核对过：方法调用和尾调用两种形式里 `retPC` 就是 CALL / TAILCALL 的下一条，不带多结果；
   FORLOOP、单条表访问、比较折叠各自的注释里写明了位置的算法，没有问题。
 - **验证**：`test/difftest/tiered_error_names_test.go` 的 `TestTiered_ErrorNames`，十二种出错写法，内核都写成多行并保留行号比较，解释器、
-  强制升层、自然升温三种方式互相比较并与 `lua5.1` 比较，并且逐段断言强制升层有没有进入升层代码：调用类五段在所有构建上都进入；
+  强制升层、调低升层阈值三种方式互相比较并与 `lua5.1` 比较（第三种不要求进入升层代码），并且逐段断言强制升层有没有进入升层代码：调用类五段在所有构建上都进入；
   索引类和全局变量类七段在 P3 和 amd64 的 P4 上进入，在 arm64 的 P4 上不升层（`errorNameIndexKernelsRunCompiled`，按构建分两个文件），
   三种方式的结果仍然相同。arm64 上用 `qemu-aarch64` 执行过。
   变异：只撤掉 ①，三段失败（两个结果、三个结果、宿主函数参数错误）；② 按分支逐个改回 pc 0，`SetTable` 两段失败，`GetTable` 两段失败，
@@ -2870,5 +2874,9 @@ P1 成功、P4 抬 `SETLIST: not a table`。**根因不在 JIT 里**,而在共�
   `Close` 根本不用传进来的 pc；`NewTable` 只把它记进 `ci.pc`，自己不报错、不访问内联缓存，之后只有末尾的安全点，那里能读到这一帧
   位置的只有终结器，而脚本造不出带 `__gc` 的对象。`analyzeCallVoidForm` 新加的检查由 `TestPJ5_AnalyzeCallVoidForm_Reject` 的一段手工字节码覆盖，
   撤掉检查这一段失败。
+  ③ 由 `TestTiered_ErrorNamesBeyondPC255` 验证：十二种出错写法，前面各垫 300 条赋值，出错的指令都在 pc 256 以后。修改前 amd64 的 P4 上
+  十种与解释器不同（调用和写 upvalue 两种的 pc 本来就是完整的）。逐个字段改回 8 位：`arithPC` 八段失败，`forLoopPC`、`tforLoopPC` 各一段失败，
+  记录里的 `pc` 一段失败；`retPC` 改回 8 位和去掉 `maxShapePC` 的检查由 `peroptranslator` 的单元测试 `TestAnalyzeShape_ReturnPCLimit` 发现。
+  arm64 的 P4 上没有这条路径，十二段里八段进入升层代码、四段不升层，结果都与解释器相同（`qemu-aarch64` 下执行过）。
 - **为什么长期没被发现**：`p4Corpus` 里出错的用例大多把内核直接放在 `pcall` 下面，升了层也不在升层代码里执行（#333）；比较报错文本的测试
-  又常把整段位置前缀去掉，行号错了看不出来。
+  又常把整段位置前缀去掉，行号错了看不出来；用例的内核都只有几条指令，到不了 pc 256。
