@@ -302,7 +302,17 @@ type PointFeedback struct {
 
 对应地,GETGLOBAL / SETGLOBAL NodeHit inline(§2.4)也做了类似简化:只留 gen-only guard + 编译期烧入的 node index。这**强化了对生产端的要求**:任何 key → slot 的重定位都必须 `BumpGen`,否则 inline 就会读到错的 slot。这个 producer-side 不变量已在 crescent `rawtable.go::insertNewKey` 上补齐(2026-07-02,fuzz seed 4b3d10ff 回归)。
 
-本 addendum 记录 addendum 时点的实际情况,不删除上文原设计文本——上文对 P2/P3 端的对偶描述,以及 P4 spec template(§9.19 SELF NodeHit 六模板)仍字面成立;只有 amd64 native path 的 ArrayHit / NodeHit inline 走了简化路线。arm64 端因 native 接受检查尚未接上 GETTABLE/SETTABLE(承 §14.5 分岔),此 addendum 对 arm64 无影响。
+本 addendum 记录 addendum 时点的实际情况,不删除上文原设计文本——上文对 P2/P3 端的对偶描述仍字面成立;amd64 native path 的 ArrayHit / NodeHit inline 走了简化路线,单条表访问的模板实际检查的内容见下一段。arm64 端因 native 接受检查尚未接上 GETTABLE/SETTABLE(承 §14.5 分岔),此 addendum 对 arm64 无影响。
+
+**单条表访问的模板实际检查的内容**（`internal/gibbous/jit/amd64/pj4_template.go`、`internal/gibbous/jit/arm64/pj4_template.go`，函数体只有一条 GETTABLE / SETTABLE / SELF 时使用）：这一组模板不比对 tableRef，所以同一个函数用在以同一种方式构造出来的许多张表上，都走内联路径。它们依次检查：
+
+1. 值是表；
+2. 表的 gen 等于固化的 gen；
+3. 固化的下标在这张表之内：数组部分是 `index < asize`，哈希部分是 `index <= hmask` 而且 `nodeRef != 0`（没有哈希部分的表 `hmask` 也是 0，下标 0 能通过前一项，所以要单独看 `nodeRef`）；
+4. 哈希部分的模板再比对节点里的键；
+5. 槽位现有的值不是 nil；SETTABLE 的模板还要求要写入的值不是 nil。
+
+任何一项不满足都走 deopt，由宿主的慢路径完成这一次访问。gen 相同只说明这张表建好之后结构没有变过，说明不了它就是解释器当时看到的那张表：用同一种方式构造出来的表 gen 相同，大小却可以不同，所以第 3 项不能省。按指令翻译的快路径（`peroptranslator` 的 `emitTableNodeHitPrelude` 等）用的是同一组条件。分析阶段不接受超过 `maxTemplateSlotIndex` 的下标（amd64 的模板用 32 位位移取槽位）；arm64 的模板把槽位的字节偏移装进寄存器再相加，不放在 `LDR` / `STR` 的立即数里（立即数最大 32760）。
 
 ### 2.4 FBGlobalStable:常量化 / 直达 globals 槽 + globals 代次 guard
 
