@@ -157,6 +157,20 @@ func TestPJ5_AnalyzeCallVoidForm_Reject(t *testing.T) {
 				bytecode.EncodeABC(bytecode.RETURN, 0, 2, 0),
 			},
 		},
+		{
+			// Two results, three MOVEs between the CALL and the RETURN: the first two are the
+			// copies of the results, the third is not part of the form.
+			"a MOVE beyond the result copies between CALL and RETURN",
+			[]bytecode.Instruction{
+				bytecode.EncodeABC(bytecode.MOVE, 1, 0, 0),
+				bytecode.EncodeABC(bytecode.CALL, 1, 1, 3),
+				bytecode.EncodeABC(bytecode.MOVE, 3, 1, 0),
+				bytecode.EncodeABC(bytecode.MOVE, 4, 2, 0),
+				bytecode.EncodeABC(bytecode.MOVE, 5, 0, 0),
+				bytecode.EncodeABC(bytecode.RETURN, 3, 3, 0),
+				bytecode.EncodeABC(bytecode.RETURN, 0, 1, 0),
+			},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
