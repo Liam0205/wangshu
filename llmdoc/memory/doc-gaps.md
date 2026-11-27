@@ -16,10 +16,11 @@
   amd64 上另有一种情况：索引值为 nil 的 upvalue 时名字丢失，原因没有查。见
   [#339](https://github.com/Liam0205/wangshu/issues/339)。
 
-- **【未修，产品缺陷】多值展开构造的表中间有 nil 时，`#t` 和 `unpack(t)` 与官方不同** — `{...}`、`{f()}` 展开出来的值
-  中间有 nil 时，官方的 `#t` 是值的总个数，望舒停在第一个 nil 之前；`local args = {...}` 之后 `f(unpack(args))` 会丢掉 nil
-  之后的参数。写死个数的字面量不受影响。原因是 `doSetList` 在个数取到栈顶为止时逐个写入，没有像官方 `OP_SETLIST` 那样
-  先把数组段一次开到最终大小。差分 fuzz 能直接看到。见
+- **【未修，产品缺陷】多值展开构造的表中间有 nil 时，`#t` 和 `unpack(t)` 与官方不同** — 表构造式以多值展开结尾
+  （`{...}`、`{f()}`、`{1, f()}`），展开出来的值中间有 nil、最后一个值不是 nil 时，官方的 `#t` 是值的总个数，望舒停在
+  第一个 nil 之前；`local args = {...}` 之后 `f(unpack(args))` 会丢掉 nil 之后的参数。最后一个值也是 nil 时两侧相同，
+  写死个数的字面量不受影响。原因是 `doSetList` 逐个写入，没有像官方 `OP_SETLIST` 那样先把数组段一次开到最终大小；
+  个数取到栈顶为止的写法里才会出现中间的 nil 落进哈希段的情况。差分 fuzz 能直接看到。见
   [#342](https://github.com/Liam0205/wangshu/issues/342)。
 
 - **【未修】文件句柄的 `close` 不传句柄时报错文字不同** — `io.stdout.close()` 官方报 `FILE* expected, got nil`，望舒报

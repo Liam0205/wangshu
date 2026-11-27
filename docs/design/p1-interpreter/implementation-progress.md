@@ -980,8 +980,9 @@ reviewer 在跑 P4 全量测试时还撞到一次 `TestIssue177_StringLimitConte
 
 这一轮还发现两项与 #329 无关、此前没有登记的存量差异，都在 master 上复现过，差分 fuzz 都能直接看到：
 
-- `{...}`、`{f()}` 展开出来的值中间有 nil 时，`#t` 和 `unpack(t)` 与官方不同，`local args = {...}` 之后 `f(unpack(args))`
-  会丢掉 nil 之后的参数。记在 [#342](https://github.com/Liam0205/wangshu/issues/342)。
+- 表构造式以多值展开结尾（`{...}`、`{f()}`、`{1, f()}`），展开出来的值中间有 nil 而最后一个值不是 nil 时，`#t` 和
+  `unpack(t)` 与官方不同，`local args = {...}` 之后 `f(unpack(args))` 会丢掉 nil 之后的参数。记在
+  [#342](https://github.com/Liam0205/wangshu/issues/342)。
 - `io.stdout.close()` 不传句柄时报 `got no value`，官方报 `got nil`。记在
   [#343](https://github.com/Liam0205/wangshu/issues/343)。
 
