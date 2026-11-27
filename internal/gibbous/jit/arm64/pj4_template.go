@@ -145,7 +145,7 @@ func emitSlotAddrArm64(buf []byte, byteOff uint64) []byte {
 // slot's byte offset is loaded into a register instead of riding in the LDR
 // (whose immediate stops at 32760).
 //
-// **Preconditions** (per 06 §4.2; the arm64 trampoline is deferred to PJ8+):
+// **Preconditions** (per 06 §4.2):
 //   - x26 = valueStackBase
 //   - x27 = jitContext
 //   - x28 = Go G (reserved by the Go runtime)
@@ -437,7 +437,7 @@ const EncodedGetTableNodeHitArm64Len = 248
 // slot at stableIndex, which the index guard has placed inside this table's
 // array part.
 //
-// **Preconditions** (per 06 §4.2; the arm64 trampoline is deferred to PJ8+):
+// **Preconditions** (per 06 §4.2):
 //   - x26 = valueStackBase / x27 = jitContext / x14 = arena base
 //   - x0/x1/x2/x3 = scratch
 //
@@ -945,11 +945,9 @@ const EncodedSelfNodeHitArm64Len = 252
 //
 // **Wiring path**: under the archEmitFrameInlineExitHelperRequest +
 // archCallJITSpec form, after the SELF segment succeeds it falls through to
-// BuildVoid0Arg + ExitHelperRequest + PopVoid0Arg + ret; enabled once
-// archSupportsFrameInline is flipped to true (per the C5 commit's
-// placeholder-backfill lesson: archEmitSelfNodeHitNoRet used to be a panic
-// placeholder → now a real implementation, to prevent the NoRet path's panic
-// from killing the whole useFrameInline path if triggered by mistake).
+// BuildVoid0Arg + ExitHelperRequest + PopVoid0Arg + ret. archSupportsFrameInline
+// is true on arm64, so the Compile side emits this form for the calls whose
+// frame it builds inline (useFrameInline).
 func EmitSelfNodeHitNoRetArm64(buf []byte, aReg, bReg uint8,
 	stableShape, stableIndex uint32, stableKey uint64,
 	arenaBaseOff uint16, deoptCode uint64) []byte {
