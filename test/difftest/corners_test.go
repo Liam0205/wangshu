@@ -55,6 +55,35 @@ return sink.k`},
 	{"corner_math_hyperbolic", `
 return math.sinh(0), math.cosh(0), math.tanh(0)`},
 
+	// collectgarbage: setpause / setstepmul return the previous value (200 by default), the second
+	// argument goes through luaL_optint (missing = 0, numeric strings, truncation, int narrowing),
+	// and the other options return 0 whatever the second argument is. The differential fuzz stubs
+	// collectgarbage out, so these probes are what compares it with lua5.1.
+	{"corner_gc_setpause_previous", `return collectgarbage("setpause", 200), collectgarbage("setpause", 150), collectgarbage("setpause", 200)`},
+	{"corner_gc_setstepmul_previous", `return collectgarbage("setstepmul", 200), collectgarbage("setstepmul", 300), collectgarbage("setstepmul", 200)`},
+	{"corner_gc_set_without_value", `return collectgarbage("setpause"), collectgarbage("setpause", 200), collectgarbage("setstepmul"), collectgarbage("setstepmul", nil), collectgarbage("setstepmul", 200)`},
+	{"corner_gc_set_conversions", `return collectgarbage("setpause", 150.7), collectgarbage("setpause", "120"), collectgarbage("setpause", -5), collectgarbage("setpause", 2^31), collectgarbage("setpause", 2^31 - 1), collectgarbage("setpause", -2^31), collectgarbage("setpause", 200)`},
+	{"corner_gc_set_bad_value", `return select(2, pcall(collectgarbage, "setpause", "x")), select(2, pcall(collectgarbage, "setstepmul", {}))`},
+	{"corner_gc_pause_survives_collect", `return collectgarbage("setpause", 300), collectgarbage("collect"), collectgarbage(), collectgarbage("setpause", 200)`},
+	{"corner_gc_other_options_return_zero", `return collectgarbage("stop", 5), collectgarbage("restart", 5), collectgarbage("collect", 5), collectgarbage("stop"), collectgarbage("restart")`},
+	// A pause ratio of 0 collects again almost at once; the largest one practically never does. The
+	// probe is only held by a weak table, so whether it is still there says whether an automatic
+	// collection ran while 20000 small tables were allocated.
+	{"corner_gc_setpause_takes_effect", `
+local function probeSurvives(pause)
+  collectgarbage("setpause", pause)
+  collectgarbage()
+  local probe = setmetatable({}, {__mode = "v"})
+  probe[1] = {}
+  local keep = {}
+  for i = 1, 20000 do keep[i % 50 + 1] = {i} end
+  local alive = probe[1] ~= nil
+  collectgarbage("setpause", 200)
+  collectgarbage()
+  return alive
+end
+return probeSurvives(0), probeSurvives(2^31 - 1), probeSurvives(0)`},
+
 	// os required column: difftime
 	{"corner_os_difftime", `return os.difftime(100, 40)`},
 
@@ -168,7 +197,7 @@ var exemptions = []struct {
 	{"load(func) 渐进分块语义差", "已实现 reader 循环全量拼接;与 5.1 流式编译的差异仅在超大 chunk 内存峰值,语义等价"},
 	{"os.exit/remove/rename/tmpname/setlocale", "未注册（10 §9.5）。原设计是做简化版（os.exit 不真退出宿主进程、setlocale 只支持 C、文件操作受沙箱限制），一直没有做；要不要补见 issue #330"},
 	{"io.close/flush/input/output/type", "未注册（10 §10.1.1）。默认输入输出固定为进程的 stdin/stdout；句柄上的 f:close() / f:flush() 已提供。要不要补见 issue #330"},
-	{"collectgarbage step/setstepmul 精确语义", "10 §13:STW GC 无增量调参,占位返回;数值不可逐字节比"},
+	{"collectgarbage step/setstepmul 精确语义", "10 §4.6:GC 是 stop-the-world,没有增量步进。step 做一次完整回收并返回 true(官方返回这一步有没有结束一轮回收);setstepmul 的值会保存并在下次调用时返回,但不影响回收"},
 	{"pattern 灾难性回溯有界失败", "回溯预算 1<<20 步:`.*.+%A*x` 级灾难回溯报 'pattern too complex',oracle 慢速算完——嵌入式防挂起裁量(官方成功/本实现报错的有意分歧)"},
 	{"loadfile/dofile 默认禁用", "文件系统读默认关(不可信脚本越权探测面);Options.AllowFileLoad 显式开启后行为对齐官方"},
 }

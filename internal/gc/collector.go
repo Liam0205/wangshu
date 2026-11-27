@@ -15,6 +15,8 @@
 package gc
 
 import (
+	"math"
+
 	"github.com/Liam0205/wangshu/internal/arena"
 	"github.com/Liam0205/wangshu/internal/object"
 	"github.com/Liam0205/wangshu/internal/value"
@@ -44,7 +46,8 @@ type Collector struct {
 
 	// pacing (06 §8.3).
 	threshold           uint64 // allocation-byte threshold that triggers the next GC
-	gcPauseRatio        int    // GCPAUSE, default 200 (2.0x)
+	gcPauseRatio        int    // GCPAUSE, default 200 (2.0x); set by Options.GCPause and collectgarbage("setpause")
+	gcStepMul           int    // GCMUL, default 200: kept for collectgarbage("setstepmul") to return, not used (the collector is not incremental)
 	bytesAllocSince     uint64 // cumulative allocation since last GC (including bytes already swept)
 	liveBytesAfterSweep uint64 // live bytes at the end of this round's sweep (accumulated by sweep)
 	stressMode          bool   // high-frequency stress mode: force Collect at every safepoint (12 §5)
@@ -145,12 +148,45 @@ func New(a *arena.Arena, opts Options) *Collector {
 	c := &Collector{
 		a:            a,
 		gcPauseRatio: pause,
+		gcStepMul:    200,
 		threshold:    uint64(a.Cap()) / 4, // first time: trigger at 1/4 capacity (avoids both very-early GC and too-late GC)
 		hasFinalizer: make(map[arena.GCRef]bool),
 		strBuckets:   make([][]arena.GCRef, 16), // start with 16 buckets, rehash when load factor exceeds 1
 		strMask:      15,
 	}
 	return c
+}
+
+// SetPause sets the pause ratio in percent and returns the previous one (lua_gc's
+// LUA_GCSETPAUSE). It takes effect when the next collection computes its threshold, as in 5.1,
+// where setthreshold runs at the end of a cycle.
+func (c *Collector) SetPause(percent int) int {
+	old := c.gcPauseRatio
+	c.gcPauseRatio = percent
+	return old
+}
+
+// SetStepMul stores the step multiplier and returns the previous one (LUA_GCSETSTEPMUL). The
+// value has no effect: every collection is a full one.
+func (c *Collector) SetStepMul(mul int) int {
+	old := c.gcStepMul
+	c.gcStepMul = mul
+	return old
+}
+
+// pausedBytes is live * pause / 100, the allocation that may happen before the next collection.
+// The ratio comes from a script, so the arithmetic saturates instead of wrapping. A negative
+// ratio means "practically never": 5.1 computes (estimate/100) * gcpause in an unsigned type,
+// where a negative gcpause becomes a huge factor.
+func (c *Collector) pausedBytes(live uint64) uint64 {
+	if c.gcPauseRatio < 0 {
+		return math.MaxUint64
+	}
+	ratio := uint64(c.gcPauseRatio)
+	if ratio != 0 && live > math.MaxUint64/ratio {
+		return math.MaxUint64
+	}
+	return live * ratio / 100
 }
 
 // SetRoots installs / refreshes the root set provider (called by State during init
@@ -343,9 +379,16 @@ func (c *Collector) Collect() {
 	// arena dies → Compact shrinks cap and the Go runtime reclaims the old large slab (latched
 	// high-water released, alleviating the pineapple#105-class long-lived pool fat state).
 	live := c.liveBytesAfterSweep
-	c.a.Compact((live + live*uint64(c.gcPauseRatio)/100) * 5 / 4)
+	next := c.pausedBytes(live)
+	// An arena never exceeds 4 GiB, so the size to keep is capped there before the quarter of
+	// headroom is added: Compact rounds its argument up and must not be handed a value that wraps.
+	keep := live + next
+	if keep < live || keep > math.MaxUint32 {
+		keep = math.MaxUint32
+	}
+	c.a.Compact(keep * 5 / 4)
 	// pacing: this round's live bytes were accumulated during sweep in c.liveBytesAfterSweep.
-	c.threshold = c.liveBytesAfterSweep * uint64(c.gcPauseRatio) / 100
+	c.threshold = next
 	if c.threshold < uint64(c.a.Cap())/16 {
 		c.threshold = uint64(c.a.Cap()) / 16 // lower bound, prevents threshold degenerating to 0 on a tiny heap
 	}

@@ -975,6 +975,14 @@ func (st *State) CancelHookActive() bool { return st.ctx.Load() != nil }
 // GCCollect triggers one full GC (used by collectgarbage("collect")).
 func (st *State) GCCollect() { st.gc.Collect() }
 
+// GCSetPause sets the collector's pause ratio in percent and returns the previous one
+// (collectgarbage("setpause")).
+func (st *State) GCSetPause(percent int) int { return st.gc.SetPause(percent) }
+
+// GCSetStepMul stores the step multiplier and returns the previous one
+// (collectgarbage("setstepmul")). The value has no effect on this collector.
+func (st *State) GCSetStepMul(mul int) int { return st.gc.SetStepMul(mul) }
+
 // GCSetStopped pauses/resumes automatic GC (collectgarbage("stop"/"restart")).
 func (st *State) GCSetStopped(on bool) { st.gc.SetStopped(on) }
 

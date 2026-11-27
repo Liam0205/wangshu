@@ -1083,6 +1083,26 @@ reviewer 另外列了三处修改前就过期、本分支没有碰的文字：`t
 对照）；差分 fuzz 语料 `r343_file_close_no_handle`；`TestTiered_StdlibNames` 加一段 `file_close_without_handle`，在 P3 / P4 的升层代码里
 调用。只撤掉 `fileFnClose` 的改动，这三处都失败。
 
+## 2026-11-27：`collectgarbage("setpause")` / `("setstepmul")` 返回设置之前的值（#345）
+
+两个选项固定返回 0，官方返回设置之前的值（默认都是 200）。[10 §4.6](./10-stdlib.md) 一直把 `setpause` 写成「设 GCPAUSE，返回旧值」、
+把 `setstepmul` 写成「存值但不生效，返回旧值」，实现没有按它做。#329 的独立审查发现的。
+
+| 改动 | 位置 | 说明 |
+|---|---|---|
+| `setpause` 设置回收器的 pause 比例并返回旧值 | `baseenv.go`、`gc/collector.go::SetPause` | 新值在下一次回收结束、计算下次触发阈值时生效，与官方的 `setthreshold` 时机相同。`Options.GCPause` 设的初值也从这里读得到 |
+| `setstepmul` 存值并返回旧值 | `gc/collector.go::SetStepMul` | 回收器不是增量的，这个值不参与任何计算 |
+| 第二个参数按 `luaL_optint(L, 2, 0)` 转成 int | `baseenv.go` | 之前只检查它是不是数字，没有用它的值 |
+| 阈值的计算改用饱和算术 | `gc/collector.go::pausedBytes` | 比例现在来自脚本：极大的比例不能让乘法回绕成一个很小的阈值；负数按官方的效果处理成「不再自动回收」 |
+
+`step` 没有改：仍然做一次完整回收并返回 `true`，官方返回的是这一步有没有结束一轮回收。这是登记过的差异（README「增量 GC」一行、
+`exemptions`），两处的文字从「只返回占位值」改成了现在的实际行为。
+
+测试：`test/difftest` 的 `cornerProbes` 加 8 条，直接与 `lua5.1` 比较（差分 fuzz 的 prelude 把 `collectgarbage` 换成了桩，看不到它）：
+返回旧值、不带值、各种数值转换、参数不是数字时的报错、其余选项仍返回 0，以及一条验证比例确实生效的（比例为 0 时只被弱表引用的对象在分配
+过程中被回收，比例为最大值时没有被回收）。`internal/gc` 的 `TestSetPauseDrivesTheThreshold` 直接断言阈值。`TestTiered_StdlibNames` 加一段
+`collectgarbage_set_returns_previous`，在 P3 / P4 的升层代码里调用。
+
 ## 相关
 
 [00-overview](./00-overview.md) · [../engineering](../engineering.md) ·

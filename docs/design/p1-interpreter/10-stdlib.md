@@ -819,11 +819,16 @@ STW §7.3)。本文只列 opt 字符串 → 行为映射(对齐 Lua 5.1):
 | `"collect"`(默认) | 跑一次 full GC | 0 | ✅ | 06 §8.2 `collect()` |
 | `"count"` | 返回当前 arena 使用的 KB 数(浮点,含小数 = 字节/1024) | number | ✅ | 06 §8.3 live 字节 / 1024 |
 | `"step"` | 跑一步增量 GC(arg = 步长 KB) | bool(是否完成一轮) | △ | **P1 只 full GC**(06 §8.3:无增量步长);P1 把 `step` 实现为「触发一次 full GC,返回 true」(语义近似,记口径) |
-| `"setpause"` | 设 GCPAUSE(arg = 百分比),返回旧值 | number(旧值) | ✅ | 06 §8.3 GCPAUSE(默认 200) |
-| `"setstepmul"` | 设步长倍率,返回旧值 | number(旧值) | △ | P1 无增量,`setstepmul` 存值但不生效(记口径) |
+| `"setpause"` | 设 GCPAUSE(arg = 百分比),返回旧值 | number(旧值) | ✅ | 06 §8.3 GCPAUSE(默认 200,或 `Options.GCPause` 给的值);新值从下一次回收结束、计算下次触发阈值时起生效,与官方相同 |
+| `"setstepmul"` | 设步长倍率,返回旧值 | number(旧值) | △ | P1 无增量,`setstepmul` 存值但不生效(记口径);默认 200 |
 | `"stop"` | 停止自动 GC | 0 | ✅ | P1:置 `gcEnabled=false`,Alloc 不主动触发(06 §8.2) |
 | `"restart"` | 重启自动 GC | 0 | ✅ | 置 `gcEnabled=true` |
 
+- **第二个参数**对所有 opt 都按官方的 `luaL_optint(L, 2, 0)` 读取:不给或给 nil 是 0,数字字符串可以,小数截断,超出 int 范围的按
+  `double → lua_Integer → int` 收窄;给了又不是数字时报 `bad argument #2 ... (number expected, got X)`。所以 `collectgarbage("setpause")`
+  (不带值)是把比例设成 0。
+- **`setpause` 取值的边界**:比例来自脚本,阈值的计算用饱和算术,不会回绕。0 表示几乎每次到下限(arena 容量的 1/16)就回收;负数与官方一样
+  相当于极大的比例(官方把它当无符号数乘),实际效果是不再自动回收,与 `collectgarbage("stop")` 能做到的事相同,arena 的容量上限照常生效。
 - **`gcinfo()`**(5.1 遗留全局):= `collectgarbage("count")` 的旧形式,返回 KB 数(**整数**,5.1 `gcinfo` 返回
   int KB)。**5.1 有此函数**(已废弃但存在),P1 提供以求 5.1 完整(差分基准里 `gcinfo` 非 nil)。
 - **`"count"` 的差分问题**:返回的 KB 数 = arena 存活字节 / 1024,**与官方 Lua 的 C 堆字节数必然不同**(arena

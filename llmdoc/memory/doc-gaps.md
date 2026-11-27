@@ -19,12 +19,6 @@
   值中间可以有 nil，nil 之后的值可能落进哈希段，两侧求长度时找到的边界就不一样。差分 fuzz 能直接看到。见
   [#342](https://github.com/Liam0205/wangshu/issues/342)。
 
-- **【未修】`collectgarbage("setpause")` / `("setstepmul")` 固定返回 0** — 官方返回设置之前的值（默认都是 200）。
-  10 §4.6 的表和 §14 总表把 `setpause` 列为完整提供（「设 GCPAUSE，返回旧值」），实现把它和 `setstepmul` 放在同一个分支里，
-  只返回 0，不读也不写回收器的 pause 比例；`setstepmul` 文档写的是「存值、返回旧值」，实现也没有做。README 的「增量 GC」一行和
-  `exemptions` 只登记了 `step` / `setstepmul`。差分 fuzz 的 prelude 把 `collectgarbage` 换成了桩，nightly 看不到。见
-  [#345](https://github.com/Liam0205/wangshu/issues/345)。
-
 - **【未修】P3 升层后，数值 for 里步数预算用完或 context 取消时报错的行号不同** — 解释器和 P4 报 `for` 那一行（在 FORLOOP 上检查），
   P3 报循环体最后一条语句的行号。只有数值 for 这样：泛型 for、`while`、`repeat` 上 P3 与解释器相同。`test/difftest` 的
   `TestTiered_StepBudgetLineInNumericFor` 因此只在 P4 构建，泛型 for 的那个测试 P3、P4 都构建。见
@@ -107,6 +101,10 @@
 - **【已完成 2026-11-27，#343】文件句柄的 `close` 不传句柄时报错文字不同** — `io.stdout.close()` 现在与官方一样报
   `FILE* expected, got nil`；其余句柄方法不带参数时仍然报 `got no value`，也与官方相同。说明在
   [10 §10.3](../../docs/design/p1-interpreter/10-stdlib.md) 的「IO 错误转 Lua 错误」一条里。
+
+- **【已完成 2026-11-27，#345】`collectgarbage("setpause")` / `("setstepmul")` 固定返回 0** — 两个选项现在都返回设置之前的值；
+  `setpause` 接到了回收器的 pause 比例上（按 10 §4.6 原本写的做），`setstepmul` 只存值。`step` 仍然是做一次完整回收并返回 `true`，
+  这是登记过的差异。说明在 [10 §4.6](../../docs/design/p1-interpreter/10-stdlib.md)。
 
 - **【已完成 2026-10-05,#296 / #297】#290-#292 本地审查发现的两处存量差异** — 对账见
   `docs/design/p1-interpreter/implementation-progress.md` 的 #296 / #297 条目:LARGE 空闲块合并、顶部块退回 bump、
