@@ -70,6 +70,10 @@ type Collector struct {
 	// weak-table registry (06 §8.4 / 07 §13).
 	weakList []arena.GCRef
 
+	// Strong tables seen this round with a DEAD node whose key is a collectable
+	// object other than a string (clearDeadKeys).
+	deadKeyList []arena.GCRef
+
 	// finalizer queue (06 §10).
 	finalizeList    []arena.GCRef // userdata with a registered __gc (creation order)
 	hasFinalizer    map[arena.GCRef]bool
@@ -359,6 +363,7 @@ func (c *Collector) Collect() {
 	}
 	c.separateFinalizers()
 	c.clearWeakTables()
+	c.clearDeadKeys()
 	c.sweep()
 	c.liveBytesAfterSweep += threadBytes
 	// Run finalizers (06 §10): separateFinalizers has already resurrected this round's

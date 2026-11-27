@@ -73,7 +73,7 @@ mid()`))
 	}
 }
 
-// TestRawTable_DeleteExistingKey: setting nil deletes an existing hash key (covers nodeSetKV).
+// TestRawTable_DeleteExistingKey: setting nil deletes an existing hash key.
 func TestRawTable_DeleteExistingKey(t *testing.T) {
 	st := New()
 	tbl := st.allocTable(0, 8)

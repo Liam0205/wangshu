@@ -181,31 +181,67 @@ func (c *Collector) clearWeakTables() {
 			}
 		}
 		// Hash segment.
-		// When clearing entries the next chain must be preserved: a node may sit in the
-		// middle of a collision chain, and resetting next=-1 would truncate the chain,
-		// making later live entries on it unreachable (physically still there, logically
-		// lost). Dead entries keep their chain link until rehash reclaims them (consistent
-		// with the rawSet delete path and Lua 5.1).
+		// A cleared entry becomes a DEAD node, as on the rawSet delete path and in 5.1's
+		// cleartable: the value goes, the chain link stays (the node may sit in the middle
+		// of a collision chain whose later entries must remain reachable), and the key
+		// stays too, so a traversal standing on the entry can continue from it. Only a key
+		// whose object is dead is replaced by DeadKey. A node that was DEAD already loses
+		// such a key the same way (clearDeadKeys does this for strong tables).
 		hsize := object.TableHSize(c.a, t)
 		cleared := false
 		for i := uint32(0); i < hsize; i++ {
 			k := object.NodeKey(c.a, t, i)
 			v := object.NodeVal(c.a, t, i)
-			if (weakKey && c.refIsDead(k, dead)) || (weakVal && c.refIsDead(v, dead)) {
-				next := object.NodeNext(c.a, t, i)
-				object.SetNode(c.a, t, i, value.Nil, value.Nil, next)
-				cleared = true
+			keyDead := c.refIsDead(k, dead)
+			clear := keyDead // a DEAD node whose key object died
+			if v != value.Nil {
+				clear = (weakKey && keyDead) || (weakVal && c.refIsDead(v, dead))
 			}
+			if !clear {
+				continue
+			}
+			if keyDead {
+				k = object.DeadKey
+			}
+			object.SetNode(c.a, t, i, k, value.Nil, object.NodeNext(c.a, t, i))
+			cleared = true
 		}
 		if cleared {
-			// Clearing a weak entry is a key deletion: the slot can be reused
-			// by another key, so gen-only IC consumers must be invalidated
-			// (same rule as rawSet's delete path). One bump per table is
-			// enough; consumers only compare gen for equality.
+			// A LIVE node lost its value or a node changed its key: gen-only IC
+			// consumers must be invalidated (the gen contract in crescent's
+			// rawtable.go). One bump per table is enough; consumers only compare
+			// gen for equality.
 			object.BumpGen(c.a, t)
 		}
 	}
 	c.weakList = c.weakList[:0]
+}
+
+// clearDeadKeys walks the strong tables that scanTable found holding a DEAD node with a
+// collectable key, and replaces every such key whose object is dead-white with DeadKey, so
+// that no node refers to an object the sweep is about to free. The node stays DEAD and keeps
+// its chain link.
+func (c *Collector) clearDeadKeys() {
+	if len(c.deadKeyList) == 0 {
+		return
+	}
+	dead := c.deadWhite()
+	for _, t := range c.deadKeyList {
+		hsize := object.TableHSize(c.a, t)
+		cleared := false
+		for i := uint32(0); i < hsize; i++ {
+			if object.NodeVal(c.a, t, i) != value.Nil || !c.refIsDead(object.NodeKey(c.a, t, i), dead) {
+				continue
+			}
+			object.SetNode(c.a, t, i, object.DeadKey, value.Nil, object.NodeNext(c.a, t, i))
+			cleared = true
+		}
+		if cleared {
+			// The node no longer holds its key (gen contract, rawtable.go).
+			object.BumpGen(c.a, t)
+		}
+	}
+	c.deadKeyList = c.deadKeyList[:0]
 }
 
 func (c *Collector) refIsDead(v value.Value, dead uint8) bool {

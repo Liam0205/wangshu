@@ -7,16 +7,36 @@
 //   - rehash: array and hash sizes are recomputed following Lua 5.1's
 //     luaH_resize approach (load factor > 50%); rehash and array<->hash
 //     migration call BumpGen (IC invalidation, 05 §6.5);
-//   - gen contract: every path that changes which key an OCCUPIED node slot
-//     holds (rehash, Brent relocation in insertNewKey, key deletion in
-//     rawSet and the weak-table sweep) must BumpGen. Placing a new key into
-//     an empty slot needs no bump: ICs only snapshot slots whose val is
-//     non-Nil, and every path that empties a slot bumps. The interpreter's
-//     icGetTable re-verifies NodeKey on every hit, but the gen-only inline
-//     consumers bake the slot index and trust gen alone: P4 native
-//     GETGLOBAL/SETGLOBAL NodeHit, P3 wasm GETGLOBAL/SETGLOBAL NodeHit, and
-//     P3 wasm constant-key GETTABLE/SETTABLE/SELF NodeHit (wasm
-//     tableInlineable). A missing bump there reads another key's value;
+//   - node states: a hash node is FREE (key Nil, val Nil, no chain link),
+//     LIVE (key and val both non-Nil) or DEAD (key non-Nil, val Nil).
+//     Deleting a key makes its node DEAD and leaves the key in place, as
+//     luaH_set does in 5.1: next(t, k) must still find k after t[k] = nil,
+//     which is how a traversal clears the table it walks. A DEAD node keeps
+//     its chain link and is not available to findFreeNode. It ends in one of
+//     three ways: the same key is stored again (LIVE again, in the same
+//     node); a new key whose main position it is takes the node over; or a
+//     rehash drops it. A DEAD node does not keep its key's object alive,
+//     strings excepted: once the object is dead the collector replaces the
+//     key with object.DeadKey, which no lookup matches, and the node stays
+//     DEAD (internal/gc);
+//   - gen contract: BumpGen on every path that takes a LIVE node's value
+//     away or changes which key a node holds: rehash, Brent relocation and
+//     the takeover of a DEAD node in insertNewKey, key deletion in rawSet,
+//     and the collector clearing weak entries and replacing the keys of
+//     DEAD nodes. Storing a value into a DEAD node and placing a new key
+//     into a FREE node need no bump: ICs only snapshot LIVE nodes, and
+//     every path out of LIVE through this file or the collector bumps. The
+//     interpreter's icGetTable re-verifies NodeKey on every hit, but the
+//     gen-only inline consumers bake the slot index and trust gen alone: P4
+//     native GETGLOBAL/SETGLOBAL NodeHit, P3 wasm GETGLOBAL/SETGLOBAL
+//     NodeHit, and P3 wasm constant-key GETTABLE/SETTABLE/SELF NodeHit (wasm
+//     tableInlineable). A missing bump there reads another key's value.
+//     Two consumers lean on particular bumps. The P4 single-SETTABLE shape
+//     template (jit EmitSetTableNodeHit) compares NodeKey but not the node's
+//     current value, so after a deletion that did not bump it would store
+//     into the DEAD node without consulting __newindex. P3 wasm
+//     emitSetGlobal stores Nil inline, making a node DEAD with no bump: the
+//     bump on takeover is what invalidates snapshots of such a node;
 //   - border: binary search over the array part (# semantics, 01 §5.2).
 package crescent
 
@@ -124,8 +144,8 @@ func checkKey(key value.Value) *LuaError {
 
 // rawSet writes key=val on the arena-native layout (no metamethods).
 //
-// val==Nil means delete (the slot keeps key set to Nil, the chain does not
-// shrink — same as 5.1, cleaned up on the next rehash).
+// val==Nil means delete: the node keeps its key and its chain link and only
+// the value becomes Nil (a DEAD node, see the file header).
 func (st *State) rawSet(t arena.GCRef, key, val value.Value) *LuaError {
 	if e := checkKey(key); e != nil {
 		return e
@@ -144,21 +164,18 @@ func (st *State) rawSet(t arena.GCRef, key, val value.Value) *LuaError {
 		for i >= 0 {
 			k := object.NodeKey(st.arena, t, uint32(i))
 			if keyEqual(k, key) {
-				// Already present: update the value (val=Nil means delete;
-				// the key slot is set to Nil, to be reclaimed on rehash).
-				if val == value.Nil {
-					st.nodeSetKV(t, uint32(i), value.Nil, value.Nil)
-					// The freed slot may be handed to a different key by a
-					// later insertNewKey without any further shape change,
-					// so the key->slot mapping changes here, not there.
-					// Gen-only inline consumers (P3 wasm emitGetGlobal, P4
-					// native GETGLOBAL/SETGLOBAL NodeHit) bake the slot
-					// index and never re-check NodeKey; without this bump
-					// they would read the new occupant's value as the
-					// deleted key's (TestRawTable_SlotReuseAfterDeleteBumpsGen).
-					object.BumpGen(st.arena, t)
-				} else {
+				// The key has a node, LIVE or DEAD: the value is written in
+				// place, so a key that is deleted and stored again keeps its
+				// node.
+				if val != value.Nil {
 					st.nodeSetVal(t, uint32(i), val)
+				} else if object.NodeVal(st.arena, t, uint32(i)) != value.Nil {
+					st.nodeSetVal(t, uint32(i), value.Nil)
+					// LIVE -> DEAD bumps gen (file header). Deleting a key
+					// that is already DEAD changes nothing and does not
+					// bump, so a loop that keeps assigning nil to an absent
+					// field leaves the ICs alone.
+					object.BumpGen(st.arena, t)
 				}
 				return nil
 			}
@@ -179,15 +196,10 @@ func (st *State) nodeSetVal(t arena.GCRef, idx uint32, val value.Value) {
 	object.SetNode(st.arena, t, idx, k, val, next)
 }
 
-// nodeSetKV updates the key+val of a hash slot (keeps next).
-func (st *State) nodeSetKV(t arena.GCRef, idx uint32, key, val value.Value) {
-	next := object.NodeNext(st.arena, t, idx)
-	object.SetNode(st.arena, t, idx, key, val, next)
-}
-
-// insertNewKey inserts a new key (following 5.1 luaH_newkey's chaining strategy,
-// a simplified Brent: when the main position is occupied, find a free slot, and
-// if the occupant's main position differs, relocate the occupant).
+// insertNewKey inserts a key that has no node yet (following 5.1 luaH_newkey's
+// chaining strategy, a simplified Brent: when the main position holds a live
+// entry, find a free node, and if the occupant's main position differs,
+// relocate the occupant).
 func (st *State) insertNewKey(t arena.GCRef, key, val value.Value) *LuaError {
 	hsize := object.TableHSize(st.arena, t)
 	if hsize == 0 {
@@ -196,23 +208,33 @@ func (st *State) insertNewKey(t arena.GCRef, key, val value.Value) *LuaError {
 	}
 	hmask := hsize - 1
 	mainPos := st.hashValue(key) & hmask
-	mk := object.NodeKey(st.arena, t, mainPos)
-	if mk == value.Nil && object.NodeVal(st.arena, t, mainPos) == value.Nil &&
-		object.NodeNext(st.arena, t, mainPos) < 0 {
-		// Main position empty: place directly.
-		object.SetNode(st.arena, t, mainPos, key, val, -1)
+	if object.NodeVal(st.arena, t, mainPos) == value.Nil {
+		// The main position holds no live entry (FREE or DEAD): the new key
+		// takes it, as luaH_newkey does. The node keeps its chain link: it
+		// may sit in the middle of another main position's chain, and the
+		// entries behind it must stay reachable.
+		old := object.NodeKey(st.arena, t, mainPos)
+		object.SetNode(st.arena, t, mainPos, key, val, object.NodeNext(st.arena, t, mainPos))
+		if old != value.Nil {
+			// A DEAD node now holds a different key. A gen-only inline
+			// consumer that baked this node for the old key (P3 wasm
+			// emitGetGlobal, P4 native GETGLOBAL/SETGLOBAL NodeHit) never
+			// re-checks NodeKey and would read the new key's value as the
+			// old key's (TestRawTable_DeadNodeTakeoverBumpsGen).
+			object.BumpGen(st.arena, t)
+		}
 		return nil
 	}
-	// Main position occupied: find a free slot.
+	// The main position holds a live entry: find a free node.
 	free, ok := st.findFreeNode(t, hsize)
 	if !ok {
-		// Hash full: rehash and reinsert.
+		// No free node left: rehash (which drops the DEAD ones) and reinsert.
 		st.rehash(t, key)
 		return st.rawSet(t, key, val)
 	}
 	occKey := object.NodeKey(st.arena, t, mainPos)
 	occMain := st.hashValue(occKey) & hmask
-	if occKey != value.Nil && occMain != mainPos {
+	if occMain != mainPos {
 		// Occupant is not in its own main position: relocate the occupant to
 		// free, freeing the main position for the new key.
 		// 1) Find the occupant's chain predecessor (walk from occMain along the
@@ -250,8 +272,11 @@ func (st *State) insertNewKey(t arena.GCRef, key, val value.Value) *LuaError {
 	return nil
 }
 
-// findFreeNode scans backward from lastfree for a free slot (key=Nil && val=Nil
-// && next=-1).
+// findFreeNode scans backward from lastfree for a FREE node with no chain link
+// (key=Nil && val=Nil && next=-1). A DEAD node is not free, as in 5.1's
+// getfreepos: only its own key, or a new key whose main position it is, may
+// use it. The cursor only moves down and every node another node links to was
+// handed out here, so a node this function returns has no predecessor.
 func (st *State) findFreeNode(t arena.GCRef, hsize uint32) (uint32, bool) {
 	lf := object.TableLastFree(st.arena, t)
 	if lf >= hsize {
@@ -269,8 +294,9 @@ func (st *State) findFreeNode(t arena.GCRef, hsize uint32) (uint32, bool) {
 	return 0, false
 }
 
-// rehash recomputes the optimal asize/hsize and reinserts all live keys
-// (extraKey is the key about to be inserted, counted into the statistics).
+// rehash recomputes the optimal asize/hsize and reinserts all live keys; DEAD
+// nodes are dropped (extraKey is the key about to be inserted, counted into the
+// statistics).
 // Follows 5.1 luaH_resize's approach: array load factor > 50%.
 func (st *State) rehash(t arena.GCRef, extraKey value.Value) {
 	// 1) Collect all live key-value pairs.
@@ -439,7 +465,12 @@ func (st *State) rawBorder(t arena.GCRef) uint32 {
 // order), then hash part (slot order).
 //
 // key=Nil starts from the beginning. Returns (nextKey, nextVal, ok); ok=false
-// means iteration is done. Iteration-order determinism: the order is stable for
+// means iteration is done. A key whose node is DEAD is still a valid place to
+// continue from (5.1 findindex: "key may be dead already, but it is ok to use it
+// in `next'"), so a traversal may assign nil to the fields it visits; a key
+// with no node is "invalid key to 'next'". The caller keeps key reachable
+// between two calls: the collector clears the key of a DEAD node once its object
+// dies. Iteration-order determinism: the order is stable for
 // the same table with the same shape (the "strictly byte-for-byte" premise of
 // the 12 pairs ordering rule).
 func (st *State) rawNext(t arena.GCRef, key value.Value) (value.Value, value.Value, bool, *LuaError) {
@@ -454,7 +485,7 @@ func (st *State) rawNext(t arena.GCRef, key value.Value) (value.Value, value.Val
 		if idx, ok := arrayIndex(key, asize); ok {
 			startArr = idx + 1
 		} else {
-			// Found key's slot in the hash part; continue from the next slot.
+			// Find key's node in the hash part, LIVE or DEAD, and continue from the next one.
 			found := false
 			if hsize > 0 {
 				hmask := hsize - 1
