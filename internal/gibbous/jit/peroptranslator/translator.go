@@ -120,7 +120,7 @@ type sideEffect struct {
 	a    uint8  // op's A field (source register for SETUPVAL; first slot for LOADNIL; dest reg for MOVE/LOADK/SETTABLE/CALL/Arith; source reg for SETGLOBAL)
 	b    uint8  // op's B field (upvalue index for SETUPVAL; last slot for LOADNIL; source reg for MOVE; low 8 bits of RK key for SETTABLE; nargs+1 for CALL)
 	c    uint8  // op's C field (low 8 bits of RK value for SETTABLE; nresults+1 for CALL; Arith op tag)
-	imm  uint64 // baked NaN-boxed value (LOADK) or Bx (SETGLOBAL) or pc (CALL/TAILCALL) or packed RK fields (SETTABLE) or packed (op<<32|B<<16|C|pc) (Arith)
+	imm  uint64 // baked NaN-boxed value (LOADK) or Bx (SETGLOBAL) or pc (CALL/TAILCALL) or packed RK fields (SETTABLE) or packed (op<<48|B<<32|C<<16|pc) (Arith)
 }
 
 // sideEffectKind discriminates the pre-return op kinds.
