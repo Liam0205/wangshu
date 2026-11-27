@@ -117,10 +117,30 @@ func (c *Collector) scanTable(t arena.GCRef) {
 	}
 	// Hash segment.
 	hsize := object.TableHSize(c.a, t)
+	deadKeys := false
 	for i := uint32(0); i < hsize; i++ {
 		k := object.NodeKey(c.a, t, i)
 		v := object.NodeVal(c.a, t, i)
-		// An empty slot has key=Nil which is not collectable; markValue skips it automatically.
+		if v == value.Nil {
+			// FREE or DEAD node. The key of a DEAD node is kept only so that
+			// next(t, key) finds it, and whoever can still pass that key holds
+			// it: the node does not keep the key's object alive (5.1
+			// traversetable / removeentry). If nothing else does,
+			// clearWeakTables or clearDeadKeys replaces the key before the
+			// sweep frees the object.
+			//
+			// A string is the exception and is marked: an equal string can be
+			// created again after this one is gone, and whether the new one
+			// finds this node or is inserted as a new key would then depend on
+			// when the collector ran. The cost is one string per DEAD node
+			// until the next rehash.
+			if value.Tag(k) == value.TagString {
+				c.markValue(k)
+			} else if value.IsCollectable(k) {
+				deadKeys = true
+			}
+			continue
+		}
 		if !weakKey {
 			c.markValue(k)
 		}
@@ -133,6 +153,8 @@ func (c *Collector) scanTable(t arena.GCRef) {
 	// M5 does not reach this branch for now).
 	if mode != 0 {
 		c.weakList = append(c.weakList, t)
+	} else if deadKeys {
+		c.deadKeyList = append(c.deadKeyList, t)
 	}
 }
 

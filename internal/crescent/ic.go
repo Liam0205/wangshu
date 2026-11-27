@@ -142,7 +142,9 @@ const (
 )
 
 // rawGetWithLoc does a full lookup and returns the hit location (array index /
-// node slot number), for IC backfill.
+// node slot number), for IC backfill. A key whose node is DEAD (deleted, key
+// still in the node) has no location: an IC must never be filled with a node
+// that holds no value.
 func (st *State) rawGetWithLoc(t arena.GCRef, key value.Value) (value.Value, tableLoc, uint32) {
 	if key == value.Nil {
 		return value.Nil, locNone, 0
@@ -160,7 +162,10 @@ func (st *State) rawGetWithLoc(t arena.GCRef, key value.Value) (value.Value, tab
 	i := int32(st.hashValue(key) & hmask)
 	for i >= 0 {
 		if keyEqual(object.NodeKey(st.arena, t, uint32(i)), key) {
-			return object.NodeVal(st.arena, t, uint32(i)), locNode, uint32(i)
+			if v := object.NodeVal(st.arena, t, uint32(i)); v != value.Nil {
+				return v, locNode, uint32(i)
+			}
+			return value.Nil, locNone, 0
 		}
 		i = object.NodeNext(st.arena, t, uint32(i))
 	}

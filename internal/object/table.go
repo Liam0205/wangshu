@@ -13,6 +13,12 @@
 //	word1: val   (Value)
 //	word2: [31:0] next (int32, links into collision chain; -1=none) | [63:32] reserved
 //
+// A node is FREE (key Nil, val Nil, next -1), LIVE (key and val non-Nil) or DEAD
+// (key non-Nil, val Nil: the key was deleted and stays in place so that
+// next(t, key) still finds it). The key of a DEAD node is the deleted key, or
+// DeadKey once the collector has found the key's object dead. crescent's
+// rawtable.go owns the transitions.
+//
 // Key point: the Table head is a 6-word head object; the array/node segments are
 // attached blocks without a GCHeader.
 package object
@@ -31,6 +37,14 @@ const (
 	tableHeadWords   = 6
 	nodeWords        = 3
 )
+
+// DeadKey is the key the collector leaves in a DEAD node whose key object it is
+// about to free (the role of 5.1's LUA_TDEADKEY). The node stays DEAD -- which
+// nodes a later insertion may use must not depend on when the collector ran --
+// but refers to no object. The value is the canonical NaN: never a table key
+// ("table index is NaN"), not collectable, and unequal to every key under
+// crescent's keyEqual, itself included, so no lookup matches it.
+const DeadKey value.Value = 0x7FF8_0000_0000_0000
 
 // Flag bits (GCHeader.flags, 4 bits; 01 §5.2 bit0 = hasMeta, bit1/bit2 = weak k/v cache)
 const (
