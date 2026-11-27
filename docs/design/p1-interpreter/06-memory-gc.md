@@ -696,7 +696,7 @@ type Collector struct {
    [#359](https://github.com/Liam0205/wangshu/issues/359)），官方随函数一起回收（`TestDiff_NextFromConstantsOfDroppedChunks`）。
    二是上面说的保活本身：别的表里用赋 nil 删掉的键由那张表的节点保活，官方的已删除节点不算引用，所以同一个字符串在别的表里被这样删过、
    那个节点还没有被接管或者 rehash 掉时，它在望舒里一直活着（`TestDiff_NextFromKeysRemovedFromAnotherTable`，30 轮里望舒成功 30 次；
-   `lua5.1` 按地址认，本机成功 1 次）。这两种字符串作键的条目被清掉之后望舒的 `next` 成功。脚本用 `t[k] = nil` 删掉的键是这几种字符串时，官方不回收它、望舒由节点保活，
+   `lua5.1` 按地址认，本机成功 1 次）。这两种字符串作键的条目被清掉之后望舒的 `next` 成功。脚本用 `t[k] = nil` 删掉的键是官方永远不回收的那几种字符串时，官方不回收它、望舒由节点保活，
    两边的 `next` 都成功，`TestDiff_NextFromRemovedFixedKeys` 固定。
    同一个原则还带来一处差异：官方标记一张表时（`traversetable`；键和值都弱的表整张跳过，不在此列）对**每个**键可回收的已删除节点都执行
    `removeentry`，键指向的对象还活着也一样，键被改成 `LUA_TDEADKEY`
