@@ -2837,3 +2837,25 @@ P1 成功、P4 抬 `SETLIST: not a table`。**根因不在 JIT 里**,而在共�
   第一次调用,auto 模式下是第 `hotEntry` 次——但**每个函数只经过一次**,而且只有这一次调用以**宿主**尾调用收尾、
   并且尾调用之前有可见副作用、或者开着 GC stress 时,重跑才看得出来(没有副作用的写法只在 GC stress 下报错)。修复前用 force-all 跑上面的脚本同样得到 `1001`。已有的 P4 差分
   测试和 nightly fuzz 为什么没有生成过这种写法,本轮没有追查。
+
+## 29. issue #339 升层后的报错里变量名和行号不对(2026-11-27)
+
+- **现象**:P4 下函数升层之后,两类报错与解释器、P3、官方 5.1.5 不同。
+  ① 调用结果赋给两个以上局部变量(`local a, b = u(t) return a, b`)时,被调用者的名字取自 CALL 后面的 MOVE:
+  `attempt to call upvalue 'u'` 变成 `attempt to call local 'a'`,宿主函数的参数错误也一样;语句跨行时行号也跟着错。amd64、arm64 都有。
+  ② 索引一个值为 nil 的 upvalue 或字段、而这条指令不是函数的第一条指令时(`local a, b = u.x`、`u.x = 1`),名字丢失:
+  `attempt to index upvalue 'u' (a nil value)` 变成 `attempt to index a nil value`。只在 amd64 上出现。
+- **原因**:宿主的慢路径函数(`CallBaseline`、`GetTable`、`SetTable` 等)把传进来的 pc 记成 `ci.pc = pc + 1`,报错时从这个位置
+  找变量名和行号,表访问还用它当内联缓存的下标。两处传错了 pc:
+  ① `jit/code.go` 的 CALL 分支用 `retPC - 1` 当 CALL 的位置,前提是 RETURN 紧跟在 CALL 后面;结果个数 N >= 2 的形式在两者之间有 N 条
+  MOVE,`retPC - 1` 指向最后一条 MOVE。改成 `retPC - 1 - callMultiRet`。
+  ② `peroptranslator` 的旧式路径(原生翻译不接受时,由 Go 侧按记录重放指令;arm64 上没有这条路径)重放 SETTABLE、SETGLOBAL、SETLIST、CLOSE
+  和写临时寄存器的 GETGLOBAL、GETTABLE、NEWTABLE 时,pc 一律写成 0。pc 0 是函数的第一条指令(这里是 GETUPVAL),从它找不到被索引的那个
+  寄存器的名字;内联缓存也读写在 0 号槽位上。记录里加上 `pc` 字段,重放时传真实的位置。
+- **同一个文件里其余的 `retPC - 1`**逐个核对过:方法调用和尾调用两种形式里 `retPC` 就是 CALL / TAILCALL 的下一条,不带多结果;
+  FORLOOP、单条表访问、比较折叠各自的注释里写明了位置的算法,没有问题。
+- **验证**:`test/difftest/tiered_error_names_test.go` 的 `TestTiered_ErrorNames`,十种出错写法,内核都写成多行并保留行号比较,解释器、
+  强制升层、自然升温三种方式互相比较并与 `lua5.1` 比较。只撤掉 ①,三段失败(两个结果、三个结果、宿主函数参数错误);只撤掉 ②,四段失败。
+  arm64 上用 `qemu-aarch64` 执行过:前五段(调用类)进入升层代码,后五段(索引类)在 arm64 的 P4 上不升层,三种方式的结果仍然相同。
+- **为什么长期没被发现**:`p4Corpus` 里出错的用例大多把内核直接放在 `pcall` 下面,升了层也不在升层代码里执行(#333);比较报错文本的测试
+  又常把整段位置前缀去掉,行号错了看不出来。

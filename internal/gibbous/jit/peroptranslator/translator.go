@@ -111,6 +111,7 @@ type shapeInfo struct {
 // rather than into the return-slot replay).
 type sideEffect struct {
 	kind sideEffectKind
+	pc   uint16 // index of the instruction this effect replays; the host helpers take the IC slot, the name of a faulting operand and the error's line from it
 	a    uint8  // op's A field (source register for SETUPVAL; first slot for LOADNIL; dest reg for MOVE/LOADK/SETTABLE/CALL/Arith; source reg for SETGLOBAL)
 	b    uint8  // op's B field (upvalue index for SETUPVAL; last slot for LOADNIL; source reg for MOVE; low 8 bits of RK key for SETTABLE; nargs+1 for CALL)
 	c    uint8  // op's C field (low 8 bits of RK value for SETTABLE; nresults+1 for CALL; Arith op tag)
@@ -821,7 +822,7 @@ func AnalyzeShape(proto *bytecode.Proto) shapeInfo {
 		op := bytecode.Op(ins)
 
 		// Pure side-effect ops (no reg dest).
-		if se, ok := sideEffectFromIns(op, ins); ok {
+		if se, ok := sideEffectFromIns(op, ins, pc); ok {
 			*effectsRef = append(*effectsRef, se)
 			continue
 		}
@@ -1005,7 +1006,7 @@ func AnalyzeShape(proto *bytecode.Proto) shapeInfo {
 		// Scratch fill (writes a reg that's later overwritten, or
 		// outside the return window). Only MOVE / LOADK / LOADBOOL /
 		// LOADNIL are supported as scratch fills today.
-		if se, ok := scratchFromIns(proto, op, ins); ok {
+		if se, ok := scratchFromIns(proto, op, ins, pc); ok {
 			*effectsRef = append(*effectsRef, se)
 			continue
 		}
@@ -1198,10 +1199,10 @@ func matchCmpDiamond(proto *bytecode.Proto, pc int) (uint8, bool) {
 // Returns ok=false for any op not in the supported body subset.
 func bodyEffectFromIns(proto *bytecode.Proto, op bytecode.OpCode, ins bytecode.Instruction, pc int) (sideEffect, bool) {
 	// Reuse the existing recognisers for the side-effect-style ops.
-	if se, ok := sideEffectFromIns(op, ins); ok {
+	if se, ok := sideEffectFromIns(op, ins, pc); ok {
 		return se, true
 	}
-	if se, ok := scratchFromIns(proto, op, ins); ok {
+	if se, ok := scratchFromIns(proto, op, ins, pc); ok {
 		return se, true
 	}
 	// Arithmetic ops: re-emit as sideEffectArith. RK B/C fit in 9 bits;
@@ -1232,7 +1233,8 @@ func bodyEffectFromIns(proto *bytecode.Proto, op bytecode.OpCode, ins bytecode.I
 // Returns a sideEffect that PerOpCode.Run will replay before head-op
 // materialisation. Only side-effect-free, never-raise ops are supported:
 // MOVE / LOADK / LOADBOOL (C=0) / LOADNIL.
-func scratchFromIns(proto *bytecode.Proto, op bytecode.OpCode, ins bytecode.Instruction) (sideEffect, bool) {
+func scratchFromIns(proto *bytecode.Proto, op bytecode.OpCode, ins bytecode.Instruction, pc int) (se sideEffect, ok bool) {
+	defer func() { se.pc = uint16(pc) }()
 	a := bytecode.A(ins)
 	if a < 0 || a > 255 {
 		return sideEffect{}, false
@@ -1328,7 +1330,8 @@ func scratchFromIns(proto *bytecode.Proto, op bytecode.OpCode, ins bytecode.Inst
 // sideEffectFromIns recognises a pre-return op that has no return-slot
 // output. Returns (se, true) on a match; otherwise (zero, false) so the
 // caller can try the head-op interpretation.
-func sideEffectFromIns(op bytecode.OpCode, ins bytecode.Instruction) (sideEffect, bool) {
+func sideEffectFromIns(op bytecode.OpCode, ins bytecode.Instruction, pc int) (se sideEffect, ok bool) {
+	defer func() { se.pc = uint16(pc) }()
 	switch op {
 	case bytecode.SETUPVAL:
 		// SETUPVAL A B: U(B) := R(A).
