@@ -281,6 +281,7 @@ var exemptions = []struct {
 	{"collectgarbage step/setstepmul 精确语义", "10 §4.6:GC 是 stop-the-world,没有增量步进。step 做一次完整回收并返回 true(官方返回这一步有没有结束一轮回收);setstepmul 的值会保存并在下次调用时返回,但不影响回收"},
 	{"collectgarbage setpause 的比例含义", "10 §4.6：返回值和参数转换与官方一致，比例的含义不同。望舒拿 live × 比例 / 100 与上次回收以来新分配的字节数比较，官方拿它与总字节数比较，所以望舒的比例 p 大约相当于官方的 p + 100（200 在官方是总量翻倍时回收，在望舒是总量到三倍时回收）；0 在望舒是每分配 arena 容量的 1/16 回收一次，在官方是几乎不停地回收。要不要改成官方的口径见 issue #353。TestDiff_GCPauseMeaning 固定两边各自的结果"},
 	{"pattern 灾难性回溯有界失败", "回溯预算 1<<20 步:`.*.+%A*x` 级灾难回溯报 'pattern too complex',oracle 慢速算完——嵌入式防挂起裁量(官方成功/本实现报错的有意分歧)"},
+	{"next 接受已删除、原字符串对象已被回收的键", "已删除的哈希节点让它的字符串键一直存活到所在的表下一次 rehash（06 §8.4），所以 `t[k] = nil` 之后用内容相同的字符串调用 next(t, k) 总能从原位置继续，结果与中间有没有发生过回收无关。官方的回收器不让这样的键存活，回收之后 next 只按对象地址认它，重新拼出来的字符串会报 invalid key to 'next'；没有发生回收时两边相同。TestDiff_NextFromCollectedStringKey 固定两边各自的结果"},
 	{"loadfile/dofile 默认禁用", "文件系统读默认关(不可信脚本越权探测面);Options.AllowFileLoad 显式开启后行为对齐官方"},
 }
 
