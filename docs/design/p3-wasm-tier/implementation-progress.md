@@ -245,7 +245,7 @@ PW0 启动后,本文按以下协议更新:
 | 维度 | 设计文档(02 §3.4 / 06) | 实现现状(PW5) | 完成于 |
 |---|---|---|---|
 | 控制结构 | §3.4.2 嵌套 if-then + `br $L_done` | GETTABLE/SETTABLE/SELF 用 `block $done{ block $slow{ guard;br_if 0;命中 br 1 } helper }`——**br 深度恒定 0/1**,避开深嵌套 br 计数脆弱 | `1ae8fa1` |
-| 键匹配 inline | §3.4.2 `$ic_key_match`(array/node 全 inline) | inline 仅 ① 常量键(同表同 gen ⟹ 缓存 Index 仍映射同键,**省键匹配**)② 寄存器键 ArrayHit(`f64==Index+1`,避开 uint32 截断)。寄存器键 NodeHit(normKey/keyEqual/string-intern inline 脆弱)→ 助手 | `1ae8fa1` |
+| 键匹配 inline | §3.4.2 `$ic_key_match`(array/node 全 inline) | inline 仅 ① 常量键 ② 寄存器键 ArrayHit(`f64==Index+1`,避开 uint32 截断)。寄存器键 NodeHit(normKey/keyEqual/string-intern inline 脆弱)→ 助手。常量键的 NodeHit 把节点里的键与常量比对,各条内联路径都检查固化的下标在拿到的表之内(#362,§15) | `1ae8fa1`,键比对和下标检查见 §15 |
 | MonoMeta(Kind=3) | §3.2.1 SNAP_KIND=3 mono-meta 直达 | PW5 基线路由助手(`__index` 元方法直达 inline 复杂,留后续) | helper 兜底 |
 | 表字段 inline 寻址 | §3.4.1 `$gcref_low32`/`$table_gen`/`$ic_slot_load` 抽象助手 | **全 inline Wasm load**(非 imported 助手——跨层 ~143ns 会废掉跳哈希收益):gen=`i64.load[t+40]>>32`,nodeRef=`[t+24]`,array=`[t+16]`,槽 offset 编译期立即数 | `bb3f16f` |
 | SETTABLE 值烧不出 | (未提) | RK(C) 字符串常量编译期烧不出 GCRef → 整条降级 h_settable(助手经 rk() 正确取) | `1ae8fa1` |
@@ -692,3 +692,26 @@ end
 - [../../../llmdoc/guides/perf-optimization-workflow](../../../llmdoc/guides/perf-optimization-workflow.md)(§7「立项数字目标 vs profile 实测瓶颈」承本轮教训 1)
 - [../../../llmdoc/memory/doc-gaps](../../../llmdoc/memory/doc-gaps.md)(P3 开工前置确认 / P3 迁移预留接口)
 - 反思:`../../../llmdoc/memory/reflections/2026-06-15-p3-pw10-r1-r2-callinfo-migration-round.md`(R1-R2,§12)、`../../../llmdoc/memory/reflections/2026-06-15-p3-pw10-r3-call-indirect-round.md`(R3+R3.5,§13)、`../../../llmdoc/memory/reflections/2026-06-15-p3-pw10-zerocross-stage3-round.md`(零跨界 ③,§14.1-§14.7)、`../../../llmdoc/memory/reflections/2026-06-16-p3-pw10-architectural-ceiling-round.md`(架构边界收尾,§14.8-§14.10)
+
+## 15. issue #362 内联表访问读到拿到的表之外（2026-11-28）
+
+- **现象**：P3 把 GETTABLE / SETTABLE / SELF 编译成内联代码时，用「是表、地址等于固化的 `TableRef`、gen 等于固化的 gen」判断拿到的就是解释器当时看到的那张表，
+  然后按固化的下标直接读写槽位。原来那张表被回收之后，新建的表可以分配在同一个地址上，新表的 gen 又从同一个初值开始，三项都通过，它却不是原来那张表：
+  ① 数组部分比固化的下标短时，读到数组之后的内存（实测读出别的字符串、函数和不成形的数字），写则写到数组之外；
+  ② 哈希部分固化的那个节点里放的是别的键时，读到、改写的是那个键的值。解释器（`icGetTable` 比对键、用运行时的大小）和 P4 不受影响。
+- **修法**：`internal/gibbous/wasm/translate_table.go` 新增 `emitSlotInTable`，三条内联路径在表守卫（和寄存器键的数值比对）之后、取槽位之前调用它：
+  数组部分检查 `index < asize`；哈希部分检查 `index <= hmask`、`nodeRef != 0`，再把节点里的键与指令的常量键比对（`tableInlineable` 只让常量键的 NodeHit 走内联）。
+  没有哈希部分的表 `hmask` 和 `nodeRef` 都是 0，下标 0 能通过前一项，所以 `nodeRef` 要单独看。任何一项不满足都走助手，结果由完整查找给出。
+  常量键取自这个 State 自己的 `Proto.Consts`（`LoadProgram` 已经把字符串常量换成这个 State 的引用）。
+  GETGLOBAL / SETGLOBAL 没有改：全局表不会被回收，键换节点时它的 gen 一定推进。
+- **验证**：
+  - `internal/gibbous/wasm` 的 `TestPW5_InlineSlotGuards`：在线性内存里手工摆出表，对七种内联写法（GETTABLE / SETTABLE 的常量键数组、寄存器键数组、哈希，SELF 的哈希）
+    各给出命中和不该命中的表，共 38 个子用例，逐个检查助手被调用的次数、每个寄存器和槽位的值。换回修改前的 `translate_table.go`，24 个不该命中的子用例全部失败。
+  - `test/difftest` 的 `TestTiered_TableAtAReusedAddress`（P3、P4 构建）：解释器预热之后丢掉那张表、回收、再建一张表，按「解释器、预热后强制升层、从头强制升层、调低阈值」
+    四种方式执行并与 `lua5.1` 比较。数组部分 4 种访问 × 新表长度 0 到 8，哈希部分 3 种访问 × 插入 1 到 12 个键再删掉 0 到全部，共 306 个子用例。
+    修改前的代码上 53 个失败：数组部分 32 个（长度 0 到 7），哈希部分读、写、方法调用各 7 个。`TestTiered_TableAtAReusedAddress_Reuses` 另外断言新表确实落在原表的地址上。
+  - 变异 11 种（去掉数组部分的检查、`<=` 改成 `<`、去掉 `hmask` 检查、`<` 改成 `<=`、去掉 `nodeRef` 检查、去掉键比对、键从值的位置取、三条路径各自不调用 `emitSlotInTable`、
+    SETTABLE 的键取成值的操作数）：`TestPW5_InlineSlotGuards` 每一种都有子用例失败；脚本级测试发现其中 6 种，`hmask` 和 `nodeRef` 两项的 4 种以及键取错位置的 1 种它发现不了，
+    因为脚本造出来的不一致总是先被键比对拦住。
+  - 耗时：一个循环体只有 6 次内联表访问（3 次常量键哈希、3 次数组）的函数，解释器预热后强制升层，调用 4000 次、每次 5000 轮，取三次里最短的一次，
+    修改前 625 毫秒，修改后 697 毫秒，多出来的是每次访问的检查。

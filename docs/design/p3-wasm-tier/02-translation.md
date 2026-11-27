@@ -638,6 +638,8 @@ type ICSlot struct {
 (block $L_gettable_done)
 ```
 
+- 实现现状：内联的范围和检查链以 [implementation-progress §7 的对账表和 §15](./implementation-progress.md) 为准。常量键和寄存器键的 ArrayHit、常量键的 NodeHit 走内联，
+  检查链是「IsTable + 同表 + 同代次 + 下标在这张表之内 + 同键」：同表同代次不足以认定是原来那张表（地址会被新表重用，#362），所以下标和键都要对着拿到的这张表检查。
 - 关键设计:快路径检查链是「IsTable + 同表 + 同代次 + 同键」,与 ic.go `icGetTable` 22-47 行的 IC 命中校验**完全一致**——这是**语义分发非投机**(承 ../p3-wasm-tier §3.1),失败走 `$h_gettable` 助手得到正确结果(完整查找 + 回填 IC + __index 链),零 deopt。
 - 三层校验对应 ic.go 的字段比对:
   - `slot.TableRef == uint32(t)` → Wasm `gcref_low32(vt) == SNAP_TABLEREF`。
