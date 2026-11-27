@@ -223,7 +223,7 @@ func PreferNative(proto *bytecode.Proto) bool {
 // AnalyzeNative reports whether the arm64 native path can handle the Proto.
 // Identical acceptance criteria as amd64.
 func AnalyzeNative(proto *bytecode.Proto) bool {
-	if proto == nil || len(proto.Code) == 0 {
+	if proto == nil || len(proto.Code) == 0 || len(proto.Code) > maxNativePC+1 {
 		return false
 	}
 	// String-constant LOADK is accepted (issue #69): the per-State

@@ -1343,8 +1343,8 @@ func emitGetTableExitOnly(cb *codeBuf, pc int32, a, b uint8, c int) {
 // Callers use per-op wrappers that pass their opcode's helper code
 // and the (a, b, c) args in the same slots the corresponding host
 // method expects. b and c fit up to 511 (RK width); a fits up to 255
-// (register). pc up to 22 bits (4M instructions, plenty for any real
-// Lua source).
+// (register). pc up to 22 bits; AnalyzeNative rejects a Proto with an
+// instruction beyond that (maxNativePC).
 func emitExitReason(cb *codeBuf, helperCode uint64, pc int32, a, b, c int32) {
 	packed := helperCode |
 		(uint64(uint32(a)&0xFF) << 16) |
