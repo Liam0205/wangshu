@@ -57,7 +57,7 @@ return math.sinh(0), math.cosh(0), math.tanh(0)`},
 
 	// collectgarbage: setpause / setstepmul return the previous value (200 by default), the second
 	// argument goes through luaL_optint (missing = 0, numeric strings, truncation, int narrowing),
-	// and the other options return 0 whatever the second argument is. The differential fuzz stubs
+	// and collect / stop / restart return 0 whatever the second argument is. The differential fuzz stubs
 	// collectgarbage out, so these probes are what compares it with lua5.1.
 	{"corner_gc_setpause_previous", `return collectgarbage("setpause", 200), collectgarbage("setpause", 150), collectgarbage("setpause", 200)`},
 	{"corner_gc_setstepmul_previous", `return collectgarbage("setstepmul", 200), collectgarbage("setstepmul", 300), collectgarbage("setstepmul", 200)`},
