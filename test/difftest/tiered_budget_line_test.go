@@ -12,8 +12,9 @@ import (
 // TestTiered_StepBudgetLineInGenericFor covers the pc a compiled generic for over a host iterator
 // hands the host when the step budget runs out on its back edge, the JMP after the TFORLOOP: the
 // error and its traceback carry that JMP's line, as in the interpreter. luac gives the TFORLOOP
-// the line of "in ... do" and the JMP the line of the body's last statement, so a pc that is the
-// TFORLOOP's reports the other line.
+// the line of the first iterator expression after "in" (the kernels keep "in nx, u do" on one
+// line) and the JMP the line of the body's last statement, so a pc that is the TFORLOOP's
+// reports the other line.
 //
 // Two kernels, one short and one behind errorNameFarPad. On amd64 P4 runs the loop of either
 // through head-op replay: handing the host the TFORLOOP's pc there fails both. P4 on arm64 has no
