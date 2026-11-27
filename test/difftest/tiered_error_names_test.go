@@ -97,10 +97,13 @@ return table.concat(out, " / ")`
 }
 
 // TestTiered_ErrorNames runs each kernel three ways on this build -- interpreter only, force-all
-// promoted, and promoted from natural heat -- and requires all three to agree with each other and
-// with lua5.1. For each kernel it requires that force-all entered compiled code where the case
-// says the build compiles it, and did not where it says the build does not: a kernel that stops
-// being compiled would otherwise leave its case comparing the interpreter with itself.
+// promoted, and under the lowered thresholds of newAutoState -- and requires all three to agree
+// with each other and with lua5.1. For each kernel it requires that force-all entered compiled
+// code where the case says the build compiles it, and did not where it says the build does not: a
+// kernel that stops being compiled would otherwise leave its case comparing the interpreter with
+// itself. The run under lowered thresholds is not required to enter compiled code, and for most
+// kernels here it does not (its count is logged): it only checks that whatever heat promotes
+// gives the same result.
 func TestTiered_ErrorNames(t *testing.T) {
 	oracle := findOracle()
 	for _, c := range tieredErrorNameCases {
