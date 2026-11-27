@@ -468,7 +468,7 @@ host function 签名(见 [10-stdlib](./10-stdlib.md))拿到一个执行上下文
 - 一旦中间对象**写回到 Lua 栈槽 / 已存活的表 / 全局**,它就经 R5/R1 等可达,可从 shadow stack `Pop`(此后栈/表当根)。
 - **多步分配**:host 连续分配 A 再分配 B(纪律上按分配 B 时可能触发 GC 来写),A 必须先 Push,否则这中间发生的 GC 会回收 A。
   分配本身只记账、不在分配处收集(§7.1)。host function 执行期间会收集的地方有三种:它调用了另一个 host function(作回调、作元方法都算,如 `string.gsub(s, ".", string.upper)`、
-  `pcall(string.rep, s, n)`;每次 host function 调用返回之后检查一次,`collectgarbage("collect")` 自己还直接回收)或调用了会收集的公开 API;
+  `pcall(string.rep, s, n)`;每次 host function 调用返回之后检查一次,`collectgarbage("collect")` 自己还直接回收;`print` 遇到内置的 `tostring`、参数又没有 `__tostring` 时自己格式化,不发生这样的调用)或调用了会收集的公开 API;
   它回调的 Lua 函数(含元方法)自己执行到了安全点,即执行了 SETGLOBAL、SETTABLE、NEWTABLE、CONCAT、SETLIST、CLOSURE 之一,
   或者在里面又调用了 host function(那次调用返回之后检查一次);`coroutine.create` / `coroutine.wrap` 在分配新协程之前检查一次。
   只做比较和算术的 Lua 回调(如 `function(a, b) return a < b end`)里没有安全点。被 host function 调用的 Lua 回调自己那一帧总是由解释器执行;回调里再调用的 Lua 函数已经升层时,
