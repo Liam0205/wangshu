@@ -592,7 +592,7 @@ base 库的函数挂在 **globals 表**(直接全局可见,无需 `base.` 前缀
 | `unpack(t [, i [, j]])` | 返回 `t[i], t[i+1], ..., t[j]`(多值) | `(t [,i,j])` → ... | ✅ | **5.1 是全局 `unpack`**(§4.5);5.2+ 移到 `table.unpack`——**5.1 用全局,记口径** |
 | `_G` | 全局环境表自身 | (变量) | ✅ | globals 表本身(`_G._G == _G`);01 §1 / 05 §11.3 |
 | `_VERSION` | Lua 版本字符串 | (变量) | ✅ | **恒 `"Lua 5.1"`**(roadmap §6 锁 5.1) |
-| `collectgarbage(opt [, arg])` | GC 控制 | `(opt [,arg])` → 依 opt | ✅ | **→ [06](./06-memory-gc.md) 的 GC 控制**(§4.6:collect/count/step/setpause/setstepmul/stop/restart) |
+| `collectgarbage(opt [, arg])` | GC 控制 | `(opt [,arg])` → 依 opt | △(各选项见 §4.6) | **→ [06](./06-memory-gc.md) 的 GC 控制**(§4.6:collect/count/step/setpause/setstepmul/stop/restart) |
 | `gcinfo()` | 返回当前 arena 使用的 KB 数(5.1 遗留) | `()` → number | △ | **5.1 有 `gcinfo`**(已废弃但 5.1 存在);= `collectgarbage("count")` 的旧形式(§4.6) |
 | `loadstring(s [, name])` | 编译字符串为函数(不执行) | `(s [,name])` → (function) or (nil, err) | △ | 用 `Compile`(11 §1.3);P1 范围见 §4.7 |
 | `load(func [, name])` | 用 reader 函数分块编译 | `(func [,name])` → (function) or (nil, err) | △ | P1 简化(§4.7);5.1 的 `load` 取 reader 函数 |
@@ -2383,7 +2383,7 @@ stdlib 的 shadow stack 纪律(§3)漏 Pin 是**最难调的 bug 类**(06 §6.3:
 - **机制**:打开 collector 的压力模式(06 §8.3,每个安全点都 full GC),反复跑大量 stdlib 调用(尤其分配类:
   format/concat/rep/gsub/match,§3.1),验证:① 输出与正常 pacing byte-equal;② 不崩溃。
 - **为什么有效**:漏 Pin 的中间对象在正常 pacing 下偶发被回收(GC 恰好在持有窗口触发的概率低),高频 GC 下
-  **必现**(每个安全点都 GC,持有窗口里只要有一个安全点就必然触发;host function 的分配本身只记账,窗口里的安全点是 06 §6.3 列的那几种:调用另一个 host function(返回之后检查一次,`collectgarbage` 是其中一种)或会收集的公开 API,回调的 Lua 函数自己执行到安全点(只做比较和算术的 Lua 回调里没有),以及 `coroutine.create` 分配新协程之前的那一次检查)。这是 §3 纪律的**主要自动化防线**(06 §11)。
+  **必现**(每个安全点都 GC,持有窗口里只要有一个安全点就必然触发;host function 的分配本身只记账,窗口里的安全点是 06 §6.3 列的那几种:调用另一个 host function(返回之后检查一次,`collectgarbage` 是其中一种)或会收集的公开 API,回调的 Lua 函数自己执行到安全点(只做比较和算术的 Lua 回调里没有),以及 `coroutine.create` / `coroutine.wrap` 分配新协程之前的那一次检查)。这是 §3 纪律的**主要自动化防线**(06 §11)。
 - **指向 12**:GC 压力 fuzz 的具体 harness(强制高频 GC + stdlib 调用矩阵)在 12 定稿;本文 §3 的纪律范例
   (concat/format/gsub)是它的测试对象。
 
