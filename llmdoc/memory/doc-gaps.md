@@ -111,6 +111,11 @@
   写 `stop … collectgarbage()` 就够的脚本，到望舒上自动回收从此关闭。`restart` 之后官方下一次分配就开始回收、望舒按原阈值继续，
   是时机上的差别。见 [#354](https://github.com/Liam0205/wangshu/issues/354)。
 
+- **【未修，产品缺陷】选项和格式字符串里带 `\0` 时与官方不同** — 官方把这些参数当 C 字符串，在第一个 `\0` 处结束；望舒按完整的字节串
+  处理。`collectgarbage("count\0x")`、`os.date("*t\0x")`、`os.getenv`、`debug.getinfo` 的选项、`__mode` 两边结果不同；
+  `string.format("%5s", "c\0d")` 输出截断了、补的空格数却按没截断的长度算，宽度是错的。`tonumber`（#147）、`loadfile` 的文件名、`print`
+  已经分别处理或登记。见 [#355](https://github.com/Liam0205/wangshu/issues/355)。
+
 - **【未做，等维护者决定】GC 的 pause 比例与官方差 100 个百分点；池化复用时回收器的设置不恢复** — 望舒按上次回收以来新分配的字节数
   算阈值，官方按总字节数算，比例 `p` 大约相当于官方的 `p + 100`；`Options.GCPause` 和 `collectgarbage("setpause")` 是同一个量。
   `ResetGlobalsToBaseline` 不恢复脚本改过的比例和 `stop` 状态，也不恢复全局表的非字符串键（脚本 `rawset(_G, 2, x)` 之后，下一个
