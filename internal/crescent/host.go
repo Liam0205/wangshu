@@ -249,10 +249,10 @@ type baselineEntry struct {
 // Borrow.
 //
 // **Limitation**: only string keys are walked (both stdlib and the host's own
-// globals are string keys); number / table / function etc. keys are skipped
-// (stdlib does not use them, and they do not occur in real scenarios). This
-// avoids extending the baseline design to arbitrary key shapes and keeps the
-// conversion simple.
+// globals are string keys); number / table / function etc. keys are skipped.
+// stdlib does not create them, but a script can (rawset(_G, 2, v)), and such
+// a key survives a reset. This avoids extending the baseline design to
+// arbitrary key shapes and keeps the conversion simple.
 func (st *State) MarkGlobalsBaseline() {
 	st.baseline = st.baseline[:0]
 	key := value.Nil

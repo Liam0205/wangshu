@@ -377,16 +377,18 @@ func (st *State) SetStepBudget(n int64) { st.core.SetStepBudget(n) }
 // Typical timing: call once right after `NewState` loads stdlib, fixing the
 // stdlib-provided surface as the baseline. Thereafter `ResetGlobalsToBaseline`
 // can reset _G between each Borrow / Return — both script hijack
-// (`tostring = "pwned"`) and leak (`new_global = 123`) are covered, and the next
-// Borrow sees a _G as clean as right after stdlib load.
+// (`tostring = "pwned"`) and leak (`new_global = 123`) are covered: the next
+// Borrow finds the string-keyed globals as they were right after stdlib load.
+// What a Reset leaves as the script left it is listed on ResetGlobalsToBaseline.
 //
 // Repeated calls overwrite the old baseline (no side effect, but the composite
 // values rooted by the previous baseline may be GC'd after their root is
 // released).
 //
 // Restriction: snapshots string keys only — stdlib and the host's own globals
-// are all string keys; number/table/function etc. keys are skipped (atypical,
-// nonexistent in practice). Composite values in the baseline (table/function
+// are all string keys. Keys of other types are skipped, and a script can set
+// them: rawset(_G, 2, file) changes what io.stdout.close() closes, and a Reset
+// does not remove it. Composite values in the baseline (table/function
 // GCRef) enter the GC roots via visitExtraValues, so what Reset writes back to
 // _G is not a dangling ref.
 func (st *State) MarkGlobalsBaseline() { st.core.MarkGlobalsBaseline() }
@@ -416,7 +418,7 @@ func (st *State) MarkGlobalsBaseline() { st.core.MarkGlobalsBaseline() }
 //	// repeated Borrow / Return cycles:
 //	for i := 0; i < N; i++ {
 //	    prog.Run(st)                   // script may hijack or leak
-//	    st.ResetGlobalsToBaseline()    // next Borrow sees a clean _G
+//	    st.ResetGlobalsToBaseline()    // string-keyed globals are back at the baseline
 //	}
 //
 // Performance tier: each Reset walks all string keys of the current _G twice
