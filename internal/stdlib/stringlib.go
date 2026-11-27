@@ -1,5 +1,5 @@
 // Pattern-related functions of the string library + format/byte/char
-// (10 §7-§8).
+// (10 §5-§6).
 package stdlib
 
 import (
