@@ -255,7 +255,7 @@ jobs:
 要点:
 
 - **job 与 12 §8 五步一一对应**(单元/conformance/差分/基准/golden 高亮);dispatch A/B(12 §8 步骤 5)只在改 dispatch 的 PR 手动触发,不进默认矩阵。
-- `paths-ignore` 让纯文档 PR 不烧 CI 时长(本仓库文档提交占比高)。读 Markdown 文件的测试因此在只改该文件的提交上不会执行;目前这样的测试是 `make check-readme` 执行的那几个(在 `test/difftest`,读两个 README),由 `readme-check.yml` 在 README 变化时单独执行这个目标(改代码的提交由 `test-scripts` 任务执行同一个目标)。以后再加读 Markdown 的测试,要同样给它一个不被 `paths-ignore` 跳过的入口。
+- `paths-ignore` 让纯文档 PR 不烧 CI 时长(本仓库文档提交占比高)。读 Markdown 文件的测试因此在只改该文件的提交上不会执行;目前这样的测试是 `make check-readme` 执行的那几个(在 `test/difftest`,读两个 README),由 `readme-check.yml` 在 README 或这个工作流文件自己变化时单独执行这个目标(改代码的提交由 `test-scripts` 任务执行同一个目标)。以后再加读 Markdown 的测试,要同样给它一个不被 `paths-ignore` 跳过的入口。
 - `concurrency` 非主干 cancel-in-progress(与 pineapple 相同)。
 - Go 版本经 `go-version-file: go.mod` 锁定,缓存 `go.sum`。
 

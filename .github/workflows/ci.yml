@@ -41,9 +41,9 @@ jobs:
           go-version-file: go.mod
       - name: tooling script self-tests
         run: make test-scripts
-      # Also run by readme-check.yml, which only triggers when a README changes. Running it here as
-      # well means a code change that breaks the target (a renamed test, an edit to the target) fails
-      # on the change that caused it, not on the next README-only one.
+      # Also run by readme-check.yml, which triggers when a README or that workflow file changes.
+      # Running it here as well means a code change that breaks the target (a renamed test, an edit
+      # to the target) fails on the change that caused it, not on the next README-only one.
       - name: README tables match the stdlib registry
         run: make check-readme
 
