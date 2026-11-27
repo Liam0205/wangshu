@@ -659,11 +659,12 @@ type Collector struct {
    回收器清掉条目留下的节点（第 2 点）不做这个例外，它的字符串键和其他对象一样不标记。这种节点什么时候出现本来就由回收决定，上面的理由
    在它身上不成立；照常标记的话，字符串作键、对象作值的弱值缓存会把用过的每一个键都留到节点被接管或者表 rehash 为止。两种来源靠节点
    word2 的第 32 位区分：`clearWeakTables` 清值时置位（`object.ClearNodeValue`），之后任何一次写这个节点的键或值都清掉它（`SetNode`），只改
-   链接不清（`SetNodeNext`）。弱值表（`__mode = "v"`）里，条目被清掉的那一轮，键是作为有值条目的强键标记的，所以它至少活过这一轮，
+   链接不清（`SetNodeNext`）。对已经是已删除状态的键再赋 nil 不写节点，标记保持原样：回收器清掉的条目，脚本再执行一次 `t[k] = nil`，
+   它的字符串键也不会因此被保活。弱值表（`__mode = "v"`）里，条目被清掉的那一轮，键是作为有值条目的强键标记的，所以它至少活过这一轮，
    正停在这个条目上的遍历可以继续；从下一轮起只看它有没有别的引用。键也是弱引用的两种模式里，只被这张表引用的字符串键可能和值在同一轮
    死亡（[#348](https://github.com/Liam0205/wangshu/issues/348)）。实测 10 万个约 105 字节的键、值全部死亡之后回收三次，剩 3084KB
    （官方 5401KB）。`TestWeak_DeletedStringKeyIsKept`、`TestWeak_ClearedEntryDoesNotKeepItsStringKey`、
-   `TestWeak_ClearedEntryStoredAgainIsAnOrdinaryNode`、`TestWeak_ClearedEntryKeepsItsMarkWhenRelinked`、
+   `TestWeak_ClearedEntryStoredAgainIsAnOrdinaryNode`、`TestWeak_ClearedEntryAssignedNilKeepsItsMark`、`TestWeak_ClearedEntryKeepsItsMarkWhenRelinked`、
    `TestWeak_ClearedEntryInATableMadeStrong` 和 `weak_valued_cache_releases_its_string_keys` 断言。
    保活脚本删掉的字符串键与官方不同，是有意保留的差异，有两面：
    - **`next` 的结果**：官方的 `removeentry` 不让已删除节点里的字符串键存活，这个字符串没有别的引用时就被回收，回收之后 `next` 只按对象地址
@@ -681,14 +682,14 @@ type Collector struct {
    登记在 `test/difftest/corners_test.go` 的 `exemptions` 和 README 的差异表里，`TestDiff_NextFromCollectedStringKey` 固定望舒一侧的结果
    （官方一侧取决于分配器，只记录、不断言）。回收器清掉的条目，两边都不让它的字符串键存活，剩下的差别只在官方按地址认已回收的键：
    重新拼出来的字符串正好分配在原地址上时官方的 `next` 成功，望舒一律报错，`TestDiff_NextFromKeysOfClearedEntries` 固定望舒一侧的结果。
-   官方有一类永远不回收的字符串：保留字和元方法名（`llex.c`、`ltm.c` 里的 `luaS_fix`）。它们作键时，被清掉的条目的 dead key 一直指向
-   还活着的对象，官方的 `next` 每次都成功；望舒没有这样的字符串，键照常被回收，`next` 报错。这一种两边的结果都是确定的，
+   官方有一类永远不回收的字符串：保留字、`ltm.c` 列的 17 个元方法名（没有 `__tostring` 和 `__metatable`）和 `"not enough memory"`（`llex.c`、`ltm.c`、`lstate.c` 里的 `luaS_fix`）。它们作键时，被清掉的条目的 dead key 一直指向
+   还活着的对象，官方的 `next` 每次都成功；望舒不固定任何字符串：键没有别的引用时照常被回收，`next` 报错；另有引用时（`__index` 是字符串元表的键，`__mode` 是弱表自己元表的键）两边都成功。这一种两边的结果都是确定的，
    `TestDiff_NextFromFixedKeysOfClearedEntries` 固定两边各自的结果。
    同一个原则还带来一处差异：官方标记一张表时（`traversetable`；键和值都弱的表整张跳过，不在此列）对**每个**键可回收的已删除节点都执行
    `removeentry`，键指向的对象还活着也一样，键被改成 `LUA_TDEADKEY`
    之后，同一个键再次写入时找不到原节点、按新键插入（可能引起 rehash，丢掉其他已删除的键）。望舒只替换对象已死的键，活着的键不管
    隔了几次回收都写回原节点。`TestDiff_NextOnRemovedKeyAfterStores` 的 `same_keys_stored_again_after_a_collection` 固定两边各自的结果，
-   `…_weak_keys_and_values` 固定键和值都弱的表上两边相同。
+   `…_weak_keys_and_values` 固定键和值都弱的表上、键另有引用时两边相同（删掉的字符串键没有别的引用时官方把它回收，写回去的新字符串不在原地址上就按新键插入）。
    遍历过程中继续使用某个键的调用方（`next` 的调用者、`table.foreach`、公开 API 的 `Table.ForEach`）自己保证这个键可达。
 4. **可观察性**:cleartable 移除 entry 影响后续 `pairs`/`next` 产出,与 `pairs` 序、`tostring` 地址同类,纳入 §11 / [12](./12-testing-difftest.md) 的差分口径。
 
