@@ -635,7 +635,7 @@ helper 返回后:gibbous 用 $cache_5 访问那个 Table ⇒ 悬垂 GCRef
 
 漏写回 bug 的不确定性(§4.4.3)使它**无法靠常规测试可靠捕获**——必须用 GC 压力 fuzz 强制把「恰好该点触发 GC」这个条件变成「每个点都触发 GC」:
 
-- **GC 压力模式**([12](../p1-interpreter/12-testing-difftest.md) 的压力模式):`MaybeCollect` 不看阈值、每次都回收,使**每个会分配的 helper 调用、每个 back edge 都触发一次 full GC**。
+- **GC 压力模式**([12](../p1-interpreter/12-testing-difftest.md) 的压力模式):`MaybeCollect` 不看阈值、每次都回收,使**每个带安全点的 helper 调用(清单见 [08](./08-testing-strategy.md) §3.2)、每个 back edge 都触发一次 full GC**。
 - **效果**:漏写回的「恰好触发 GC」条件被满足在**每一个 GC 边界**——若某点漏写回了一个活 GCRef,这个模式下该点的 GC 必然误回收它,后续访问必然炸/脏。**把偶发 bug 变成必现 bug。**
 - **配合强制全升模式**([08 §2](./08-testing-strategy.md)):所有 CompCompilable 的 Proto 强制编译为 gibbous,使所有可能的 gibbous 帧都被 GC 压力覆盖,消除「热度时序导致哪些函数被编译」的不确定性。
 
