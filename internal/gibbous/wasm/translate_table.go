@@ -167,7 +167,9 @@ func (c *Compiler) emitGetGlobal(em *emitter, proto *bytecode.Proto, ins bytecod
 //
 // Fast path for modifying an existing key (changing the value does not bump
 // gen, so the IC stays valid). Inline: gen check → current slot val non-nil
-// (key exists) → write the new value. Delete / add key / gen miss → helper.
+// (key exists) → write the new value. Add key / gen miss → helper. The value
+// to store is not inspected: a nil is written inline too, which empties the
+// node without a gen bump.
 //
 //	block $done
 //	  if (gen == SNAP_GEN)
