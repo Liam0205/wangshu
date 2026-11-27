@@ -538,7 +538,9 @@ func readmeAbsentItems(t *testing.T, path, heading string) []string {
 //   - A file method is listed by `f:name`.
 //   - A global is listed by `name` in a cell that does not name a library which has a function of that
 //     name missing too. Without that restriction the abbreviation `getfenv` on the debug row, written
-//     for debug.getfenv, would also stand in for the global getfenv.
+//     for debug.getfenv, would also stand in for the global getfenv. A library's own name is exempt
+//     from the restriction: `debug` is never the abbreviation of debug.debug (first rule), so it can
+//     only mean the global debug, the library itself.
 //
 // Names must be in backticks. A bare word is not a listing.
 func readmeLists(items []string, name string) bool {
@@ -564,7 +566,7 @@ func readmeLists(items []string, name string) bool {
 	var shadowing []string
 	for entry := range stdlibAbsent {
 		full, _, _ := strings.Cut(entry, " : ")
-		if lib, fn, ok := strings.Cut(full, "."); ok && fn == name && !strings.HasPrefix(full, "(") {
+		if lib, fn, ok := strings.Cut(full, "."); ok && fn == name && lib != name && !strings.HasPrefix(full, "(") {
 			shadowing = append(shadowing, lib)
 		}
 	}
@@ -585,7 +587,9 @@ next:
 
 // TestReadmeListsMatcher pins the rules of readmeLists that keep a name from counting as listed when
 // the README does not actually list it; relaxing any of them lets TestStdlibAbsentIsInREADME pass with
-// that name missing.
+// that name missing. It also pins the one rule in the other direction: a library's own name in
+// backticks is seen as a listing, or TestReadmeListsOnlyAbsentNames could not see a row that calls a
+// whole provided library not provided.
 func TestReadmeListsMatcher(t *testing.T) {
 	debugRow := "| debug | everything in `debug` except `traceback` (`sethook` / `getfenv` / `setfenv` / `debug.debug`) | hooks |"
 	envRow := "| Environment ops | `getfenv` / `setfenv` | shape analysis |"
@@ -603,6 +607,8 @@ func TestReadmeListsMatcher(t *testing.T) {
 		{"global's row does not serve the library function", []string{envRow}, "debug.getfenv", false},
 		{"function named like its library, spelled out", []string{debugRow}, "debug.debug", true},
 		{"function named like its library, only the library named", []string{"| debug | `debug` library: `sethook` | hooks |"}, "debug.debug", false},
+		{"library in backticks is a listing of the global of that name", []string{debugRow}, "debug", true},
+		{"library named only through its functions is not", []string{"| debug | the debug library except `traceback` (`sethook` / `debug.debug`) | hooks |"}, "debug", false},
 		{"word in the reason column is not a listing", []string{ioRow}, "io.input", false},
 		{"bare word in the items column is not a listing", []string{"| Default streams | `io.close`, input and output | fixed |"}, "io.input", false},
 		{"spelled out", []string{"| Default streams | `io.input` / `io.output` | fixed |"}, "io.output", true},
