@@ -1150,6 +1150,7 @@ arena 大小跟着比例变。`TestTiered_StdlibNames` 加一段
 
 1. 遍历过程中把字段赋成 nil 不再报错（哈希部分的键；`pairs`、`next`、`table.foreach` 都是）。
 2. `next(t, k)` 接受一个已经从表里删掉、但节点还在的键，从它的位置继续；从来不在表里的键仍然报 `invalid key to 'next'`。
+   键是字符串时有一种情况与官方不同，见下面「与官方不同、有意保留的一处」。
 3. 删除之后再插入新键的遍历顺序变了：已删除的节点不再被任意新键占用。顺序本身与官方仍然不同（[#349](https://github.com/Liam0205/wangshu/issues/349)）。
 4. 遍历弱表时发生回收、当前条目被清掉，遍历可以继续。
 5. 作为键被删除的字符串会多存活到所在的表下一次 rehash。
@@ -1160,19 +1161,34 @@ arena 大小跟着比例变。`TestTiered_StdlibNames` 加一段
   `TestRawTable_DeadNodeIsNotAFreeNode`、`TestRawTable_TakeoverKeepsChain`、`TestRawTable_RehashDropsDeadNodes`、
   `TestRawNext_ContinuesFromDeletedKey`，回收器一侧的 `TestDeadKey_*` 和 `TestWeak_*`，以及随机模型比对
   `TestRawTable_ModelCheck`（40 个种子，每个 3000 步，每一步与 Go map 比较并检查哈希链的结构）。
-- `test/difftest`：`TestDiff_ClearWhileTraversing`，15 段结果与遍历顺序无关的脚本，不经过 prelude，直接与 `lua5.1` 比较，在普通回收
+- `test/difftest`：`TestDiff_ClearWhileTraversing`，16 段结果与遍历顺序无关的脚本，不经过 prelude，直接与 `lua5.1` 比较，在普通回收
   和每个安全点都回收两种方式下各执行一遍；`nextvar.lua` 的「erasing values」一段原样收在里面。`TestTiered_ClearWhileTraversing`，6 段
-  脚本在 P3 / P4 下按「解释器预热、再强制升层」执行，断言进入了升层代码。
+  脚本在 P3 / P4 下按「解释器预热、再强制升层」执行，断言进入了升层代码。`TestDiff_NextFromCollectedStringKey` 固定上面第 2 条里与官方
+  不同的那一种情况（见下）。
 - `test/api`：`TestTableForEach_ClearingEntries`。
 
-变异验证：20 处改动逐个撤掉或改坏，每一处都有测试失败。其中「接管时不 bump」由单元测试、P3 下的
-`deleted_global_node_taken_over` 和 P4 下的 `deleted_global_node_taken_over_single_store` 发现；「删除时不 bump」由单元测试和 P4 下的
-`single_store_function_after_delete_elsewhere` 发现。把同一份 `TestDiff_ClearWhileTraversing` 放到修改前的 master 上，15 段里 12 段失败
-（剩下的 3 段修改前后结果相同：数组部分的键、被删除的键不让对象存活、删除之后隔着回收再写回）。
+变异验证：24 处改动逐个撤掉或改坏，每一处都有测试失败。其中「接管时不 bump」由单元测试、P3 下的
+`deleted_global_node_taken_over` 和 P4 下的 `deleted_global_node_taken_over_single_store` 发现；「删除时不 bump」只由单元测试发现
+（现在没有哪个内联路径的正确性依赖这一次 bump，见下面 P4 模板一段）。把同一份 `TestDiff_ClearWhileTraversing` 放到修改前的 master 上，
+16 段里 13 段失败（剩下的 3 段修改前后结果相同：数组部分的键、被删除的键不让对象存活、删除之后隔着回收再写回）。
 
-**这一轮没有修、另外登记的存量差异**：P4 单条 SETTABLE 的模板在字段被赋成 nil 再赋值时跳过 `__newindex`
-（[#347](https://github.com/Liam0205/wangshu/issues/347)）；弱表会清掉字符串（[#348](https://github.com/Liam0205/wangshu/issues/348)）；
-哈希部分的遍历顺序与官方不同（[#349](https://github.com/Liam0205/wangshu/issues/349)）。
+**与官方不同、有意保留的一处**：已删除的节点让字符串键存活，所以 `t[k] = nil`、回收、再用重新拼出来的同内容字符串调用
+`next(t, k)`，望舒从原位置继续，官方报 `invalid key to 'next'`（官方不让这样的键存活，回收之后只按对象地址认它）；没有发生回收时两边
+相同。官方的结果取决于回收有没有在中间发生，望舒的不取决于。登记在 `exemptions`、README 的差异表和 [06 §8.4](./06-memory-gc.md)。
+
+**P4 单条 SETTABLE 的模板一并修了（[#347](https://github.com/Liam0205/wangshu/issues/347)）**。函数体只有一条常量键赋值时 P4 用专用
+模板编译（`EmitSetTableNodeHit` / `EmitSetTableArrayHit`，arm64 同），模板原来只检查「是表、gen 相同、节点里的键相同」，不看槽位现在
+有没有值，也不比对是不是原来那张表。删除保留键之后，这两点合在一起会出错：用同一个构造函数建出来的另一张表 gen 相同，它的这个
+字段被删除之后键还在节点里，模板的三项检查全部通过，值被直接写进已删除的节点，`__newindex` 没有被调用。#347 原来登记的「模板自己把
+字段赋成 nil、再赋值」是同一个缺口在同一张表上的表现。现在四个模板都检查「槽位现有的值不是 nil」和「要写入的值不是 nil」，不满足
+就退回宿主的慢路径；模板内联完成的只剩「非 nil 的值覆盖非 nil 的值」这一种赋值，它本来就不查 `__newindex`。
+`TestTiered_SingleStoreTemplate`（5 段，哈希部分和数组部分各有「自己删了再写」「换一张已删除的表」两种）在 P4 的 amd64 和 arm64 上
+都进入了模板；撤掉模板的改动，前 4 段失败。
+
+**这一轮没有修、另外登记的存量问题**：弱表会清掉字符串（[#348](https://github.com/Liam0205/wangshu/issues/348)）；
+哈希部分的遍历顺序与官方不同（[#349](https://github.com/Liam0205/wangshu/issues/349)）；P4 单条表访问的模板不检查下标是否在表内
+（[#350](https://github.com/Liam0205/wangshu/issues/350)）；P4 arm64 的同一组模板在数组下标 4096 以上时访问到错误的槽位
+（[#351](https://github.com/Liam0205/wangshu/issues/351)）。
 
 过程记录见 [#338 复盘](../../../llmdoc/memory/reflections/2026-11-27-issue338-deleted-key-stays-in-node.md)。
 
