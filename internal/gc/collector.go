@@ -336,7 +336,8 @@ func (c *Collector) MaybeCollect() {
 func (c *Collector) SetStopped(on bool) { c.stopped = on; c.updateGCPending() }
 
 // SetStressMode toggles high-frequency GC stress mode (06 §11 / 12 §5): force a full
-// Collect at every safepoint. Used by GC-transparency fuzzing — under stress mode the
+// Collect at every safepoint, except while the collector is stopped (SetStopped), when
+// MaybeCollect does nothing. Used by GC-transparency fuzzing — under stress mode the
 // output must be byte-equal to normal mode, otherwise it means a missed root / early reclaim.
 func (c *Collector) SetStressMode(on bool) { c.stressMode = on; c.updateGCPending() }
 

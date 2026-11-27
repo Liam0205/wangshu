@@ -139,8 +139,9 @@ func NewState(opts Options) *State {
 }
 
 // SetGCStressMode toggles high-frequency GC stress mode (forces a full Collect
-// at every safepoint). Used by GC-transparency tests: under stress mode the
-// output must be byte-equal to normal mode (12 §5).
+// at every safepoint, except while collectgarbage("stop") has automatic
+// collection switched off). Used by GC-transparency tests: under stress mode
+// the output must be byte-equal to normal mode (12 §5).
 func (st *State) SetGCStressMode(on bool) { st.core.SetGCStressMode(on) }
 
 // SetForceAllPromote toggles force-promote-all mode (the P3 cross-tier
