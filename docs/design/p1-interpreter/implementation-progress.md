@@ -1095,13 +1095,13 @@ reviewer 另外列了三处修改前就过期、本分支没有碰的文字：`t
 
 | 改动 | 位置 | 说明 |
 |---|---|---|
-| `setpause` 设置回收器的 pause 比例并返回旧值 | `baseenv.go`、`gc/collector.go::SetPause` | 新值在下一次回收结束、计算下次触发阈值时生效，与官方的 `setthreshold` 时机相同。`Options.GCPause` 设的初值也从这里读得到 |
+| `setpause` 设置回收器的 pause 比例并返回旧值 | `baseenv.go`、`gc/collector.go::SetPause` | 新值在下一次回收结束、计算下次触发阈值时生效，与官方的 `setthreshold` 时机相同 |
 | `setstepmul` 存值并返回旧值 | `gc/collector.go::SetStepMul` | 回收器不是增量的，这个值不参与任何计算 |
 | 第二个参数按 `luaL_optint(L, 2, 0)` 转成 int | `baseenv.go` | 之前只检查它是不是数字，没有用它的值 |
 | 阈值的计算改用饱和算术 | `gc/collector.go::pausedBytes` | 比例现在来自脚本：极大的比例不能让乘法回绕成一个很小的阈值；负数按官方的效果处理成「不再自动回收」 |
 
 **比例的含义与官方不同，登记为差异**：望舒拿 `live × 比例 / 100` 与上次回收以来新分配的字节数比较，官方拿它与总字节数比较，望舒的
-比例 `p` 大约相当于官方的 `p + 100`。这是回收器一直以来的做法（`Options.GCPause` 就是这个量），06 §8.3 原来写的「共 2*live 触发」与代码
+比例 `p` 大约相当于官方的 `p + 100`。这是回收器一直以来的做法，06 §8.3 原来写的「共 2*live 触发」与代码
 不符，这次改成了代码的实际行为。`setpause` 在 10 §4.6 里标成 △，登记进 README 的差异表和 `exemptions`，`TestDiff_GCPauseMeaning` 固定
 两边各自的结果，`corner_gc_setpause_ratios_in_between` 在两边结果相同的中间取值上比较。要不要改成官方的口径、池化复用时要不要恢复
 回收器的设置，记在 [#353](https://github.com/Liam0205/wangshu/issues/353)。

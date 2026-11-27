@@ -558,7 +558,7 @@ func gsubFunctionRepl(vm *VM, th *Thread, captures []value.Value, repl value.Val
 > **stdlib 纪律总则(三条范例归纳)**:① **优先 Go 缓冲累积**(concat/format/rep),把 arena 分配压缩到末尾一次,
 > 根本规避中间持有窗口;② **不可避免地在 arena 持有中间引用跨分配/跨重入时,Pin/defer Unpin**(gsub 捕获);
 > ③ **能尽早把引用送进 Lua 栈/表的就送**(进栈即 R5 可达,免 Pin)。差分测试的 **GC 压力 fuzz**(06 §11:压力模式,
-> 每个安全点都 GC)是捕获漏 Pin 的主要自动化防线——漏 Pin 在正常 pacing 下偶发,持有窗口里有安全点(回调 Lua 函数)时高频 GC 下必现(§13.3)。
+> 每个安全点都 GC)是捕获漏 Pin 的主要自动化防线——漏 Pin 在正常 pacing 下偶发,持有窗口里有安全点(06 §6.3:回调 Lua 函数等)时高频 GC 下必现(§13.3)。
 
 ---
 
@@ -819,7 +819,7 @@ STW §7.3)。本文只列 opt 字符串 → 行为映射(对齐 Lua 5.1):
 | `"collect"`(默认) | 跑一次 full GC | 0 | ✅ | 06 §8.2 `collect()` |
 | `"count"` | 返回当前 arena 使用的 KB 数(浮点,含小数 = 字节/1024) | number | ✅ | 06 §8.3 live 字节 / 1024 |
 | `"step"` | 跑一步增量 GC(arg = 步长 KB) | bool(是否完成一轮) | △ | **P1 只 full GC**(06 §8.3:无增量步长);P1 把 `step` 实现为「触发一次 full GC,返回 true」(语义近似,记口径) |
-| `"setpause"` | 设 GCPAUSE（arg = 百分比），返回旧值 | number（旧值） | △ | 06 §8.3 GCPAUSE（默认 200，或 `Options.GCPause` 给的值）；新值从下一次回收结束、计算下次触发阈值时起生效，与官方相同。返回值和参数转换与官方一致；**比例的含义不同**（见下面「`setpause` 的比例」） |
+| `"setpause"` | 设 GCPAUSE（arg = 百分比），返回旧值 | number（旧值） | △ | 06 §8.3 GCPAUSE（每个 State 从 200 开始）；新值从下一次回收结束、计算下次触发阈值时起生效，与官方相同。返回值和参数转换与官方一致；**比例的含义不同**（见下面「`setpause` 的比例」） |
 | `"setstepmul"` | 设步长倍率,返回旧值 | number(旧值) | △ | P1 无增量,`setstepmul` 存值但不生效(记口径);默认 200 |
 | `"stop"` | 停止自动 GC | 0 | △ | P1:置 `gcEnabled=false`,Alloc 不主动触发(06 §8.2)。官方在 `stop` 之后的 `collectgarbage()` / `("step")` 会恢复自动回收,望舒要等 `restart`(存量缺陷 [#354](https://github.com/Liam0205/wangshu/issues/354)) |
 | `"restart"` | 重启自动 GC | 0 | ✅ | 置 `gcEnabled=true` |
@@ -834,7 +834,7 @@ STW §7.3)。本文只列 opt 字符串 → 行为映射(对齐 Lua 5.1):
   （README 的「C 未定义行为」一行）。
 - **`setpause` 的比例**：望舒拿 `live × 比例 / 100` 与**上次回收以来新分配的字节数**比较（06 §8.3），官方拿它与**总字节数**比较
   （`lgc.c` 的 `setthreshold`）。所以望舒的比例 `p` 大约相当于官方的 `p + 100`：200 在官方是总量翻倍时回收，在望舒是总量到三倍时回收；
-  100 在官方是回收刚结束就接着回收，在望舒是再分配与存活量一样多的字节之后回收。`Options.GCPause` 是同一个量，含义相同。这是登记的
+  100 在官方是回收刚结束就接着回收，在望舒是再分配与存活量一样多的字节之后回收。这是登记的
   差异（README 的差异表、`exemptions`），`test/difftest` 的 `TestDiff_GCPauseMeaning` 固定两边各自的结果；要不要改成官方的口径见
   [#353](https://github.com/Liam0205/wangshu/issues/353)。
 - **`setpause` 取值的边界**：比例来自脚本，阈值的计算用饱和算术，不会回绕。0 时阈值取下限，也就是每分配 arena 容量的 1/16 就回收一次
@@ -2383,7 +2383,7 @@ stdlib 的 shadow stack 纪律(§3)漏 Pin 是**最难调的 bug 类**(06 §6.3:
 - **机制**:打开 collector 的压力模式(06 §8.3,每个安全点都 full GC),反复跑大量 stdlib 调用(尤其分配类:
   format/concat/rep/gsub/match,§3.1),验证:① 输出与正常 pacing byte-equal;② 不崩溃。
 - **为什么有效**:漏 Pin 的中间对象在正常 pacing 下偶发被回收(GC 恰好在持有窗口触发的概率低),高频 GC 下
-  **必现**(每个安全点都 GC,持有窗口里只要有一个安全点就必然触发;host function 的分配本身只记账,窗口里的安全点来自它回调 Lua 函数的地方,06 §6.3)。这是 §3 纪律的**主要自动化防线**(06 §11)。
+  **必现**(每个安全点都 GC,持有窗口里只要有一个安全点就必然触发;host function 的分配本身只记账,窗口里的安全点是 06 §6.3 列的那几种:回调 Lua 函数或 `collectgarbage`、调用会收集的公开 API,以及 `coroutine.create` 分配新协程之前的那一次检查)。这是 §3 纪律的**主要自动化防线**(06 §11)。
 - **指向 12**:GC 压力 fuzz 的具体 harness(强制高频 GC + stdlib 调用矩阵)在 12 定稿;本文 §3 的纪律范例
   (concat/format/gsub)是它的测试对象。
 

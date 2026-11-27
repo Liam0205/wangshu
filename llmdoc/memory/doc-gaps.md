@@ -116,8 +116,14 @@
   `string.format("%5s", "c\0d")` 输出截断了、补的空格数却按没截断的长度算，宽度是错的。`tonumber`（#147）、`loadfile` 的文件名、`print`
   已经分别处理或登记。见 [#355](https://github.com/Liam0205/wangshu/issues/355)。
 
+- **【未修，产品缺陷】`Options` 的 `GCPause`、`MaxCallDepth`、`MaxCCalls` 没有被读取** — `NewState` 只读 arena 的两个容量和两个文件加载
+  开关，这三个字段设了不起作用：回收比例固定从 200 开始，两个深度上限是编译期常量（20000、200）。已知的宿主 pineapple 设了
+  `MaxCallDepth: 256` 和 `MaxCCalls: 64`，把它们当作 VM 强制执行的上限。godoc 和 11 §1.2 已经如实写明，`TestOptions_FieldsNotRead`
+  固定现状。接上去要先定 #353（比例的口径），并核对升层代码里按常量写的深度检查。见
+  [#356](https://github.com/Liam0205/wangshu/issues/356)。
+
 - **【未做，等维护者决定】GC 的 pause 比例与官方差 100 个百分点；池化复用时回收器的设置不恢复** — 望舒按上次回收以来新分配的字节数
-  算阈值，官方按总字节数算，比例 `p` 大约相当于官方的 `p + 100`；`Options.GCPause` 和 `collectgarbage("setpause")` 是同一个量。
+  算阈值，官方按总字节数算，比例 `p` 大约相当于官方的 `p + 100`。
   `ResetGlobalsToBaseline` 不恢复脚本改过的比例和 `stop` 状态，也不恢复全局表的非字符串键（脚本 `rawset(_G, 2, x)` 之后，下一个
   借用者不带参数的 `io.stdout.close()` 会按 `x` 检查）。两件事的可选做法写在
   [#353](https://github.com/Liam0205/wangshu/issues/353)；现状登记在 README 的差异表、`exemptions` 和
