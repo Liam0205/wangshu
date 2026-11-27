@@ -41,7 +41,9 @@ end`)
 // checkStepBudgetLine defines the globals of setup and the kernel budget339(t, u), calls the
 // kernel a few times with SMALL339 so that it is compiled, and then with BIG339 under a step
 // budget the loop cannot finish in. The error text, traceback included, has to be the same with
-// the interpreter alone and under force-all, and force-all has to enter compiled code.
+// the interpreter alone and under force-all, and under force-all that last call has to enter
+// compiled code: the warm calls enter it too, so only the count across the last call says where
+// the budget ran out.
 func checkStepBudgetLine(t *testing.T, setup, kernel string) {
 	t.Helper()
 	prepare, err := wangshu.Compile([]byte(setup), "setup")
@@ -74,11 +76,12 @@ func checkStepBudgetLine(t *testing.T, setup, kernel string) {
 		}
 		st.SetGlobal("USEBIG339", wangshu.Bool(true))
 		st.SetStepBudget(200000)
+		before := st.GibbousEntries()
 		_, err := call.Run(st)
 		if err == nil {
 			t.Fatalf("force-all %v: the loop finished within the budget", force)
 		}
-		return err.Error(), st.GibbousEntries()
+		return err.Error(), st.GibbousEntries() - before
 	}
 	want, n := run(false)
 	if n != 0 {
@@ -89,10 +92,10 @@ func checkStepBudgetLine(t *testing.T, setup, kernel string) {
 	}
 	got, n := run(true)
 	if n == 0 {
-		t.Errorf("force-all never entered compiled code: this kernel does not exercise the tier")
+		t.Errorf("force-all: the call that ran out of budget never entered compiled code")
 	}
 	if got != want {
 		t.Errorf("force-all diverged from the interpreter:\n  force-all:   %q\n  interpreter: %q", got, want)
 	}
-	t.Logf("%q; entries into compiled code under force-all: %d", want, n)
+	t.Logf("%q; entries into compiled code during that call under force-all: %d", want, n)
 }
