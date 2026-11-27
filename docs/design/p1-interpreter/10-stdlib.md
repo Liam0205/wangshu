@@ -1760,7 +1760,7 @@ x86-64 上从右往左、在 arm64 上从左往右,于是**两个官方构建对
 
 **这个决定本身是对的,漏的是它的覆盖面**:harness 侧那个执行体(`internal/oracle/prelude.go` 的
 `__wrapArgOrder`)只包了 `math.fmod`,而 **`math.mod` 是 `LUA_COMPAT_MOD` 下同一个 C 函数的 5.0 别名**
-(官方 5.1.5 默认带这个兼容名,本仓 `mathExtraFns` 里 `fmod` 与 `mod` 也指向同一个实现)。那条性质对它
+(官方 5.1.5 默认带这个兼容名,本仓 `OpenAll` 把 `math.mod` 设成 `math.fmod` 的那个闭包,两个名字是同一个函数对象)。那条性质对它
 逐字成立,而按名字写的判据看不见它——于是完全相同的写法仍然可报,被 fuzzer 开成**两个** issue
 (#217、#219,同一个 seed hash);`math.atan2` 也从来没被包过。现在按「math 表里所有取两个数的入口」
 全部包上。

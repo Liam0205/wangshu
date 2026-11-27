@@ -1,4 +1,4 @@
-// Environment/GC/loading functions of the base library (10 §4.6/§4.7 + §11 surface).
+// Environment/GC/loading functions of the base library (10 §4.6/§4.7 + §14 surface).
 package stdlib
 
 import (

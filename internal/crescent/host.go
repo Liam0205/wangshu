@@ -1,7 +1,7 @@
 // Host function infrastructure — a Go function attached to a Lua closure,
 // called synchronously by the CALL path.
 //
-// Design: 05 §7.5 + 10 §3. Within M12 scope this provides a minimal host
+// Design: 05 §7.5 + 10 §1. Within M12 scope this provides a minimal host
 // function call:
 // - HostFn signature = func(*State, *thread, args []value.Value) (results []value.Value, err *LuaError);
 // - registering a HostFn yields a HostFnID, wrapped into a closure via object.AllocHostClosure.
@@ -13,7 +13,7 @@ import (
 	"github.com/Liam0205/wangshu/internal/value"
 )
 
-// HostFn is the host Go function signature (the P1 version of 10 §3).
+// HostFn is the host Go function signature (the P1 version of 10 §1).
 //
 // args is a snapshot of the actual arguments at call time (copied out by
 // callHost); it returns results / error. HostFn does not directly manipulate

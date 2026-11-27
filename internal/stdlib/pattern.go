@@ -1,4 +1,4 @@
-// Lua 5.1 pattern matcher (10 §7) — mirrors the match engine in lstrlib.c.
+// Lua 5.1 pattern matcher (10 §6) — mirrors the match engine in lstrlib.c.
 //
 // Supports: character classes (%a %d %s %w %x %p %c %l %u + uppercase for
 // negation), sets [..]/[^..] (including []] where the leading ] is literal),
