@@ -353,6 +353,73 @@ func TestDiff_NextFromRuntimeHeldKeysOfClearedEntries(t *testing.T) {
 	}
 }
 
+// nextFromDebugNamesOfClearedEntries is the same for the names of local variables. lua5.1's
+// function prototypes refer to the names of their locals and upvalues as strings, for debug
+// information, so the name of a local of any function that is still alive stays alive; wangshu
+// keeps those names outside the arena. The third key has the same form and names nothing: it
+// shows that lua5.1's answers to the first two are not address reuse.
+const nextFromDebugNamesOfClearedEntries = `
+local function keepme(a) local zzqqlocal = a + 1 local function inner() return zzqqlocal end return inner end
+local held = keepme(1)
+local function count(build)
+  local ok = 0
+  for round = 1, 30 do
+    local w = setmetatable({}, {__mode = "v"})
+    for i = 1, 4 do w["pad" .. i .. "_" .. round] = true end
+    w[build()] = {}
+    collectgarbage() collectgarbage() collectgarbage()
+    local junk = {}
+    for j = 1, 64 do junk[j] = ("#"):rep(7) .. j end
+    if pcall(next, w, build()) then ok = ok + 1 end
+  end
+  return ok
+end
+return count(function() return "zzqq" .. "local" end), count(function() return "kee" .. "pme" end),
+  count(function() return "zzqq" .. "other" end), held()`
+
+// TestDiff_NextFromDebugNamesOfClearedEntries pins both sides of that.
+func TestDiff_NextFromDebugNamesOfClearedEntries(t *testing.T) {
+	const wantWangshu, wantOracle = "0\t0\t0\t2", "30\t30\t0\t2"
+	for _, stress := range []bool{false, true} {
+		if got := runClearCase(t, nextFromDebugNamesOfClearedEntries, stress); got != wantWangshu {
+			t.Errorf("wangshu (collecting at every safepoint: %v):\n  got:  %q\n  want: %q", stress, got, wantWangshu)
+		}
+	}
+	if oracle := findOracle(); oracle != "" {
+		if got := strings.TrimSuffix(runOracle(t, oracle, wrapForOracle(nextFromDebugNamesOfClearedEntries)), "\n"); got != wantOracle {
+			t.Errorf("lua5.1 no longer answers as recorded:\n  got:      %q\n  recorded: %q", got, wantOracle)
+		}
+	}
+}
+
+// nextFromConstantsOfDroppedChunks goes the other way: wangshu holds a string that lua5.1 does
+// not. A State keeps the string constants of every chunk it has loaded alive, also after the
+// chunk's function is gone (issue #359); lua5.1 collects them with the function. So a cleared
+// entry whose key is such a constant is accepted by wangshu's next every time. lua5.1 tells the
+// key by its address, and its answer depends on what was allocated since; only wangshu's side
+// is pinned.
+const nextFromConstantsOfDroppedChunks = `
+do local f = loadstring("return 'zzk' .. 'onst', 'zzkonst2'") f = nil end
+collectgarbage()
+local ok = 0
+for round = 1, 30 do
+  local w = setmetatable({}, {__mode = "v"})
+  for i = 1, 4 do w["pad" .. i .. "_" .. round] = true end
+  w["zzk" .. "onst2"] = {}
+  collectgarbage() collectgarbage() collectgarbage()
+  if pcall(next, w, "zzk" .. "onst2") then ok = ok + 1 end
+end
+return ok`
+
+// TestDiff_NextFromConstantsOfDroppedChunks pins wangshu's side of that.
+func TestDiff_NextFromConstantsOfDroppedChunks(t *testing.T) {
+	for _, stress := range []bool{false, true} {
+		if got := runClearCase(t, nextFromConstantsOfDroppedChunks, stress); got != "30" {
+			t.Errorf("wangshu (collecting at every safepoint: %v): got %q, want %q", stress, got, "30")
+		}
+	}
+}
+
 // nextFromRemovedFixedKeys is the case of nextFromCollectedStringKey with keys lua5.1 never
 // collects: a reserved word, a metamethod name and "not enough memory", each built at run time,
 // stored in a table that is not weak and removed by a store of nil. lua5.1 does not collect such
