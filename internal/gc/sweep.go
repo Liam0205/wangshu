@@ -201,9 +201,13 @@ func (c *Collector) clearWeakTables() {
 				continue
 			}
 			if keyDead {
-				k = object.DeadKey
+				object.SetNode(c.a, t, i, object.DeadKey, value.Nil, object.NodeNext(c.a, t, i))
+			} else {
+				// Only the value was dead. The node is marked, so that from the
+				// next collection on it does not keep a string key alive
+				// (scanTable).
+				object.ClearNodeValue(c.a, t, i)
 			}
-			object.SetNode(c.a, t, i, k, value.Nil, object.NodeNext(c.a, t, i))
 			cleared = true
 		}
 		if cleared {

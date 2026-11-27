@@ -117,6 +117,31 @@ func TestTableLayout(t *testing.T) {
 	if NodeNext(a, tbl, 3) != 5 {
 		t.Errorf("node next")
 	}
+	// The collector's mark: set by ClearNodeValue together with the value going, kept by
+	// SetNodeNext, reset by SetNode.
+	if NodeClearedByCollector(a, tbl, 3) {
+		t.Errorf("a node written by SetNode is marked as cleared by the collector")
+	}
+	ClearNodeValue(a, tbl, 3)
+	if k := NodeKey(a, tbl, 3); !value.IsNumber(k) || value.AsNumber(k) != 7 {
+		t.Errorf("ClearNodeValue changed the key")
+	}
+	if NodeVal(a, tbl, 3) != value.Nil || NodeNext(a, tbl, 3) != 5 || !NodeClearedByCollector(a, tbl, 3) {
+		t.Errorf("after ClearNodeValue: val %x, next %d, marked %v", uint64(NodeVal(a, tbl, 3)), NodeNext(a, tbl, 3),
+			NodeClearedByCollector(a, tbl, 3))
+	}
+	SetNodeNext(a, tbl, 3, -1)
+	if NodeNext(a, tbl, 3) != -1 || !NodeClearedByCollector(a, tbl, 3) {
+		t.Errorf("after SetNodeNext(-1): next %d, marked %v", NodeNext(a, tbl, 3), NodeClearedByCollector(a, tbl, 3))
+	}
+	SetNodeNext(a, tbl, 3, 6)
+	if NodeNext(a, tbl, 3) != 6 || !NodeClearedByCollector(a, tbl, 3) || NodeVal(a, tbl, 3) != value.Nil {
+		t.Errorf("after SetNodeNext(6): next %d, marked %v", NodeNext(a, tbl, 3), NodeClearedByCollector(a, tbl, 3))
+	}
+	SetNode(a, tbl, 3, value.NumberValue(7), value.True, 5)
+	if NodeClearedByCollector(a, tbl, 3) || NodeNext(a, tbl, 3) != 5 {
+		t.Errorf("SetNode left the mark or a wrong link: marked %v, next %d", NodeClearedByCollector(a, tbl, 3), NodeNext(a, tbl, 3))
+	}
 	// gen and metatable.
 	if TableGen(a, tbl) != 0 {
 		t.Errorf("initial gen != 0")
