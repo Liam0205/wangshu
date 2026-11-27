@@ -1084,7 +1084,7 @@ reviewer 另外列了三处修改前就过期、本分支没有碰的文字：`t
 测试：`test/api` 的 `TestIOHandles_MatchPUC` 加 16 个用例（三个标准流、按名字调用、`_G[2]` 是数字 / 表 / 标准流 / 只能经 `__index` 取到、
 显式 nil、数字、多余参数，以及另外四个方法不带参数时的对照）；差分 fuzz 语料 `r343_file_close_no_handle` 和 `r343_file_close_reads_globals_2`；`test/difftest` 的探测
 `corner_io_close_without_handle_reads_globals_2`；`TestTiered_StdlibNames` 加一段 `file_close_without_handle`，在 P3 / P4 的升层代码里
-调用。只撤掉 `fileFnClose` 的改动，这三处都失败。
+调用。只撤掉 `fileFnClose` 的改动，这四处都失败。
 
 ## 2026-11-27：`collectgarbage("setpause")` / `("setstepmul")` 返回设置之前的值（#345）
 
@@ -1111,9 +1111,11 @@ reviewer 另外列了三处修改前就过期、本分支没有碰的文字：`t
 `step` 没有改：仍然做一次完整回收并返回 `true`，官方返回的是这一步有没有结束一轮回收。这是登记过的差异（README「增量 GC」一行、
 `exemptions`），两处的文字从「只返回占位值」改成了现在的实际行为。
 
-测试：`test/difftest` 的 `cornerProbes` 加 8 条，直接与 `lua5.1` 比较（差分 fuzz 的 prelude 把 `collectgarbage` 换成了桩，看不到它）：
-返回旧值、不带值、各种数值转换、参数不是数字时的报错、其余选项仍返回 0，以及一条验证比例确实生效的（比例为 0 时只被弱表引用的对象在分配
-过程中被回收，比例为最大值时没有被回收）。`internal/gc` 的 `TestSetPauseDrivesTheThreshold` 直接断言阈值。`TestTiered_StdlibNames` 加一段
+测试：`test/difftest` 的 `cornerProbes` 加 10 条 `corner_gc_*`，直接与 `lua5.1` 比较（差分 fuzz 的 prelude 把 `collectgarbage` 换成了桩，
+看不到它）：返回旧值（两条）、不带值、各种数值转换、参数不是数字时的报错、选项和第二个参数都不合法时先报哪一个、设置的比例在回收之后
+仍然读得到、其余选项仍返回 0，一条验证比例确实生效的（比例为 0 时只被弱表引用的对象在分配过程中被回收，比例为最大值时没有被回收），
+以及一条在两边结果相同的中间取值上比较的。`TestDiff_GCPauseMeaning` 固定两边在比例含义上的不同。`internal/gc` 的 `TestSetPauseDrivesTheThreshold` 直接断言阈值，`TestCollect_CompactFollowsThePauseRatio` 断言回收之后保留的
+arena 大小跟着比例变。`TestTiered_StdlibNames` 加一段
 `collectgarbage_set_returns_previous`，在 P3 / P4 的升层代码里调用。
 
 ## 相关

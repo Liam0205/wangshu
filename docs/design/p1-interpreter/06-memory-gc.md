@@ -905,7 +905,7 @@ GC 主流程(§8.2)的两个终结相关步骤:
 | **根集合** | **R1..R9**(§5.1):全局表 / registry / 主线程 / 活跃 thread / running 线程的栈+CallInfo / Proto 常量+源名 GCRef / shadow stack / 临时根 | 漏一类即误回收;R5 自动可达,R7 显式登记 |
 | **STW 决策** | **P1 stop-the-world full GC**(§7.3),双白+三色+写屏障接口为 P3+ 增量预留(§4.3/§9.4) | 单 goroutine 解释器下 STW 天然无需停顿协调,正确性退化为单线程顺序逻辑 |
 | **string table 性质** | **弱可达索引**(§9.2):不延长串的生命期,串死时从索引摘除(Lua 5.1 `GCSsweepstring` 语义);**非强根、非 Lua 弱表** | 核对 Lua 5.1 `lgc.c`/`lstring.c` |
-| **GC pacing** | 分配量驱动,`threshold = live * 200%`(§8.3),P1 仅 full GC | 对齐 Lua `LUAI_GCPAUSE=200` |
+| **GC pacing** | 分配量驱动,`threshold = live * 200%`(§8.3),P1 仅 full GC | 默认值与 Lua `LUAI_GCPAUSE=200` 相同,含义差 100(§8.3:这里与新分配量比较,官方与总量比较) |
 | **写屏障** | P1 空实现占位(§9.4);不碰 Go `gcWriteBarrier`(`docs/design/roadmap.md` (§6) 非目标) | 我们自己的 arena 内逻辑屏障,增量 GC 才填充 |
 
 ---

@@ -108,7 +108,8 @@
 
 - **【未做，等维护者决定】GC 的 pause 比例与官方差 100 个百分点；池化复用时回收器的设置不恢复** — 望舒按上次回收以来新分配的字节数
   算阈值，官方按总字节数算，比例 `p` 大约相当于官方的 `p + 100`；`Options.GCPause` 和 `collectgarbage("setpause")` 是同一个量。
-  `ResetGlobalsToBaseline` 不恢复脚本改过的比例和 `stop` 状态。两件事的可选做法写在
+  `ResetGlobalsToBaseline` 不恢复脚本改过的比例和 `stop` 状态，也不恢复全局表的非字符串键（脚本 `rawset(_G, 2, x)` 之后，下一个
+  借用者不带参数的 `io.stdout.close()` 会按 `x` 检查）。两件事的可选做法写在
   [#353](https://github.com/Liam0205/wangshu/issues/353)；现状登记在 README 的差异表、`exemptions` 和
   [10 §4.6](../../docs/design/p1-interpreter/10-stdlib.md)。
 
