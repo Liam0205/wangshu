@@ -223,8 +223,8 @@ func TestDiff_NextFromCollectedStringKey(t *testing.T) {
 }
 
 // nextOnRemovedKeyAfterStores are calls of next on a removed key after further stores to the table.
-// Whether the removed key's node is still there differs from lua5.1 for two reasons, and in either
-// direction:
+// Whether the table still has a node for such a key is internal state, and it differs from lua5.1
+// in either direction. Three causes are known:
 //
 //   - the layout of the hash part: a new key whose main position is that node takes it over, and an
 //     insertion that finds no free node rehashes, which drops every removed key. wangshu's hash
@@ -232,7 +232,11 @@ func TestDiff_NextFromCollectedStringKey(t *testing.T) {
 //   - collections: lua5.1 turns the key of every removed node into a dead key at each collection,
 //     whether or not the key's object is alive. next still finds such a node, a store does not, so
 //     the same key stored again is inserted as a new key and can cause a rehash. wangshu puts a
-//     removed key back into its node however many collections ran in between (06 §8.4).
+//     removed key back into its node however many collections ran in between (06 §8.4);
+//   - stores that leave no value behind: lua5.1's luaH_set creates a node for a key before it
+//     knows that the value is nil or that __newindex will take the store, so such a store to an
+//     absent key leaves a removed key behind, uses up a free node and can cause a rehash. In
+//     wangshu it does not touch the table.
 //
 // The manual leaves the behaviour undefined once a traversal has assigned to a field that did not
 // exist; the cases are here so that a change in wangshu's answers is noticed. want is wangshu's
@@ -260,6 +264,23 @@ for i = 1, 8 do t[K[i]] = nil end
 collectgarbage()
 for i = 1, 5 do t[K[i]] = i end
 return (pcall(next, t, K[6]))`, "true", "false"},
+	// A nil stored to a key that was never there: lua5.1 has a node for it afterwards.
+	{"nil_stored_to_an_absent_key", `
+local t = {a = 1} t.x = nil
+local u = {a = 1} rawset(u, "y", nil)
+local w = setmetatable({}, {__newindex = function() end}) w.z = 5
+return (pcall(next, t, "x")), (pcall(next, u, "y")), (pcall(next, w, "z"))`,
+		"false\tfalse\tfalse", "true\ttrue\ttrue"},
+	// The three nil stores take lua5.1's free nodes and the last one rehashes, dropping "a".
+	{"nil_stores_to_absent_keys_after_a_removal", `
+local e = {} e.a = 1 e.b = 2 e.a = nil
+for i = 1, 3 do e["q" .. i] = nil end
+return (pcall(next, e, "a"))`, "true", "false"},
+	{"clearing_traversal_that_also_stores_nil_to_absent_keys", `
+local s = {} for i = 1, 8 do s["k" .. i] = i end
+local n = 0
+return pcall(function() for k in pairs(s) do s[k] = nil s["absent" .. k] = nil n = n + 1 end return n end)`,
+		"true\t8", "false\tinvalid key to 'next'"},
 }
 
 // TestDiff_NextOnRemovedKeyAfterStores pins both sides of nextOnRemovedKeyAfterStores. Unlike the

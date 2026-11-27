@@ -33,7 +33,9 @@
   布局应当与官方一致；实测 20 个字符串键、6 个非整数键、混合键三种表的顺序都不同。已经看到的实现差别有两处（rehash 取的哈希部分大小比
   官方多留一个空位；重新插入的顺序相反），各自贡献多少没有验证。差分 fuzz 用排序遍历，看不到。#338 之后布局还决定另一件事：
   删除一个键、又插入了别的键之后，`next(t, 已删除的键)` 报不报错（节点被接管或被 rehash 丢掉就报错），两边可能不同，两个方向都有；
-  `test/difftest` 的 `TestDiff_NextOnRemovedKeyAfterStores` 的前三段固定了这一点。见
+  `test/difftest` 的 `TestDiff_NextOnRemovedKeyAfterStores` 的前三段固定了这一点。同一个 issue 里还记着一处与 `ltable.c` 的不同：官方的
+  `luaH_set` 给「赋 nil 的不存在的键」和「被 `__newindex` 接走的赋值」也建节点（之后 `next` 认得这个键，建节点还可能引起 rehash），
+  望舒不建；同一个测试的后三段固定了它。见
   [#349](https://github.com/Liam0205/wangshu/issues/349)。
 
 - **【未修，产品缺陷】多值展开构造的表里有 nil 时，`#t` 和 `unpack(t)` 可能与官方不同** — 表构造式以多值展开结尾
