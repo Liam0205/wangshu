@@ -130,9 +130,9 @@ func (c *Collector) scanTable(t arena.GCRef) {
 			// sweep frees the object.
 			//
 			// A string is the exception and is marked: an equal string can be
-			// created again after this one is gone, and whether the new one
-			// finds this node or is inserted as a new key would then depend on
-			// when the collector ran. The cost is memory: the string of every
+			// created again after this one is gone, and a collection would
+			// then decide whether the new one finds this node or is inserted
+			// as a new key. The cost is memory: the string of every
 			// DEAD node lives until the table's next rehash, so a table that is
 			// cleared in place and then left alone keeps all the string keys it
 			// held (06 §8.4).

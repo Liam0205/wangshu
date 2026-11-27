@@ -195,9 +195,9 @@ func TestDiff_ClearWhileTraversing(t *testing.T) {
 }
 
 // nextFromCollectedStringKey removes a string key that nothing else refers to, collects, and then
-// hands next a string with the same contents. wangshu's answer does not depend on whether a
-// collection happened in between: a removed node keeps its string key alive, so the rebuilt string
-// finds the node (06 §8.4). lua5.1 lets the string die and marks the node's key dead, after which
+// hands next a string with the same contents. In wangshu a collection in between changes nothing
+// about the node: a removed node keeps its string key alive, so the rebuilt string finds it as long
+// as no later insertion has taken the node over or rehashed the table (06 §8.4). lua5.1 lets the string die and marks the node's key dead, after which
 // next matches that key by object address only: the call then fails unless the rebuilt string
 // happens to be allocated where the old one was. The difference is registered in exemptions
 // (corners_test.go).
@@ -224,7 +224,7 @@ func TestDiff_NextFromCollectedStringKey(t *testing.T) {
 
 // nextOnRemovedKeyAfterStores are calls of next on a removed key after further stores to the table.
 // Whether the table still has a node for such a key is internal state, and it differs from lua5.1
-// in either direction. Three causes are known:
+// in either direction. Four causes are known:
 //
 //   - the layout of the hash part: a new key whose main position is that node takes it over, and an
 //     insertion that finds no free node rehashes, which drops every removed key. wangshu's hash
@@ -236,7 +236,12 @@ func TestDiff_NextFromCollectedStringKey(t *testing.T) {
 //   - stores that leave no value behind: lua5.1's luaH_set creates a node for a key before it
 //     knows that the value is nil or that __newindex will take the store, so such a store to an
 //     absent key leaves a removed key behind, uses up a free node and can cause a rehash. In
-//     wangshu it does not touch the table.
+//     wangshu it does not touch the table;
+//   - keys that are objects: a table, function, userdata or thread used as a key is hashed by its
+//     address, in both implementations, and the addresses the two allocators hand out have nothing
+//     to do with each other. Which node such a key lands on, and so whether it takes a removed
+//     key's node over, also varies within one implementation with what was allocated and
+//     collected before (TestNextOnRemovedKey_ObjectKeysInsertedAfterwards).
 //
 // The manual leaves the behaviour undefined once a traversal has assigned to a field that did not
 // exist; the cases are here so that a change in wangshu's answers is noticed. want is wangshu's
@@ -301,5 +306,38 @@ func TestDiff_NextOnRemovedKeyAfterStores(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// nextAfterInsertingObjectKeys removes a string key from each of 40 tables, inserts two fresh
+// tables as keys and asks next for the removed key. A key that is an object is hashed by its
+// address, so whether one of the two lands on the removed key's node, or the insertion rehashes,
+// depends on where the allocator put them, and that depends on which collections ran before. The
+// result is a string of 40 marks, o where next accepted the removed key and x where it raised.
+const nextAfterInsertingObjectKeys = `
+local keep, out = {}, {}
+for j = 1, 40 do
+  local t = {}
+  for i = 1, 20 do t["s" .. i] = i end
+  t["del" .. j] = 1
+  t["del" .. j] = nil
+  for i = 1, 2 do local k = {} keep[#keep + 1] = k t[k] = i end
+  out[j] = pcall(next, t, "del" .. j) and "o" or "x"
+end
+return table.concat(out)`
+
+// TestNextOnRemovedKey_ObjectKeysInsertedAfterwards runs nextAfterInsertingObjectKeys with the
+// collector in its normal mode and collecting at every safepoint. The two results are allowed to
+// differ, and are logged: with object keys the layout of a table follows the addresses of the keys,
+// so the traversal order of such a table has always varied with the timing of collections, and
+// since a removed key keeps its node, so does the answer of next for that key. What is asserted is
+// that each run completes and that every call either succeeded or raised.
+func TestNextOnRemovedKey_ObjectKeysInsertedAfterwards(t *testing.T) {
+	for _, stress := range []bool{false, true} {
+		got := runClearCase(t, nextAfterInsertingObjectKeys, stress)
+		if len(got) != 40 || strings.Trim(got, "ox") != "" {
+			t.Errorf("collecting at every safepoint: %v: got %q, want 40 marks of o or x", stress, got)
+		}
+		t.Logf("collecting at every safepoint: %v: %s", stress, got)
 	}
 }
