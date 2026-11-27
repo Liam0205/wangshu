@@ -368,7 +368,7 @@ mark 的核心是「从一个对象出发,找出它引用的所有子 arena 对�
 | otype | 要扫的字段(承 [01](./01-value-object-model.md) §5 布局) | 说明 |
 |---|---|---|
 | **String** | **无** | 字符串是叶子,内容是字节,不引用任何对象。标黑即止 |
-| **Table** | ① array 段 `Value[asize]` 每槽(若 `IsCollectable`)② node 段每 Node 的 `key`、`val`(若 `IsCollectable`);已删除的节点(val 为 Nil,[01](./01-value-object-model.md) §5.2)只标记字符串键,其他可回收的键不标记,并把该表登记进 deadKeyList(§8.4)③ `metaRef`(若非 0)。**弱表例外**:先经 `WeakMode()` 判 `__mode`,弱侧不标记并登记 weakList(§8.4,承 07 §13) | array/node 是附属块(§1.3),由表头顺带遍历;遍历 node 全部 `nsize` 槽(含空槽,空槽 key/val 为 Nil 不可回收,跳过) |
+| **Table** | ① array 段 `Value[asize]` 每槽(若 `IsCollectable`)② node 段每 Node 的 `key`、`val`(若 `IsCollectable`);已删除的节点(val 为 Nil,[01](./01-value-object-model.md) §5.2)在强表里只标记字符串键,在弱表里什么键都不标记;有不标记的可回收键时把强表登记进 deadKeyList(§8.4)③ `metaRef`(若非 0)。**弱表例外**:先经 `WeakMode()` 判 `__mode`,弱侧不标记并登记 weakList(§8.4,承 07 §13) | array/node 是附属块(§1.3),由表头顺带遍历;遍历 node 全部 `nsize` 槽(含空槽,空槽 key/val 为 Nil 不可回收,跳过) |
 | **Closure(Lua)** | `upvalRef[nupvals]` 每个(指向 Upvalue 对象) | flags bit0=0;protoID 是整数 ID,**不扫** |
 | **Closure(Host)** | `upval[nupvals]` 每个(是 Value,若 `IsCollectable`) | flags bit0=1;hostFnID 是整数 ID,**不扫**;host upvalue 是直接 Value 非 Upvalue 对象 |
 | **Upvalue** | ① `value`(word2,关闭态存值;若 `IsCollectable`)② 开放态:标记所属线程栈槽 `thread.stack[idx]` 里的值(经 `Roots.OpenUpvalue`;槽在所属线程 top 之上时不标记) | 所属线程可能是没有引用的挂起协程，它的栈不会被扫，而共享这个 upvalue 的闭包还活着，所以在 upvalue 处标记(同 `lgc.c` `reallymarkobject`,#291);该协程回收前先关闭这些 upvalue,见 [08](./08-coroutines.md) §6.1 |
@@ -651,12 +651,17 @@ type Collector struct {
    保留键是为了让正停在这个条目上的遍历能继续：`for k, v in pairs(weak) do ... collectgarbage() end` 里，回收清掉了当前条目的值，
    下一步 `next(weak, k)` 仍然要能找到 `k`（官方 `cleartable` 的 `removeentry` 也只清值）。
 3. **已删除节点里的键（clearDeadKeys）**：脚本用 `t[k] = nil` 删除的键留在节点里（[01](./01-value-object-model.md) §5.2），但节点不该让键指向的
-   对象一直存活。mark 阶段遇到已删除的节点时不标记它的键（字符串除外），并把表登记进 `deadKeyList`；`clearDeadKeys` 在 sweep 之前遍历
+   对象一直存活。mark 阶段遇到已删除的节点时不标记它的键（强表里的字符串除外），并把表登记进 `deadKeyList`；`clearDeadKeys` 在 sweep 之前遍历
    这些表，把指向死白对象的键换成 `object.DeadKey` 并 `BumpGen`。弱表里已删除的节点由 `clearWeakTables` 用同样的办法处理。
    换成占位值而不是清成空闲节点，是因为空闲节点可以分给任何新键：那样一来新键落在哪个节点（也就是遍历顺序）会取决于回收发生的时机。
-   字符串键照常标记，原因是内容相同的字符串在原对象被回收之后还能重新创建，它应该找回原来的节点，而不是因为中间发生过一次回收就被当成
+   强表里的字符串键照常标记，原因是内容相同的字符串在原对象被回收之后还能重新创建，它应该找回原来的节点，而不是因为中间发生过一次回收就被当成
    新键插到别处。
-   这一点与官方不同，是有意保留的差异，有两面：
+   弱表不做这个例外，已删除节点里的字符串键和其他对象一样不标记。弱表的内容本来就随回收时机变化，上面的理由在它身上不成立；而它的已删除
+   节点大多不是脚本删出来的，是回收器清掉条目的值留下的（第 2 点），照常标记的话，字符串作键、对象作值的弱值缓存会把用过的每一个键都留到
+   下一次 rehash。条目被清掉的那一轮，键是作为有值条目的强键标记的，所以它至少活过这一轮；从下一轮起只看它有没有别的引用。实测 10 万个
+   约 105 字节的键、值全部死亡之后回收三次，剩 3084KB（官方 5401KB）。`TestWeak_DeletedStringKeyIsNotKept`、
+   `TestWeak_ClearedEntryDoesNotKeepItsStringKey` 和 `weak_valued_cache_releases_its_string_keys` 断言。
+   强表上的做法与官方不同，是有意保留的差异，有两面：
    - **`next` 的结果**：官方的 `removeentry` 不让已删除节点里的字符串键存活，回收之后 `next` 只按对象地址认这个键。所以 `t[k] = nil`、
      回收、再用重新拼出来的同内容字符串调用 `next(t, k)`，望舒从原位置继续；官方在新字符串没有正好分配到原对象的地址上时报
      `invalid key to 'next'`，分配到原地址上时成功（实测 216 种键长、键个数、回收次数的组合里成功 46 次、报错 170 次）。没有发生回收时
@@ -669,7 +674,8 @@ type Collector struct {
      这个代价要不要接受、换成哪种做法，记在 [#352](https://github.com/Liam0205/wangshu/issues/352)。
 
    登记在 `test/difftest/corners_test.go` 的 `exemptions` 和 README 的差异表里，`TestDiff_NextFromCollectedStringKey` 固定望舒一侧的结果
-   （官方一侧取决于分配器，只记录、不断言）。
+   （官方一侧取决于分配器，只记录、不断言）。弱表上两边都不让这样的键存活，剩下的差别只在官方按地址认已回收的键：重新拼出来的字符串
+   正好分配在原地址上时官方的 `next` 成功，望舒一律报错，`TestDiff_NextFromCollectedKeysOfWeakTables` 固定望舒一侧的结果。
    同一个原则还带来一处差异：官方的 `removeentry` 对**每个**已删除的节点都执行，键指向的对象还活着也一样，键被改成 `LUA_TDEADKEY`
    之后，同一个键再次写入时找不到原节点、按新键插入（可能引起 rehash，丢掉其他已删除的键）。望舒只替换对象已死的键，活着的键不管
    隔了几次回收都写回原节点。`TestDiff_NextOnRemovedKeyAfterStores` 的 `same_keys_stored_again_after_a_collection` 固定两边各自的结果。

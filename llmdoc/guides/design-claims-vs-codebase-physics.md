@@ -77,7 +77,7 @@ SETGLOBAL / SETTABLE NodeHit 和 P3 wasm 常量键 SETTABLE NodeHit 还会检查
 | P3 wasm GETGLOBAL / SETGLOBAL NodeHit | gen + slot != Nil | `wasm/translate_table.go` `emitGetGlobal` / `emitSetGlobal` |
 | P3 wasm 常量键 GETTABLE / SETTABLE / SELF NodeHit | IsTable + TableRef + gen + slot != Nil | `wasm/translate_table.go` `tableInlineable` → `emitTableGuard` + `emitSlotBase` |
 | 解释器 `icGetTable` / `icSetTable` | gen + NodeKey 复验 + slot != Nil | `crescent/ic.go`(不是 gen-only,gen 只是快速否决) |
-| P4 单条 GETTABLE / SELF 的模板(整个函数只有一条表访问) | gen + NodeKey + slot != Nil | `jit/amd64/pj4_template.go` `EmitGetTableNodeHit` 等,arm64 对应 `jit/arm64/pj4_template.go` |
+| P4 单条 GETTABLE / SELF 的模板(整个函数只有一条表访问) | gen + NodeKey + slot != Nil(数组部分的模板没有键,是 gen + slot != Nil) | `jit/amd64/pj4_template.go` `EmitGetTableNodeHit` / `EmitSelfNodeHit`,数组部分是 `EmitGetTableArrayHit` / `EmitSelfArrayHit`;arm64 对应 `jit/arm64/pj4_template.go` |
 | P4 单条 SETTABLE 的模板 | gen + NodeKey + slot != Nil(数组部分的模板没有键,是 gen + slot != Nil) | `EmitSetTableNodeHit` / `EmitSetTableArrayHit`(arm64 同)。不比对 TableRef,所以「slot != Nil」这一项挡住的不只是同一张表上的删除,还有 gen 相同、这个字段已经删除的另一张表;`TestTiered_SingleStoreTemplate` 断言。**前提是下标在这张表之内**:P4 单条表访问的模板(本行和上一行)都不检查下标是否超出这张表的数组部分或哈希部分,换一张 gen 相同但更小的表时读写的是表外的内存,这一列的守卫都不再有意义(存量缺陷 [#350](https://github.com/Liam0205/wangshu/issues/350)) |
 
 **判据**:约定成文那一刻就把 producer 列成表并逐条标「已 bump / 补 / 不需要(为什么)」,再写一个**直接
