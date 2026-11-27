@@ -198,8 +198,9 @@ func TestDiff_ClearWhileTraversing(t *testing.T) {
 // hands next a string with the same contents. wangshu's answer does not depend on whether a
 // collection happened in between: a removed node keeps its string key alive, so the rebuilt string
 // finds the node (06 §8.4). lua5.1 lets the string die and marks the node's key dead, after which
-// next only matches that key by object identity, so there the same call fails once a collection
-// has run. The difference is registered in exemptions (corners_test.go).
+// next matches that key by object address only: the call then fails unless the rebuilt string
+// happens to be allocated where the old one was. The difference is registered in exemptions
+// (corners_test.go).
 const nextFromCollectedStringKey = `
 local t = {}
 for i = 1, 5 do t["dyn" .. i] = i end
@@ -207,20 +208,59 @@ t["dyn" .. 3] = nil
 collectgarbage() collectgarbage()
 return (pcall(next, t, "dyn" .. 3))`
 
-// TestDiff_NextFromCollectedStringKey pins both sides of that difference: wangshu's result with the
-// collector in its normal mode and collecting at every safepoint, and lua5.1's, so that the
-// registration is revisited if either changes.
+// TestDiff_NextFromCollectedStringKey pins wangshu's side of that difference, with the collector in
+// its normal mode and collecting at every safepoint. lua5.1's result is logged and not asserted: it
+// depends on the C allocator.
 func TestDiff_NextFromCollectedStringKey(t *testing.T) {
-	const wantWangshu, wantOracle = "true", "false"
 	for _, stress := range []bool{false, true} {
-		if got := runClearCase(t, nextFromCollectedStringKey, stress); got != wantWangshu {
-			t.Errorf("wangshu (collecting at every safepoint: %v):\n  got:  %q\n  want: %q", stress, got, wantWangshu)
+		if got := runClearCase(t, nextFromCollectedStringKey, stress); got != "true" {
+			t.Errorf("wangshu (collecting at every safepoint: %v):\n  got:  %q\n  want: %q", stress, got, "true")
 		}
 	}
 	if oracle := findOracle(); oracle != "" {
-		got := strings.TrimSuffix(runOracle(t, oracle, wrapForOracle(nextFromCollectedStringKey)), "\n")
-		if got != wantOracle {
-			t.Errorf("lua5.1 no longer differs as recorded:\n  got:      %q\n  recorded: %q", got, wantOracle)
-		}
+		t.Logf("lua5.1 here: %s", strings.TrimSuffix(runOracle(t, oracle, wrapForOracle(nextFromCollectedStringKey)), "\n"))
+	}
+}
+
+// nextAfterInsertingOtherKeys are calls of next on a removed key after other keys have been
+// inserted. Whether the removed key's node is still there is decided by the layout of the hash
+// part: a new key whose main position is that node takes it over, and an insertion that finds no
+// free node rehashes. wangshu's hash part is not laid out like lua5.1's (#349), so the two disagree
+// on some of these in either direction. The manual leaves the behaviour undefined once a traversal
+// has assigned to a field that did not exist; the cases are here so that a change in wangshu's
+// answers is noticed. want is wangshu's result, oracle is lua5.1's.
+var nextAfterInsertingOtherKeys = []struct{ name, src, want, oracle string }{
+	// lua5.1's hash part has one node here and 1.5 takes it over; wangshu's has two.
+	{"one_key_removed_then_one_inserted", `
+local t = {} t.x1 = 1 t.x1 = nil t[1.5] = 1
+return (pcall(next, t, "x1"))`, "true", "false"},
+	{"one_of_three_removed_then_one_inserted", `
+local u = {} u.s1 = 1 u.s2 = 2 u.s3 = 3 u.s1 = nil u[1.5] = 1
+return (pcall(next, u, "s1"))`, "false", "true"},
+	{"clearing_traversal_that_also_inserts", `
+local w = {} w.x1 = 1
+local n = 0
+return pcall(function() for k in pairs(w) do w[k] = nil w[1.5] = 1 n = n + 1 end return n end)`,
+		"true\t1", "false\tinvalid key to 'next'"},
+}
+
+// TestDiff_NextAfterInsertingOtherKeys pins both sides of nextAfterInsertingOtherKeys. Unlike the
+// collected-string case, lua5.1's results here follow from its table layout alone, so they are
+// asserted: when #349 is settled these cases move into clearWhileTraversingCases.
+func TestDiff_NextAfterInsertingOtherKeys(t *testing.T) {
+	oracle := findOracle()
+	for _, c := range nextAfterInsertingOtherKeys {
+		t.Run(c.name, func(t *testing.T) {
+			for _, stress := range []bool{false, true} {
+				if got := runClearCase(t, c.src, stress); got != c.want {
+					t.Errorf("wangshu (collecting at every safepoint: %v):\n  got:  %q\n  want: %q", stress, got, c.want)
+				}
+			}
+			if oracle != "" {
+				if got := strings.TrimSuffix(runOracle(t, oracle, wrapForOracle(c.src)), "\n"); got != c.oracle {
+					t.Errorf("lua5.1 no longer answers as recorded:\n  got:      %q\n  recorded: %q", got, c.oracle)
+				}
+			}
+		})
 	}
 }
