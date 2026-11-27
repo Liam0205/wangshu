@@ -828,13 +828,15 @@ jobs:
 
 承 [./05-system-pipeline.md](./05-system-pipeline.md) §5 「arena base 在两个 safepoint 之间稳定」纪律:arena 搬迁(扩容)只发生在分配慢路径(出 JIT 世界);JIT 内联 bump 分配快路径越界即出去,回来从 context 重载 base。这是 [05](../p1-interpreter/05-interpreter-loop.md) §1.3「重载 stk」纪律在机器码层的同构。
 
-**JIT 持 arena base 跨 safepoint 的潜在 bug**:① arena base 缓存进 jitContext 寄存器(如 r15),JIT 内某操作触发 arena 扩容(helper 内分配),返回后 r15 仍是旧 base 再 load/store 是 UAF;② back edge 检查点 + GC 触发,gcPending 被设但 r15 未刷新,GC 后续读 r15 看到旧 arena 是脏读;③ trampoline 出 JIT 调 helper 期间 arena 可能 grow,trampoline 回来未从 jitContext 重载 r15。
+**JIT 持 arena base 跨 safepoint 的潜在 bug**:① arena base 缓存进 jitContext 寄存器(如 r15),JIT 内某操作触发 arena 扩容(helper 内分配),返回后 r15 仍是旧 base 再 load/store 是 UAF;② back edge 检查点 + GC 触发,gcPending 被设但 r15 未刷新,GC 后续读 r15 看到旧 arena 是脏读(设计期的设想;实现里 P4 的回跳检查 `LoopPreempt` 只查步数预算和取消、不回收,[P1 06 §6.3](../p1-interpreter/06-memory-gc.md),这一种不会出现);③ trampoline 出 JIT 调 helper 期间 arena 可能 grow,trampoline 回来未从 jitContext 重载 r15。
 
 **P4 GC 压力 fuzz 必须验**:强制 arena 频繁扩容(SetArenaCap 设小值 + 高频分配脚本)+ 高频 GC(压力模式 `SetGCStressMode`)+ force-all-jit;期望每次 JIT 帧返回后 arena base 重载,无 UAF,正常 pacing 与压力下输出 byte-equal。
 
 ### 7.3 专打「back edge 检查点漏布」(05 §6)
 
 承 [./05-system-pipeline.md](./05-system-pipeline.md) §1.2 「异步抢占」纪律:生成码在循环 back edge 插抢占检查点,load `jitContext.preemptFlag`,置位则经 exit stub 退到边界(GC safepoint / 调度让出共用此点);直线段长度有界 ⇒ 不可抢占窗口有界。
+
+实现现状:P4 的回跳检查(`LoopPreempt`)只检查步数预算和取消,不是 GC 安全点([P1 06 §6.3](../p1-interpreter/06-memory-gc.md));循环体里的回收发生在分配类助手末尾和 host function 返回之后。下面 ② 说的「抢占退出后 GC 扫到陈旧栈槽」是设计期把两者放在同一点时的情况。
 
 **back edge 检查点漏布的 bug**:① 某循环模板未在 back edge 发射 `cmp [jitContext + preemptFlagOff], 0; jne preempt_exit`——长循环 JIT 帧不响应抢占,Go 调度器无法切换 goroutine,严重时整个进程卡死;② 检查点发射了但 preempt_exit stub 内未先物化栈槽——抢占退出后 GC 扫到陈旧栈槽 → 误回收。
 

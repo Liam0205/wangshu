@@ -610,7 +610,7 @@ func (c *Collector) MaybeCollect() {
 
 ```
 updatePacing():
-  live := bump - freeBytesAfterSweep   // 本轮 sweep 后的存活字节(近似:bump 减去 freelist 总空闲)
+  live := liveBytesAfterSweep          // 本轮 sweep 累加出来的存活字节(精确值,见下面「存活量估计」)
   threshold = live * GCPAUSE / 100     // 与「上次回收以来新分配的字节数」比较;GCPAUSE 默认 200 ⇒ 再分配 2*live 字节时 GC
 ```
 
