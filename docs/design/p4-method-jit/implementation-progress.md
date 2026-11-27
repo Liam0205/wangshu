@@ -2863,7 +2863,7 @@ P1 成功、P4 抬 `SETLIST: not a table`。**根因不在 JIT 里**,而在共�
   pc 4194303 之后的函数（`maxNativePC`），`TestAnalyzeNative_PCLimit` 固定这个上限，两个后端都执行过。
 - **同一个文件里其余的 `retPC - 1`**逐个核对过：方法调用和尾调用两种形式里 `retPC` 就是 CALL / TAILCALL 的下一条，不带多结果；
   FORLOOP、单条表访问、比较折叠各自的注释里写明了位置的算法，没有问题。
-- **验证**：`test/difftest/tiered_error_names_test.go` 的 `TestTiered_ErrorNames`，十二种出错写法，内核都写成多行并保留行号比较，解释器、
+- **验证**：`test/difftest/tiered_error_names_test.go` 的 `TestTiered_ErrorNames`，十二种出错写法，内核都写成多行并保留行号比较（报错文本里的行号，以及 `debug.traceback` 给内核那一帧的行号），解释器、
   强制升层、调低升层阈值三种方式互相比较并与 `lua5.1` 比较（第三种不要求进入升层代码），并且逐段断言强制升层有没有进入升层代码：调用类五段在所有构建上都进入；
   索引类和全局变量类七段在 P3 和 amd64 的 P4 上进入，在 arm64 的 P4 上不升层（`errorNameIndexKernelsRunCompiled`，按构建分两个文件），
   三种方式的结果仍然相同。arm64 上用 `qemu-aarch64` 执行过。
