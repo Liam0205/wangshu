@@ -951,7 +951,7 @@ func myHostFn(ctx *wangshu.HostCtx) int {
 - **公共 Value 对 table/function 的往返**(§4.4 / §4.5):P1 不支持 table/function 作 args/results 直接往返(列内核以标量+string 往返)。「深拷成 Go map/slice」或「不透明 handle」的精确设计待真实宿主需求驱动。
 - **回填 [01](./01-value-object-model.md) §5.7**(§1.3):Proto 字符串常量的 intern 归属在并发下细化为「Program 持字节原文 + 每 State 私有常量 GCRef 缓存(惰性 intern)」。需 [01](./01-value-object-model.md) §5.7 / §9 确认该并发语义(原文只说「常量是 arena GCRef」,未涉及多 State 共享 Program 的情形)。
 - **变长列(列间不等长)**(§3.1):P1 要求 arena 内所有列等长 = nrows。不等长列(稀疏/嵌套)P1 不支持,真实列内核负载是规整表,等长足够;若未来需要记缺口。
-- **Options 默认值定标**:`MaxCallDepth`/`MaxCCalls`/`GCPause`/初始 arena 等默认值(§1.2)需与 [05](./05-interpreter-loop.md) §7.4 / [06](./06-memory-gc.md) §8.3 的对应常量对齐,**待差分核对**(本文给的默认值是建议,以 05/06 定稿为准)。
+- **Options 里不读的三个字段**:`MaxCallDepth`/`MaxCCalls`/`GCPause` 存在但 `NewState` 不读(§1.2),生效的是 [05](./05-interpreter-loop.md) §7.4 的两个常量和 [06](./06-memory-gc.md) §8.3 的默认比例。要不要接上、接上之后取值怎么与这些常量对齐,见 [#356](https://github.com/Liam0205/wangshu/issues/356)。
 
 ---
 
