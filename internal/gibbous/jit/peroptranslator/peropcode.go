@@ -79,7 +79,7 @@ type PerOpCode struct {
 	// to host.DoReturn without re-parsing the Proto.
 	retA  uint8
 	retB  uint8
-	retPC uint8
+	retPC uint16
 
 	// Tail-call shape (`function() return f() end` etc.): when true, the
 	// final side effect is a sideEffectTailCall whose return code
@@ -104,7 +104,7 @@ type PerOpCode struct {
 	// case — the field name misleadingly implies FORLOOP-only.
 	forLoopValid bool
 	forLoopA     uint8
-	forLoopPC    uint8
+	forLoopPC    uint16
 	forLoopAfter int
 	bodyEffects  []sideEffect
 
@@ -113,7 +113,7 @@ type PerOpCode struct {
 	tforLoopValid bool
 	tforLoopA     uint8
 	tforLoopC     uint8
-	tforLoopPC    uint8
+	tforLoopPC    uint16
 }
 
 // Proto returns the source Proto.

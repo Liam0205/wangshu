@@ -69,7 +69,7 @@ type shapeInfo struct {
 	startA      uint8        // R(startA) is the first slot written
 	retA        uint8        // RETURN A — matches startA in the typical shape
 	retB        uint8        // RETURN B — len(sources)+1 (or 1 for the setter form, 0 for multret tail call)
-	retPC       uint8        // RETURN's pc index in proto.Code
+	retPC       uint16       // RETURN's pc index in proto.Code
 
 	// tail-call form: TAILCALL + RETURN A B=0 (to-top). At Run time the
 	// final side effect must be a sideEffectTailCall whose status code
@@ -80,7 +80,7 @@ type shapeInfo struct {
 	isTailCall bool
 	tailCallA  uint8
 	tailCallB  uint8
-	tailCallPC uint8
+	tailCallPC uint16
 
 	// FORLOOP block: at most one numeric for-loop is recognized per
 	// Proto today. When forLoopValid is true, sideEffects contains only
@@ -88,17 +88,22 @@ type shapeInfo struct {
 	// run once per iteration.
 	forLoopValid bool
 	forLoopA     uint8        // R(forLoopA..+2) holds init/limit/step
-	forLoopPC    uint8        // pc of the FORPREP instruction (for error pc anchoring)
+	forLoopPC    uint16       // pc of the FORPREP instruction (for error pc anchoring)
 	forLoopAfter int          // index into sideEffects after which the FORLOOP block runs (0-based)
 	bodyEffects  []sideEffect // side effects executed once per iteration
 
 	// TFORLOOP block (generic for): at most one per Proto. Mutually
 	// exclusive with the numeric FORLOOP block.
 	tforLoopValid bool
-	tforLoopA     uint8 // R(A..A+2) holds iterator/state/control
-	tforLoopC     uint8 // result count (R(A+3..A+2+C))
-	tforLoopPC    uint8 // pc of the TFORLOOP instruction
+	tforLoopA     uint8  // R(A..A+2) holds iterator/state/control
+	tforLoopC     uint8  // result count (R(A+3..A+2+C))
+	tforLoopPC    uint16 // pc of the TFORLOOP instruction
 }
+
+// maxShapePC is the highest pc AnalyzeShape accepts for the RETURN. Every pc it records is below
+// the RETURN's and is stored in 16 bits (shapeInfo, slotSource, sideEffect, the packed imm of
+// sideEffectArith), so a Proto whose RETURN lies beyond it is not replayed.
+const maxShapePC = 1<<16 - 1
 
 // sideEffect describes a pre-return op that has no associated return slot.
 // Today the supported kinds are SETUPVAL (U(b) := R(a)), LOADNIL (fill
@@ -159,7 +164,7 @@ type slotSource struct {
 	arithOp uint8  // bytecode opcode value (ADD/SUB/MUL/DIV/MOD/POW); for slotKindAndOr: else-arm kind tag (0=reg, 1=const)
 	arithB  uint16 // RK-encoded operand 1 (0-511; >=256 means K(B-256)); for slotKindAndOr: else-arm reg (if otherKind==reg)
 	arithC  uint16 // RK-encoded operand 2
-	arithPC uint8  // pc index of the arithmetic instruction (for error reporting)
+	arithPC uint16 // pc of the instruction this slot replays (the host helpers take the IC slot, the name of a faulting operand and the error's line from it)
 }
 
 // slotKind discriminates how the source value is obtained.
@@ -215,7 +220,7 @@ func AnalyzeShape(proto *bytecode.Proto) shapeInfo {
 			break
 		}
 	}
-	if retPC < 1 {
+	if retPC < 1 || retPC > maxShapePC {
 		return shapeInfo{}
 	}
 	retIns := proto.Code[retPC]
@@ -683,7 +688,7 @@ func AnalyzeShape(proto *bytecode.Proto) shapeInfo {
 		sources[slotIdx] = slotSource{
 			kind:    slotKindReg,
 			reg:     uint8(retA + slotIdx),
-			arithPC: uint8(pc),
+			arithPC: uint16(pc),
 		}
 		return true
 	}
@@ -781,7 +786,7 @@ func AnalyzeShape(proto *bytecode.Proto) shapeInfo {
 					arithB:  uint16(cmpB),
 					arithC:  uint16(cmpC),
 					reg:     uint8(cmpA), // negate bit
-					arithPC: uint8(pc),
+					arithPC: uint16(pc),
 				}
 				_ = dst
 				continue
@@ -796,7 +801,7 @@ func AnalyzeShape(proto *bytecode.Proto) shapeInfo {
 					kind:    slotKindAndOr,
 					reg:     ao.testB,
 					upval:   ao.testC,
-					arithPC: uint8(pc),
+					arithPC: uint16(pc),
 				}
 				// Pack the else-arm source.
 				switch ao.other.kind {
@@ -846,7 +851,7 @@ func AnalyzeShape(proto *bytecode.Proto) shapeInfo {
 				sources[idx] = slotSource{
 					kind:    slotKindReg,
 					reg:     uint8(a),
-					arithPC: uint8(pc),
+					arithPC: uint16(pc),
 				}
 			}
 			continue
@@ -878,7 +883,7 @@ func AnalyzeShape(proto *bytecode.Proto) shapeInfo {
 						sources[idx] = slotSource{
 							kind:    slotKindReg,
 							reg:     uint8(reg),
-							arithPC: uint8(pc),
+							arithPC: uint16(pc),
 						}
 					}
 				}
@@ -912,7 +917,7 @@ func AnalyzeShape(proto *bytecode.Proto) shapeInfo {
 					sources[idx] = slotSource{
 						kind:    slotKindReg,
 						reg:     uint8(r),
-						arithPC: uint8(pc),
+						arithPC: uint16(pc),
 					}
 				}
 			}
@@ -952,7 +957,7 @@ func AnalyzeShape(proto *bytecode.Proto) shapeInfo {
 						sources[idx] = slotSource{
 							kind:    slotKindReg,
 							reg:     uint8(r),
-							arithPC: uint8(pc),
+							arithPC: uint16(pc),
 						}
 						if scratchA < 0 {
 							scratchA = int(r)
@@ -963,7 +968,7 @@ func AnalyzeShape(proto *bytecode.Proto) shapeInfo {
 					sources[idx] = slotSource{
 						kind:    slotKindConst,
 						imm:     uint64(value.Nil),
-						arithPC: uint8(pc),
+						arithPC: uint16(pc),
 					}
 					continue
 				}
@@ -998,7 +1003,7 @@ func AnalyzeShape(proto *bytecode.Proto) shapeInfo {
 			if !ok {
 				return shapeInfo{}
 			}
-			src.arithPC = uint8(pc)
+			src.arithPC = uint16(pc)
 			sources[slotIdx] = src
 			continue
 		}
@@ -1024,7 +1029,7 @@ func AnalyzeShape(proto *bytecode.Proto) shapeInfo {
 				sources[slot] = slotSource{
 					kind:    slotKindReg,
 					reg:     uint8(retA + slot),
-					arithPC: uint8(pc),
+					arithPC: uint16(pc),
 				}
 			}
 		}
@@ -1036,7 +1041,7 @@ func AnalyzeShape(proto *bytecode.Proto) shapeInfo {
 				sources[slot] = slotSource{
 					kind:    slotKindReg,
 					reg:     uint8(retA + slot),
-					arithPC: uint8(pc),
+					arithPC: uint16(pc),
 				}
 			}
 		}
@@ -1049,16 +1054,16 @@ func AnalyzeShape(proto *bytecode.Proto) shapeInfo {
 		startA:      uint8(retA),
 		retA:        uint8(retA),
 		retB:        uint8(retB),
-		retPC:       uint8(retPC),
+		retPC:       uint16(retPC),
 		isTailCall:  isTailCall,
 		tailCallA:   tailCallA,
 		tailCallB:   tailCallB,
-		tailCallPC:  uint8(retPC - 1),
+		tailCallPC:  uint16(retPC - 1),
 	}
 	if loop != nil {
 		info.forLoopValid = true
 		info.forLoopA = loop.forLoopA
-		info.forLoopPC = uint8(loop.forPrepPC)
+		info.forLoopPC = uint16(loop.forPrepPC)
 		info.forLoopAfter = forLoopAfter
 		info.bodyEffects = bodyEffects
 	}
@@ -1066,7 +1071,7 @@ func AnalyzeShape(proto *bytecode.Proto) shapeInfo {
 		info.tforLoopValid = true
 		info.tforLoopA = tloop.a
 		info.tforLoopC = tloop.c
-		info.tforLoopPC = uint8(tloop.tloopPC)
+		info.tforLoopPC = uint16(tloop.tloopPC)
 		info.forLoopAfter = tforLoopAfter
 		info.bodyEffects = bodyEffects
 	}
