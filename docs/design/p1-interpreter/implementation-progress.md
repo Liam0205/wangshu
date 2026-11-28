@@ -1321,6 +1321,9 @@ arena 大小跟着比例变。`TestTiered_StdlibNames` 加一段
   `internal/crescent` 的 `TestGrowArray_SlotsAreKeptUntilTheNextRehash` 直接看数组部分的大小：写入字符串键而没有 rehash 时保持 1000，
   rehash 之后是 0；只写了 1..10 和 600 时 rehash 之后是 16；先填满 1..1000 再写 40 个字符串键，数组部分不小于 1000。`test/api` 的 `TestPreallocate_OtherKeysBeforeTheFill` 检查的是另一件事：
   预留和填充之间写入 0、5、6、40 个别的键，表最后的内容都正确。
+- **`Len` 在带空洞的表上可能换一个边界**：整数键有空洞的表有不止一个边界，`#` 返回哪一个取决于键在数组部分还是哈希部分。键搬进数组部分之后，
+  `Len` 可能从一个边界变成另一个：只有键 2、3 的表，`Preallocate(4)` 之前 `Len` 是 0，之后是 3，两个都是合法的边界。godoc 写了这一点，
+  `TestPreallocate_LenIsABorderBeforeAndAfter` 对四组带空洞的键断言扩大前后 `Len` 都是边界。
 - **分配失败**：新数组是唯一的一次分配，而且在改动表之前。arena 放不下时 panic（`Program.Run` 会把它转成 error，State 之后还能用），表保持原样。
 - **验证**：
   - `internal/crescent` 的 `TestGrowArray_MovesHashIntegerKeys`（整数键搬进数组部分，字符串键和非整数键留在哈希部分，哈希部分的块没有换，遍历正好 5 个条目，
