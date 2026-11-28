@@ -188,6 +188,12 @@ func (st *State) NewStringArrayTable(vals []string) Value {
 // data is preserved, and an integer key in 1..n that was in the hash segment
 // moves into the array segment.
 //
+// Calling it on a table that is being traversed (from a ForEach callback, or
+// from a host function a script calls inside a pairs loop) is safe: when no
+// integer key has to move the traversal is not affected at all, and when one
+// has to, the traversal may miss or repeat entries but still ends. A request
+// the arena has no room for panics before the table is changed.
+//
 //	tv := st.NewTable()
 //	tv.AsTable().Preallocate(1000)
 //	for i := 1; i <= 1000; i++ {
@@ -295,6 +301,8 @@ func (t *Table) Len() int {
 //
 // fn may assign nil to the entry it is given (the iteration continues from it, as
 // with next in Lua); adding new keys to the table from fn is undefined, as in Lua.
+// fn may call Preallocate on the table; see there for what the iteration then
+// returns.
 //
 // Errors: table already Released / internal RawNext error (rare: table structure
 // mutated mid-iteration) returns a Go error; otherwise returns nil.

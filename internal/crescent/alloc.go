@@ -51,13 +51,13 @@ func (st *State) safepoint(_ *thread, _ *callInfo) {
 // PreallocateArray grows table t's array segment to n slots (issue #10
 // direction 2). Grow only, never shrink; the old array segment's contents are
 // kept, and an integer key in 1..n that was in the hash segment moves into the
-// array segment (resizeArray). BumpGen (IC invalidation).
+// array segment (growArray). BumpGen (IC invalidation).
 //
 // Typical use: NewTable + PreallocateArray(t, n) + SetIndex(1..n) to sidestep
 // repeated rehash storms — every SetIndex(1..n) lands in the array segment
 // O(1), and the whole build is a net O(n).
 func (st *State) PreallocateArray(t arena.GCRef, n uint32) {
-	st.resizeArray(t, n)
+	st.growArray(t, n)
 }
 
 // NewArrayTableFromVals builds a table with the array segment preallocated to

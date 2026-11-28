@@ -7,9 +7,9 @@
 //   - rehash: array and hash sizes are recomputed following Lua 5.1's
 //     luaH_resize approach (load factor > 50%); rehash and array<->hash
 //     migration call BumpGen (IC invalidation, 05 §6.5);
-//   - resizeArray: grows the array part to a given size and rebuilds the
-//     hash part at its current size, moving integer keys that now fall
-//     inside the array part (5.1's luaH_resizearray; Table.Preallocate);
+//   - growArray: grows the array part to a given size and moves into it the
+//     integer keys of the hash part that it now covers; their nodes become
+//     DEAD and the hash part is otherwise left alone (Table.Preallocate);
 //   - node states: a hash node is FREE (key Nil, val Nil, no chain link),
 //     LIVE (key and val both non-Nil) or DEAD (key non-Nil, val Nil).
 //     Deleting a key makes its node DEAD and leaves the key in place, as
@@ -18,13 +18,15 @@
 //     its chain link and is not available to findFreeNode. It ends in one of
 //     three ways: the same key is stored again (LIVE again, in the same
 //     node); a new key whose main position it is takes the node over; or a
-//     rehash drops it. A DEAD node does not keep its key's object alive,
+//     rehash drops it (the node of a key that growArray moved only ends in
+//     the latter two: the key is stored in the array part from then on). A
+//     DEAD node does not keep its key's object alive,
 //     with one exception, a string that a store of nil left behind (not one
 //     in an entry the collector cleared): once the object is dead the
 //     collector replaces the key with object.DeadKey, which no lookup
 //     matches, and the node stays DEAD (internal/gc);
 //   - gen contract: BumpGen on every path that takes a LIVE node's value
-//     away or changes which key a node holds: rehash, resizeArray, Brent
+//     away or changes which key a node holds: rehash, growArray, Brent
 //     relocation and the takeover of a DEAD node in insertNewKey, key
 //     deletion in rawSet,
 //     and the collector clearing weak entries of the hash part and
@@ -445,68 +447,52 @@ func (st *State) rehash(t arena.GCRef, extraKey value.Value) {
 	}
 }
 
-// resizeArray grows the array part to nasize slots, as 5.1's luaH_resizearray
-// does: the old slots are kept, the hash part is rebuilt at its
-// current size, and every hash entry is inserted again, so an integer key that
-// now falls inside the array part moves there. Without that move the key would
-// stay in the hash part where no lookup reaches it any more, while next would
-// still return it and, continuing from it, go back into the array part and
-// come round to it again: a traversal that never ends.
+// growArray grows the array part to nasize slots and moves into it the integer
+// keys of the hash part that the array part now covers. Left in the hash part
+// such a key could not be read any more (a lookup of 1..asize only looks at the
+// array part), while next would still return it and, continuing from it, go
+// back into the array part and come round to it again: a traversal that never
+// ends.
 //
-// Grow only: nasize at or below the current size is a no-op. BumpGen (keys
-// change slots).
-func (st *State) resizeArray(t arena.GCRef, nasize uint32) {
+// The hash part stays where it is. The node of a moved key keeps the key and
+// loses its value, like the node of a removed key (DEAD), so every other key
+// stays in its node and a traversal standing on one of them goes on from there.
+// When no key has to move, growing the array part does not disturb a traversal
+// at all. When one does, the traversal can miss a moved entry it had not
+// reached, or meet the hash entries a second time if it stood on a moved key;
+// it still ends.
+//
+// The new array block is the only allocation and comes before any change to the
+// table. Grow only: nasize at or below the current size is a no-op. BumpGen
+// (the array block changes, and a moved key's node loses its value).
+func (st *State) growArray(t arena.GCRef, nasize uint32) {
 	asize := object.TableASize(st.arena, t)
 	if nasize <= asize {
 		return
 	}
-	// 1) Live hash entries, last node first: the order resize() in ltable.c
-	//    inserts them again.
-	type kv struct{ k, v value.Value }
-	var entries []kv
-	hsize := object.TableHSize(st.arena, t)
-	for i := hsize; i > 0; i-- {
-		k := object.NodeKey(st.arena, t, i-1)
-		v := object.NodeVal(st.arena, t, i-1)
-		if k != value.Nil && v != value.Nil {
-			entries = append(entries, kv{k, v})
-		}
-	}
-	// 2) The old array contents (read into Go memory first: no view into the
-	//    arena is held across the allocations below).
-	old := make([]value.Value, asize)
-	for i := uint32(0); i < asize; i++ {
-		old[i] = object.TableArrayAt(st.arena, t, i)
-	}
-	oldArr := object.TableArrayRef(st.arena, t)
-	oldNode := object.TableNodeRef(st.arena, t)
-	// 3) New parts; the old ones go back to the freelist (attached blocks are
-	//    owned by the head object alone).
 	newArr := object.AllocTableArray(st.arena, nasize)
 	st.gc.AllocCharge(nasize * 8)
-	object.SetTableArray(st.arena, t, newArr, nasize)
-	for i, v := range old {
-		if v != value.Nil {
-			object.SetTableArrayAt(st.arena, t, uint32(i), v)
+	oldArr := object.TableArrayRef(st.arena, t)
+	for i := uint32(0); i < asize; i++ {
+		if v := object.TableArrayAt(st.arena, t, i); v != value.Nil {
+			st.arena.SetWordAt(newArr+arena.GCRef(i*8), uint64(v))
 		}
 	}
-	if hsize > 0 {
-		newNode := object.AllocTableNode(st.arena, hsize)
-		st.gc.AllocCharge(hsize * 3 * 8)
-		object.SetTableNode(st.arena, t, newNode, hsize)
-		object.SetTableLastFree(st.arena, t, hsize)
+	object.SetTableArray(st.arena, t, newArr, nasize)
+	hsize := object.TableHSize(st.arena, t)
+	for i := uint32(0); i < hsize; i++ {
+		v := object.NodeVal(st.arena, t, i)
+		if v == value.Nil {
+			continue
+		}
+		if idx, ok := arrayIndex(object.NodeKey(st.arena, t, i), nasize); ok {
+			object.SetTableArrayAt(st.arena, t, idx, v)
+			st.nodeSetVal(t, i, value.Nil)
+		}
 	}
 	object.BumpGen(st.arena, t)
 	if !oldArr.IsNull() {
 		st.arena.Free(oldArr, asize*8)
-	}
-	if hsize > 0 && !oldNode.IsNull() {
-		st.arena.Free(oldNode, hsize*3*8)
-	}
-	// 4) Insert the hash entries again. They fit: there are at most as many as
-	//    before, in a hash part of the same size with every node free.
-	for _, e := range entries {
-		_ = st.rawSet(t, e.k, e.v)
 	}
 }
 
