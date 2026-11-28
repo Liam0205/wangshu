@@ -496,6 +496,10 @@ func (vm *VM) doGetTable(f *frame, i Instruction) *LuaError {
 
 - **命中 = 一次身份比对 + 一次代次比对 + 一次数组/节点索引**,完全跳过哈希计算与冲突链遍历。这是相对 gopher-lua「每次都 hash」的核心加速(roadmap §4「全局/表访问 inline cache」)。
 - **未命中 = 完整查找 + 把命中位置写回 slot**,下次同表同形状即命中。
+- **实现在身份和代次之外还校验键和下标**（`internal/crescent/ic.go` 的 `icGetTable` / `icSetTable`）：数组部分由键算出下标，与表当前的 `asize` 比较之后再与缓存的下标比对；
+  哈希部分先确认缓存的下标在拿到的这张表之内（`object.NodeIfInside`：`index <= hmask`，而且表有节点块），再比对节点里的键。
+  「同表」比的是地址，地址相同、代次相同不足以认定是同一张表：缓存的那张表被回收之后，新表可以分配在同一个地址上，代次也从同一个初值开始，
+  哈希部分却更小，缓存的下标从它的节点块往后数会落进别的表的节点里（[#364](https://github.com/Liam0205/wangshu/issues/364)）。
 - **polymorphic 处理(P1 简化)**:P1 用 **mono IC**——只缓存最近一次命中的表。若下次换了一张表(`tableRef` 不同),直接当 miss 重填(不升级成 N 路缓存)。频繁换表的访问点会退化成「每次慢查找 + 重填」≈ 无 IC,但**正确性不受影响**,且这种点本就不该有 IC 收益。`kind=4 megamorphic` 预留给 P2 标记「此点多态、别再投机」(供编译层用,P1 可不实现降级,见 §6.4)。
 
 ### 6.4 各 IC 指令的差异
