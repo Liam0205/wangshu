@@ -1259,6 +1259,28 @@ arena 大小跟着比例变。`TestTiered_StdlibNames` 加一段
 
 过程记录见 [#338 复盘](../../../llmdoc/memory/reflections/2026-11-27-issue338-deleted-key-stays-in-node.md)。
 
+## 2026-11-28：内联缓存命中哈希部分之前确认下标在表内（#364）
+
+- **现象**（默认构建，纯解释器）：一个函数在表 A 上读写过某个字段之后，A 被回收，新建的表 B 没有这个字段、表 C 有。对 B 读这个字段读出了 C 的值，
+  对 B 赋值改掉的是 C 的字段，B 自己没有变。`A = {a1 = 1, a2 = 2}`、`B = {b1 = 1}`、`C = {a2 = "other table"}` 就能复现，A 有 7 个字段时同样出现。
+- **原因**：`icGetTable` / `icSetTable` 命中哈希部分时，用「地址等于缓存的 `TableRef`、gen 等于缓存的 gen」认定是原来那张表，再按缓存的节点下标取键比对，
+  不看下标是否在这张表之内。B 分配在 A 原来的地址上，gen 也从同一个初值开始，但哈希部分只有 1 个节点；缓存的下标从 B 的节点块往后数，
+  落在紧跟其后的 C 的节点块里，那里放着同一个键，键比对通过。数组部分没有这个问题，下标取自键并与表当前的 `asize` 比较。
+  P3 的内联路径有同一个根因的问题（[#362](https://github.com/Liam0205/wangshu/issues/362)，[P3 implementation-progress §15](../p3-wasm-tier/implementation-progress.md)），
+  P4 的两条内联路径都检查下标（[P4 implementation-progress §30](../p4-method-jit/implementation-progress.md)）。
+- **修法**：`internal/object/table.go` 新增 `NodeIfInside`，下标在表内（`index <= hmask`，而且表有节点块；没有哈希部分的表 `hmask` 也是 0）时返回节点的键和值，
+  否则返回不在表内。`ic.go` 的两处哈希命中改用它，不在表内就当未命中，走完整查找并重填缓存。
+- **验证**：
+  - `internal/object` 的 `TestNodeIfInside`：4 个节点的表（后面紧跟另一张表的节点块）、没有哈希部分的表、只有 1 个节点的表，各自的界内和界外下标。
+  - `internal/crescent` 的 `TestIC_NodeHitOnATableAtAReusedAddress`：A 的字段数 2 到 8、B 的 0 到 4、C 另外的 0 到 4，每一种都执行读和写并检查三个结果；
+    同时用内部接口检查「缓存指着 B 的地址和 gen、下标在 B 之外、不看大小的读取在那里找到这个键」这个布局有没有出现，一种都没有出现时测试失败。
+    现在有 2 种大小出现这个布局，去掉修复时这 2 种的读、写和 C 的值都错。
+  - `test/difftest` 的 `TestDiff_FieldOfATableAtAReusedAddress`：公开 API 上同样的脚本，336 种大小和读写的组合，出现布局的几种另外与 `lua5.1` 比较；去掉修复有 4 个失败。
+  - 变异 5 种（`NodeIfInside` 去掉节点块的检查、去掉 `hmask` 的检查、放宽一格；`icGetTable`、`icSetTable` 各自改回不检查）：每一种至少有一个测试失败，
+    去掉节点块检查的那一种只有 `TestNodeIfInside` 能发现。
+  - 耗时：只有字段读写的循环（2000 万轮，每轮两次读、一次写），五次里最短的一次，修改前 1.27 到 1.30 秒，修改后 1.21 秒。修改后键和值在一次调用里取出，
+    读表头的次数与原来相同。
+
 ## 相关
 
 [00-overview](./00-overview.md) · [../engineering](../engineering.md) ·

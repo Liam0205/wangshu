@@ -698,7 +698,8 @@ end
 - **现象**：P3 把 GETTABLE / SETTABLE / SELF 编译成内联代码时，用「是表、地址等于固化的 `TableRef`、gen 等于固化的 gen」判断拿到的就是解释器当时看到的那张表，
   然后按固化的下标直接读写槽位。原来那张表被回收之后，新建的表可以分配在同一个地址上，新表的 gen 又从同一个初值开始，三项都通过，它却不是原来那张表：
   ① 数组部分比固化的下标短时，读到数组之后的内存（实测读出别的字符串、函数和不成形的数字），写则写到数组之外；
-  ② 哈希部分固化的那个节点里放的是别的键时，读到、改写的是那个键的值。解释器（`icGetTable` 比对键、用运行时的大小）和 P4 不受影响。
+  ② 哈希部分固化的那个节点里放的是别的键时，读到、改写的是那个键的值。P4 不受影响；解释器的数组部分不受影响，哈希部分有同一个根因的另一种问题
+  （缓存的下标落到表外，[#364](https://github.com/Liam0205/wangshu/issues/364)），在同一个分支里修，记录在 [P1 implementation-progress](../p1-interpreter/implementation-progress.md)。
 - **修法**：`internal/gibbous/wasm/translate_table.go` 新增 `emitSlotInTable`，三条内联路径在表守卫（和寄存器键的数值比对）之后、取槽位之前调用它：
   数组部分检查 `index < asize`；哈希部分检查 `index <= hmask`、`nodeRef != 0`，再把节点里的键与指令的常量键比对（`tableInlineable` 只让常量键的 NodeHit 走内联）。
   没有哈希部分的表 `hmask` 和 `nodeRef` 都是 0，下标 0 能通过前一项，所以 `nodeRef` 要单独看。任何一项不满足都走助手，结果由完整查找给出。
