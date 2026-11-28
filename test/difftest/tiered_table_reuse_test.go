@@ -109,14 +109,21 @@ var tableReuseNodeOps = []struct{ name, warm, op string }{
 // TestTiered_TableAtAReusedAddress runs each case the four ways TestTiered_ClearWhileTraversing
 // does and requires them to agree with each other and with lua5.1. It also requires that in the
 // run that warms up first and then forces promotion the second table really landed at the
-// address of the first: without that the run never hands compiled code a different table at a
-// known address.
+// address of the first, and that the access to it was the run's one entry into compiled code:
+// without the first the run never hands compiled code a different table at a known address,
+// without the second it may not hand it to compiled code at all.
 func TestTiered_TableAtAReusedAddress(t *testing.T) {
 	oracle := findOracle()
 	check := func(t *testing.T, warmSrc, runSrc string) {
 		tiered := runWarmThenForced(t, oracle, warmSrc, runSrc)
 		if got := tiered.GetGlobal("REUSED362").Display(); got != "true" {
 			t.Errorf("warm, then force-all: the second table is not at the address of the first (REUSED362 = %s)", got)
+		}
+		// The run chunk itself is vararg and is never compiled; every accessor is compiled on its
+		// first call there, which the interpreter still executes. The access under test is the only
+		// second call of an accessor, so it is the one entry into compiled code.
+		if n := tiered.GibbousEntries(); n != 1 {
+			t.Errorf("warm, then force-all entered compiled code %d times, want 1: the access under test and nothing else", n)
 		}
 	}
 	for _, o := range tableReuseArrayOps {
