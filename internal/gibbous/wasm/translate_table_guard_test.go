@@ -85,6 +85,7 @@ var guardNodeCases = []guardCase{
 	{index: 0, size: 1, key: guardKey, hit: true},
 	{index: 3, size: 4, key: guardKey, hit: true},
 	{index: 3, size: 4, key: guardOtherKey},
+	{index: 2, size: 2, key: guardKey}, // the first index past the node block
 	{index: 3, size: 2, key: guardKey},
 	{index: 3, size: 1, key: guardKey},
 	// No hash part: hmask is 0 as well, so index 0 passes the size check and
