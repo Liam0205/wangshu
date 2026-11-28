@@ -210,6 +210,13 @@ func TestTiered_ClearWhileTraversing(t *testing.T) {
 // describes and reports any disagreement.
 func checkWarmThenForced(t *testing.T, oracle, warmSrc, runSrc string) {
 	t.Helper()
+	runWarmThenForced(t, oracle, warmSrc, runSrc)
+}
+
+// runWarmThenForced does the work of checkWarmThenForced and returns the State of the second
+// way (warm in the interpreter, then force-all) as the run chunk left it.
+func runWarmThenForced(t *testing.T, oracle, warmSrc, runSrc string) *wangshu.State {
+	t.Helper()
 	warm, err := wangshu.Compile([]byte(warmSrc), "tierclear-warm")
 	if err != nil {
 		t.Fatalf("wangshu compile (warm): %v", err)
@@ -250,4 +257,5 @@ func checkWarmThenForced(t *testing.T, oracle, warmSrc, runSrc string) {
 	}
 	t.Logf("result %q; entries into compiled code: warm then force-all %d, force-all %d, auto %d",
 		baseline, tiered.GibbousEntries(), forced.GibbousEntries(), auto.GibbousEntries())
+	return tiered
 }
