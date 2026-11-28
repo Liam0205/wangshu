@@ -149,13 +149,20 @@ func TestPJ4Templates_Execute(t *testing.T) {
 
 	// Executable pages exist on linux and, with cgo, on darwin/arm64; a build for another
 	// platform (a darwin/arm64 one without cgo, say) has a stub that returns an error.
-	if probe, err := archMmapCode(archEmitLoadKReturn(nil, 0)); err != nil {
-		if runtime.GOOS == "linux" {
-			t.Fatalf("archMmapCode: %v", err)
-		}
+	// Only the stub is a reason to skip.
+	probe, err := archMmapCode(archEmitLoadKReturn(nil, 0))
+	switch {
+	case err != nil && tmplExecPagesExpected:
+		t.Fatalf("archMmapCode: %v", err)
+	case err != nil:
 		t.Skipf("no executable pages on this platform: %v", err)
-	} else if err := probe.Dispose(); err != nil {
-		t.Fatalf("Dispose: %v", err)
+	case !tmplExecPagesExpected:
+		t.Errorf("archMmapCode succeeded on a build tmplExecPagesExpected says has only the stub")
+	}
+	if err == nil {
+		if err := probe.Dispose(); err != nil {
+			t.Fatalf("Dispose: %v", err)
+		}
 	}
 
 	for _, f := range tmplForms() {
