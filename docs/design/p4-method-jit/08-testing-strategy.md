@@ -836,7 +836,7 @@ jobs:
 
 承 [./05-system-pipeline.md](./05-system-pipeline.md) §1.2 「异步抢占」纪律:生成码在循环 back edge 插抢占检查点,load `jitContext.preemptFlag`,置位则经 exit stub 退到边界(GC safepoint / 调度让出共用此点);直线段长度有界 ⇒ 不可抢占窗口有界。
 
-实现现状:P4 的回跳检查(`LoopPreempt`)只检查步数预算和取消,不是 GC 安全点([P1 06 §6.3](../p1-interpreter/06-memory-gc.md));循环体里的回收发生在分配类助手末尾和 host function 返回之后。下面 ② 说的「抢占退出后 GC 扫到陈旧栈槽」是设计期把两者放在同一点时的情况。
+实现现状：P4 的回跳检查（`LoopPreempt`）只检查步数预算和取消，不是 GC 安全点（[P1 06 §6.3](../p1-interpreter/06-memory-gc.md)）；循环体里的回收发生在分配类助手末尾和 host function 返回之后。下面 ② 说的「抢占退出后 GC 扫到陈旧栈槽」是设计期把两者放在同一点时的情况。
 
 **back edge 检查点漏布的 bug**:① 某循环模板未在 back edge 发射 `cmp [jitContext + preemptFlagOff], 0; jne preempt_exit`——长循环 JIT 帧不响应抢占,Go 调度器无法切换 goroutine,严重时整个进程卡死;② 检查点发射了但 preempt_exit stub 内未先物化栈槽——抢占退出后 GC 扫到陈旧栈槽 → 误回收。
 

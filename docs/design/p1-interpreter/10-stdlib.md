@@ -2137,11 +2137,11 @@ func hostIoWrite(vm *VM, th *Thread) int {
   参数类型错误;② 读一个**只写**句柄返回 PUC 的 errno 三元组 `(nil, "Bad file descriptor", 9)`(`fread` 在
   只写 handle 上失败,`g_read` 报 `strerror(EBADF)` + `EBADF`,Linux 上是 9)——不是单个 nil;
   ③ 关一个标准流**返回** `(nil, "cannot close standard file")` 而不是抬错,所以 pcall 包住它会成功。
-  句柄方法完全不带参数时(`io.stdout.flush()`)报 `FILE* expected, got no value`,只有 `close` 不同:
-  它在 PUC 里就是 `io_close`,没有参数时先 `lua_rawgeti(L, LUA_ENVIRONINDEX, IO_OUTPUT)` 再检查。句柄方法是在 `luaopen_io`
-  换上私有环境之前注册的,它们的环境是全局表,`IO_OUTPUT` 是 2,所以压进去的是全局表的原始字段 `[2]`:脚本没有往那里放过东西时是
-  nil,报 `got nil`;放了别的值就按那个值检查(`rawset(_G, 2, 5)` 之后报 `got number`,放的是标准流时返回
-  `(nil, "cannot close standard file")`)。`fileFnClose` 照这个做(#343)。
+  句柄方法完全不带参数时（`io.stdout.flush()`）报 `FILE* expected, got no value`，只有 `close` 不同：
+  它在 PUC 里就是 `io_close`，没有参数时先 `lua_rawgeti(L, LUA_ENVIRONINDEX, IO_OUTPUT)` 再检查。句柄方法是在 `luaopen_io`
+  换上私有环境之前注册的，它们的环境是全局表，`IO_OUTPUT` 是 2，所以压进去的是全局表的原始字段 `[2]`：脚本没有往那里放过东西时是
+  nil，报 `got nil`；放了别的值就按那个值检查（`rawset(_G, 2, 5)` 之后报 `got number`，放的是标准流时返回
+  `(nil, "cannot close standard file")`）。`fileFnClose` 照这个做（#343）。
   **例外 `io.write`**:它的 `g_write` 压布尔、写失败压 `false`,不抛错(上面已更正);标准流的
   `file:write` 同样返回布尔(返回句柄是 5.2+)。
 
@@ -2463,9 +2463,9 @@ stdlib 的 shadow stack 纪律(§3)漏 Pin 是**最难调的 bug 类**(06 §6.3:
   conformance 若含 require 用例,标 P1 已知限制。
 - **`collectgarbage` step/setstepmul 简化**(§4.6):P1 只 full GC(06 §8.3),`"step"` 近似为触发 full GC,
   `setstepmul` 存而不用。脚本依赖增量步进精确语义会微差,记口径。增量 GC 是 P3+。
-- **`collectgarbage` 的另外两处差异**(§4.6):`setpause` 的比例含义与官方差 100,要不要改成官方的口径见
-  [#353](https://github.com/Liam0205/wangshu/issues/353);`stop` 之后的 `collectgarbage()` / `("step")` 不恢复自动回收、`restart` 之后的回收时机
-  与官方不同,见 [#354](https://github.com/Liam0205/wangshu/issues/354)。
+- **`collectgarbage` 的另外两处差异**（§4.6）：`setpause` 的比例含义与官方差 100，要不要改成官方的口径见
+  [#353](https://github.com/Liam0205/wangshu/issues/353)；`stop` 之后的 `collectgarbage()` / `("step")` 不恢复自动回收、`restart` 之后的回收时机
+  与官方不同，见 [#354](https://github.com/Liam0205/wangshu/issues/354)。
 - **`%q` / `%f`/`%g`/`%e` / pattern 的精确差分**(§5.2/§6.6):`%q` 转义集、format 浮点的 C printf 复刻细节
   (指数位数/尾零/inf-nan)、pattern 各构造的边角语义(空匹配推进、`%f` 边界、贪婪回溯顺序)、`matchDepth`
   上限与 `"pattern too complex"` 措辞——**全部待 12 差分核对**,本文给骨架不编造精确字节。
