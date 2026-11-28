@@ -30,17 +30,22 @@
 //     the collector bumps. An array slot set to nil, by rawSet or by the
 //     collector clearing a weak value, does not bump either: the slot keeps
 //     its key, and the array consumers check the slot's value. The
-//     interpreter's icGetTable re-verifies NodeKey on every hit, and so do
-//     the inline GETTABLE/SETTABLE/SELF paths of P3 and P4, but the gen-only
-//     inline consumers bake the slot index and trust gen alone: P4 native
-//     GETGLOBAL/SETGLOBAL NodeHit and P3 wasm GETGLOBAL/SETGLOBAL NodeHit. A
-//     missing bump there reads another key's value.
+//     interpreter's icGetTable / icSetTable check on every hit that the
+//     cached index lies inside the table and that the node holds the key,
+//     and so do the inline GETTABLE/SETTABLE/SELF paths of P3 and P4, but
+//     the gen-only inline consumers bake the slot index and trust gen
+//     alone: P4 native GETGLOBAL/SETGLOBAL NodeHit and P3 wasm
+//     GETGLOBAL/SETGLOBAL NodeHit. A missing bump there reads another key's
+//     value.
 //     An unchanged gen does not say that a node still holds a value: P3
-//     wasm emitSetGlobal stores Nil inline, making a node DEAD with no bump,
-//     and a consumer that does not compare the table's identity can be
-//     handed another table with the same gen. Every inline consumer
-//     therefore checks the node's value itself, and the bump on takeover is
-//     what invalidates snapshots of a node that went DEAD without one;
+//     wasm emitSetGlobal stores Nil inline, making a node DEAD with no bump.
+//     Nor does it say that the table is the one the snapshot was taken on:
+//     a consumer that does not compare the table's identity can be handed
+//     another table with the same gen, and so can one that compares the
+//     address, once the snapshot's table has been collected and a new table
+//     sits there. Every inline consumer therefore checks the node's value
+//     itself, and the bump on takeover is what invalidates snapshots of a
+//     node that went DEAD without one;
 //   - border: binary search over the array part (# semantics, 01 §5.2).
 package crescent
 

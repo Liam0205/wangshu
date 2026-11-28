@@ -640,19 +640,19 @@ type ICSlot struct {
 
 - 实现现状：内联的范围和检查链以 [implementation-progress §7 的对账表和 §15](./implementation-progress.md) 为准。常量键和寄存器键的 ArrayHit、常量键的 NodeHit 走内联，
   检查链是「IsTable + 同表 + 同代次 + 下标在这张表之内 + 同键」：同表同代次不足以认定是原来那张表（地址会被新表重用，#362），所以下标和键都要对着拿到的这张表检查。
-- 关键设计:快路径检查链是「IsTable + 同表 + 同代次 + 同键」,与 ic.go `icGetTable` 22-47 行的 IC 命中校验**完全一致**——这是**语义分发非投机**(承 ../p3-wasm-tier §3.1),失败走 `$h_gettable` 助手得到正确结果(完整查找 + 回填 IC + __index 链),零 deopt。
+- 关键设计:快路径检查链是「IsTable + 同表 + 同代次 + 同键」,与 ic.go `icGetTable` 的 IC 命中校验**完全一致**——这是**语义分发非投机**(承 ../p3-wasm-tier §3.1),失败走 `$h_gettable` 助手得到正确结果(完整查找 + 回填 IC + __index 链),零 deopt。
 - 三层校验对应 ic.go 的字段比对:
   - `slot.TableRef == uint32(t)` → Wasm `gcref_low32(vt) == SNAP_TABLEREF`。
   - `slot.Shape == object.TableGen(arena, t)` → Wasm `table_gen(vt) == SNAP_GEN`。
   - array hit: `arrayIndex(key) == slot.Index`;node hit: `keyEqual(NodeKey(slot.Index), key)` → Wasm `$ic_key_match`。
-- 「槽值 nil 退慢路径」对应 ic.go 33-36 行 / 43-46 行的 `if v != value.Nil` 守卫——槽位虽命中但值为 nil 时,Lua 语义要查 `__index`(可能 metatable 有此键),故退慢路径。Wasm 侧 `if (i64.ne vb nil)` 守卫与之相同。
+- 「槽值 nil 退慢路径」对应 ic.go `icGetTable` 两处命中的 `v != value.Nil` 守卫——槽位虽命中但值为 nil 时,Lua 语义要查 `__index`(可能 metatable 有此键),故退慢路径。Wasm 侧 `if (i64.ne vb nil)` 守卫与之相同。
 - `$h_gettable` 助手:`func(base int32, pc int32, a int32, b int32, c int32) int32`,内部 `tbl := reg(B); key := rk(C); v, e := st.icGetTable(...); setReg(A, v)`——完全复用 execute.go 98-108 行的 GETTABLE 段。助手内的 `icGetTable` 也会回填 IC slot(运行期 IC 持续更新),但 gibbous 固化的快照不变(失效后该点永久走助手 ≈ 解释器无 IC,正确但慢,[06-ic-feedback-consume](./06-ic-feedback-consume.md) §1)。
-- 与解释器同构(execute.go 98-108 行 + ic.go 22-73 行):快路径 = 与 IC 命中校验一致;慢路径 = 助手回 Go 跑 `icGetTable`,同构天然。
+- 与解释器同构(execute.go 的 GETTABLE 段 + ic.go 的 `icGetTable`):快路径 = 与 IC 命中校验一致;慢路径 = 助手回 Go 跑 `icGetTable`,同构天然。
 
 #### 3.4.3 SETTABLE A B C —— `R(A)[RK(B)] := RK(C)`(IC 快照内联)
 
 ```wat
-;; SETTABLE A B C —— 改值快路径(改值不 bump gen,IC 持续有效;ic.go icSetTable 77-101 行)
+;; SETTABLE A B C —— 改值快路径(改值不 bump gen,IC 持续有效;ic.go 的 icSetTable)
 (local.set $vt (i64.load offset=8*A (local.get $base)))   ;; 表对象
 (local.set $vb <load_RK_B>)                               ;; 键
 (local.set $vc <load_RK_C>)                               ;; 值
@@ -663,7 +663,7 @@ type ICSlot struct {
           (i32.eq (call $gcref_low32 (local.get $vt)) (i32.const SNAP_TABLEREF))
           (i32.eq (call $table_gen (local.get $vt)) (i32.const SNAP_GEN)))))
   (then
-    ;; 校验 key 匹配 + 当前槽值非 nil(改已存在键,ic.go 88/97 行守卫)
+    ;; 校验 key 匹配 + 当前槽值非 nil(改已存在键,ic.go icSetTable 的守卫)
     (if (call $ic_key_match_nonnil
               (local.get $vt) (local.get $vb)
               (i32.const SNAP_KIND) (i32.const SNAP_INDEX))
@@ -682,11 +682,11 @@ type ICSlot struct {
 ;; 助手内已收口 safepoint(快路径改值不分配不需要)
 ```
 
-- 关键设计:SETTABLE 的 IC 快路径只覆盖「改已存在键的值」(改值不 bump gen,IC 持续有效,ic.go 77 行注释)。删除(置 nil)、新增键(可能 rehash → bump gen)都走慢路径。
-- `vc != nil` 守卫对应 ic.go 83 行 `if val != value.Nil`(删除走慢路径,可能 rehash 语义)。
-- `$ic_key_match_nonnil` 比 GETTABLE 的 `$ic_key_match` 多一个「当前槽值非 nil」校验,对应 ic.go 88 行 `if object.TableArrayAt(...) != value.Nil` / 97 行 `object.NodeVal(...) != value.Nil`——改值快路径要求键已存在(槽值非 nil)。
+- 关键设计:SETTABLE 的 IC 快路径只覆盖「改已存在键的值」(改值不 bump gen,IC 持续有效,ic.go `icSetTable` 的注释)。删除(置 nil)、新增键(可能 rehash → bump gen)都走慢路径。
+- `vc != nil` 守卫对应 ic.go `icSetTable` 开头的 `if val != value.Nil`(删除走慢路径,可能 rehash 语义)。
+- `$ic_key_match_nonnil` 比 GETTABLE 的 `$ic_key_match` 多一个「当前槽值非 nil」校验,对应 ic.go `icSetTable` 里数组命中的 `object.TableArrayAt(...) != value.Nil` 和哈希命中的 `v != value.Nil`——改值快路径要求键已存在(槽值非 nil)。
 - 快路径无 safepoint:改值不分配不 rehash,无 GC 触发可能(execute.go 119 行的 safepoint 在助手内,快路径跳过)。这是 [05-safepoint-gc](./05-safepoint-gc.md) §3 「分配点 safepoint」在 P3 的精确兑现——只在真正可能分配的助手内 safepoint。
-- 与解释器同构(execute.go 110-119 行 + ic.go 77-127 行):快路径 = 与 IC 改值命中一致;慢路径 = 助手回 Go 跑 `icSetTable`。
+- 与解释器同构(execute.go 的 SETTABLE 段 + ic.go 的 `icSetTable`):快路径 = 与 IC 改值命中一致;慢路径 = 助手回 Go 跑 `icSetTable`。
 
 #### 3.4.4 GETGLOBAL / SETGLOBAL —— globals 表的特例
 
