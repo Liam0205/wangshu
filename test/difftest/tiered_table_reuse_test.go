@@ -120,9 +120,10 @@ var tableReuseNodeOps = []struct{ name, warm, op string }{
 // and that depends on the hash function and on how nodes are handed out. With the translation
 // from before the fix, 7 of the 90 node cases of each access fail (keys_6..8_removed_3 and
 // keys_9..12_removed_2 for the read and the store, keys_6..8_removed_2 and keys_9..12_removed_1
-// for the method call); if a change to the table moves those away, the node cases pass without
-// testing anything. internal/gibbous/wasm's TestPW5_InlineSlotGuards covers the node checks on
-// memory laid out by hand and does not depend on any of this.
+// for the method call). internal/crescent's TestP3_NodeHitOnATableAtAReusedAddress builds the
+// same tables, looks at the caches and the nodes, and fails when no size produces such a case;
+// internal/gibbous/wasm's TestPW5_InlineSlotGuards covers the node checks on memory laid out by
+// hand and does not depend on any of this.
 func TestTiered_TableAtAReusedAddress(t *testing.T) {
 	oracle := findOracle()
 	check := func(t *testing.T, warmSrc, runSrc string) {
