@@ -247,6 +247,26 @@ Lua 函数，同样不进入升层代码，不论循环本身由解释器还是�
 
 反思 [[2026-11-25-issue329-stdlib-extra-names]]。
 
+### 2.2d GC 压力模式下通过，只说明有安全点的窗口里没有漏 pin（2026-11-28，#343 / #345）
+
+**适用场景**：用 `SetGCStressMode(true)` 证明某个 host function 或某条宿主路径的根管理没问题。
+
+压力模式让每个安全点都做一次完整回收，但不增加安全点。分配只记账，不在分配处回收。host function 持有一个还没 Push 的
+arena 引用时，压力模式能不能把它回收掉，取决于这段时间里有没有安全点：它调用了另一个 host function（返回后检查一次），
+它回调的 Lua 函数执行了 SETGLOBAL、SETTABLE、NEWTABLE、CONCAT、SETLIST、CLOSURE 之一，或者它调用了 `State.Collect` /
+`State.MaybeCollectNow`。只做比较的回调（`table.sort` 的 `function(a, b) return a < b end`）里没有安全点，漏 pin 在压力模式下
+也不会暴露。另外三种情况压力模式也碰不到：脚本执行过 `collectgarbage("stop")`；公开 API 返回前的 `HostSafepoint`（它只看
+`SetHostTriggeredCollect` 和阈值）；宿主在两次调用之间自己调 `Collect()`（[[design-claims-vs-codebase-physics]] §4 的实例）。
+完整的安全点清单见 P1 06 §6.3。
+
+**判据**：
+- 写压力测试前先指出被测窗口里的安全点是哪一个；指不出来，就让回调里做一次会检查的操作（例如写一个全局变量），
+  或在窗口里调 `MaybeCollectNow`。
+- 要证明一个 pin 是必要的，就把它删掉，测试必须失败。删掉后照常通过，说明窗口里没有安全点，这个测试证明不了 pin。
+- 不要把 pause 比例调小当作高频回收：阈值不低于 arena 容量的 1/16，比例为 0 也做不到每个安全点回收。
+
+反思 [[2026-11-28-issue343-345-safepoint-wording-sweep]]。
+
 ### 2.3 传递性证明继承中间项的所有盲区,并且看不见「两端各自一致地错」(2026-08-29)
 
 **适用场景**:某两层之间的一致性不是直接比出来的,而是经第三层传递得来时。

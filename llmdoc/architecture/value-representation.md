@@ -24,7 +24,7 @@
 
 NaN-boxing 不让值住 Go 堆,Go GC 就不再替我们管这块内存,因此**必须自写 mark-sweep GC**。其纪律约束(与 §2 四项税中的「GC 精确栈扫描」「异步抢占」相扣):
 
-- **safepoint 限定在分配点与层边界**——只在这些受控位置允许 GC 介入;
+- **safepoint 限定在分配点与层边界**——只在这些受控位置允许 GC 介入;实现上分配只记账,回收发生在会分配的 opcode 执行完、host function 返回之后等检查点,完整清单见 `docs/design/p1-interpreter/06-memory-gc.md` §6.3(术语见 [[glossary]] 的 safepoint 条);
 - **根放 shadow stack**——GC 根集合维护在自管 shadow stack 上,而非依赖 Go 的精确栈扫描。
 
 ## 部分补偿
