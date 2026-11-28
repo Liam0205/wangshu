@@ -1245,6 +1245,7 @@ arena 大小跟着比例变。`TestTiered_StdlibNames` 加一段
 #350 修掉。
 
 **这一轮没有修、另外登记的存量问题**：弱表会清掉字符串（[#348](https://github.com/Liam0205/wangshu/issues/348)）；
+弱表模式在 `setmetatable` 时缓存，之后改元表的 `__mode` 不起作用（[#367](https://github.com/Liam0205/wangshu/issues/367)）；
 `loadstring` 得到的函数丢掉之后它的字符串常量不回收（[#359](https://github.com/Liam0205/wangshu/issues/359)）；
 哈希部分的遍历顺序与官方不同（[#349](https://github.com/Liam0205/wangshu/issues/349)）；P4 单条表访问的模板不检查下标是否在表内
 （[#350](https://github.com/Liam0205/wangshu/issues/350)）；P4 arm64 的同一组模板在数组下标 4096 以上、哈希部分节点下标从 1365 起的
