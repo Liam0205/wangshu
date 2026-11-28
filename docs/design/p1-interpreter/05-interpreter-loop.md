@@ -687,8 +687,8 @@ host function 调 Lua(如 pcall(f)):
 
 两个上限:
 
-- **Lua 调用深度**(CallInfo 数 / 值栈深度):由 `ciCap` 与栈上限约束。超限抛 `"stack overflow"`(Lua 语义)。这是 arena 内的逻辑上限,不是 Go 栈。
-- **host→Lua 重入深度**(真 Go 栈消耗):维护一个 `nCcalls` 计数(Lua `LUAI_MAXCCALLS=200` 等价物),每次 `callLuaFromHost` +1,返回 -1;超限抛 `"C stack overflow"`。这防止「Lua 调 host 调 Lua 调 host …」无限交替真把 Go 栈打爆(Go 栈虽可增长但有 `maxstacksize` 上限 ~1GB,超过会 fatal 不可恢复——必须在它之前用我们的可恢复错误拦下)。
+- **Lua 调用深度**(CallInfo 数 / 值栈深度):上限是常量 `maxLuaCallDepth = 20000`(`internal/crescent/frame.go`,对应官方 `LUAI_MAXCALLS`)。超限抛 `"stack overflow"`(Lua 语义)。这是 arena 内的逻辑上限,不是 Go 栈。
+- **host→Lua 重入深度**(真 Go 栈消耗):维护一个 `nCcalls` 计数,上限是常量 `maxCCallDepth = 200`(对应官方 `LUAI_MAXCCALLS`),每次 `callLuaFromHost` +1,返回 -1;超限抛 `"C stack overflow"`。这防止「Lua 调 host 调 Lua 调 host …」无限交替真把 Go 栈打爆(Go 栈虽可增长但有 `maxstacksize` 上限 ~1GB,超过会 fatal 不可恢复——必须在它之前用我们的可恢复错误拦下)。
 
 ### 7.5 TAILCALL:复用帧,栈不增长
 

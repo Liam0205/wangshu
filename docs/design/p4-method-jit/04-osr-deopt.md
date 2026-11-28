@@ -410,7 +410,7 @@ osrExit(exitPC):
 
 - **允许**:每个 exit 点编译期烧入「该 exit 要写回哪几个寄存器到哪几个栈槽」的固定 store 序列(§3.6)。
 - **禁止**:任何「运行期查 snapshot 配方 → 解码 → 物化」形式(那是 P5 的事,§9.1)。
-- **禁止**:exit 路径上做任何分配(可能触发 GC、违反 [../p3-wasm-tier/05-safepoint-gc](../p3-wasm-tier/05-safepoint-gc.md) 的「分配只在受控点」哲学)。
+- **禁止**:exit 路径上做任何分配(按「分配可能触发 GC」的纪律不允许,[P1 06](../p1-interpreter/06-memory-gc.md) §6.3;也违反 [../p3-wasm-tier/05-safepoint-gc](../p3-wasm-tier/05-safepoint-gc.md) 的「分配只在受控点」哲学)。
 
 **这条不变式保住的是 P4 deopt 简单性的工程边界**——任何把 exit 复杂化的提案(运行期映射 / 动态查表 / exit 内分配)都直接判否。
 

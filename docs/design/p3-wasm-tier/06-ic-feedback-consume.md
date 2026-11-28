@@ -871,7 +871,7 @@ P3 IC feedback 消费的实现期硬性约束,违反即设计失败:
 - [00-overview](./00-overview.md)(P3 总览,§3 关键耦合点 5「IC 快照编译期固化」+ §9 不变式 1 语义分发非投机)
 - [02-translation](./02-translation.md)(P3 翻译器,§6.5 emitter 入口接 fb;本文是其 IC 翻译形式的细化扩展)
 - [04-trampoline](./04-trampoline.md)(慢路径 imported 助手回 Go,本文 IC miss 降级路径接入点 `$h_arith`/`$h_gettable`/`$h_getglobal`/`$h_self`)
-- [05-safepoint-gc](./05-safepoint-gc.md)(分配点 safepoint,本文 helper 内调 alloc 时 GC 触发的协议)
+- [05-safepoint-gc](./05-safepoint-gc.md)(安全点,本文 helper 分配之后、返回之前检查并回收的协议)
 - [08-testing-strategy](./08-testing-strategy.md)(crescent vs gibbous 逐字节差分,本文 IC 翻译形式正确性的验收检查)
 - [../p2-bridge/02-ic-feedback](../p2-bridge/02-ic-feedback.md)(TypeFeedback shape 完整定义,本文是消费侧)
 - [../p2-bridge/04-try-compile-fallback](../p2-bridge/04-try-compile-fallback.md) §1(fallback ≠ deopt)+ §1.3(P2/P3 静态保证 vs P4 投机)

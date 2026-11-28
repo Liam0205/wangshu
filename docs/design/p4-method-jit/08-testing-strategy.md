@@ -612,7 +612,7 @@ func TestEveryGuardForceFailOnce(t *testing.T) {
 V19 是这条不变式的端到端校验:
 
 - **若运行期查 snapshot 配方**(P5 trace JIT 形式):V19 仍可能 byte-equal(若 snapshot 写得对),但 V19 通过不能反推 P4 没用 snapshot ——V19 只是必要条件不是充分条件;**P4 实现时 review 必须额外检查物化序列是编译期烧入的固定 store 序列**(`internal/gibbous/jit/osr.go` 的 emit 函数审查)。
-- **若 exit 路径上做分配**:可能触发 GC + 违反 [../p3-wasm-tier/05-safepoint-gc.md](../p3-wasm-tier/05-safepoint-gc.md) 「分配只在受控点」哲学——V19 在 GC 压力 + V13 locals 写回 A/B 对照下能暴露脏读,但需要 §7 GC 压力联合验。
+- **若 exit 路径上做分配**:违反「分配可能触发 GC」的纪律([P1 06](../p1-interpreter/06-memory-gc.md) §6.3)+ 违反 [../p3-wasm-tier/05-safepoint-gc.md](../p3-wasm-tier/05-safepoint-gc.md) 「分配只在受控点」哲学——V19 在 GC 压力 + V13 locals 写回 A/B 对照下能暴露脏读,但需要 §7 GC 压力联合验。
 
 **V19 + GC 压力联合验**(承 §7.4):**deopt 注入 + 高频 GC 双开**——每 guard 强制失败时若 exit 路径有未上根的临时分配、而且持有它的窗口里有安全点(分配本身只记账、不回收,[P1 06 §7.1](../p1-interpreter/06-memory-gc.md)),高频 GC 期内必被回收,后续读栈槽必脏读 → 差分破。这是 V19 与 V13 的交叉,也是 P4 比 P3 多的「物化期 GC 触发」专门验证目标。
 
