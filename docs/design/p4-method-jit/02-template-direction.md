@@ -343,7 +343,7 @@ JSC Baseline JIT 的形式(WebKit 设计文档):
 
 | 形式 | JSC Baseline | V8 Sparkplug | 望舒 P3 [../p3-wasm-tier/02-translation.md](../p3-wasm-tier/02-translation.md) §3.4 | 望舒 P4(本目录 03 给出) |
 |---|---|---|---|---|
-| 表访问 IC 命中路径 | inline 「形状比较 + 直达槽偏移」机器码 | inline 「shape 比较 + 直达槽 load」机器码 | inline 「同表 + 同代次 + 直达槽 load」 wasm | inline「同表 + 同代次 + 直达槽 load」机器码 |
+| 表访问 IC 命中路径 | inline 「形状比较 + 直达槽偏移」机器码 | inline 「shape 比较 + 直达槽 load」机器码 | inline 「同表 + 同代次 + 直达槽 load」 wasm(实现另查下标在表内和节点的键,[P3 02 §3.4.2](../p3-wasm-tier/02-translation.md)) | inline「同表 + 同代次 + 直达槽 load」机器码(模板实际检查的内容见 [03](./03-speculation-ic.md) §2.3 末尾) |
 | 失效降级 | inline IC 不命中走 IC stub 重新填 | 同上 | inline 不命中走 helper(降级稳定后永久走 helper,详 06) | 同 P3:不命中走 helper,失效阈值后该点降级永久走通用模板(详 03 §3 / §4) |
 | 投机 guard 失败 | OSR exit 到 LLInt(解释器) | OSR exit 到 Ignition(解释器) | (P3 不投机,无此项) | OSR exit 到 crescent(解释器),详 04 |
 
@@ -591,7 +591,7 @@ P4 模板总量的来源:
 | 族 | opcode 集 | 模板特点 | 工程难度 |
 |---|---|---|---|
 | **算术族** | ADD / SUB / MUL / DIV / MOD / POW / UNM / NOT / EQ / LT / LE / TEST / TESTSET | 双 number 投机快路径(SSE/NEON 浮点)+ NaN 规范化 + guard;失败走慢路径助手 | 中(NaN 规范化是 byte-equal 关键,详 [./03-speculation-ic.md](./03-speculation-ic.md) §2.1) |
-| **表 IC 族** | GETTABLE / SETTABLE / GETGLOBAL / SETGLOBAL / SELF / NEWTABLE / SETLIST | IC 命中:同表 + 同代次 + 直达槽 inline(与 JSC Baseline 相同,§2.4);失效降级走助手 | 高(翻译复杂度峰值,详 [./03-speculation-ic.md](./03-speculation-ic.md) §3) |
+| **表 IC 族** | GETTABLE / SETTABLE / GETGLOBAL / SETGLOBAL / SELF / NEWTABLE / SETLIST | IC 命中:同表 + 同代次 + 直达槽 inline(与 JSC Baseline 相同,§2.4;模板实际检查的内容见 [03](./03-speculation-ic.md) §2.3 末尾);失效降级走助手 | 高(翻译复杂度峰值,详 [./03-speculation-ic.md](./03-speculation-ic.md) §3) |
 | **控制流族** | JMP / FORPREP / FORLOOP / TFORLOOP / LOADBOOL / LOADNIL / MOVE / LOADK / GETUPVAL / SETUPVAL / LEN / CONCAT / CLOSURE / CLOSE | 直线翻译 + 跳转回填 + back edge safepoint | 低-中 |
 | **调用族** | CALL / TAILCALL / RETURN | 跨层互调 + status 链错误冒泡(经 trampoline,详 [./05-system-pipeline.md](./05-system-pipeline.md) §4) | 高(协议复杂,与 P3 PW6 是同样的工程难点) |
 
