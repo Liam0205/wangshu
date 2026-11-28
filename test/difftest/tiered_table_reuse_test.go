@@ -118,9 +118,9 @@ var tableReuseNodeOps = []struct{ name, warm, op string }{
 // before the checks on the frozen index are reached and the result is right without them. For
 // the array cases that is all it takes: a second table with fewer than eight elements is shorter
 // than the frozen index. For the node cases the node the frozen index names must also hold a live
-// field, and that depends on the hash function and on how nodes are handed out. With the
-// translation from before the fix, all array cases shorter than eight fail, and 7 of the 90 node
-// cases of each access (keys_6..8_removed_3 and keys_9..12_removed_2 for the read and the store,
+// field, and that depends on the hash function and on how nodes are handed out. Without the
+// checks of emitSlotInTable all array cases shorter than eight fail, and 7 of the 90 node cases
+// of each access (keys_6..8_removed_3 and keys_9..12_removed_2 for the read and the store,
 // keys_6..8_removed_2 and keys_9..12_removed_1 for the method call). internal/crescent's
 // TestP3_ArrayHitOnATableAtAReusedAddress and TestP3_NodeHitOnATableAtAReusedAddress build the
 // same tables and look at the caches, the generations and the nodes: the first fails when a
