@@ -401,7 +401,8 @@ func TestGrowArray_SlotsAreKeptUntilTheNextRehash(t *testing.T) {
 	if object.TableHSize(st.arena, st.NewLibTable(0)) != 8 {
 		t.Fatal("setup: NewLibTable(0) no longer makes 8 hash nodes")
 	}
-	// The first five of them fit without a rehash.
+	// The first five of these keys fit without a rehash (how many do depends on their hashes: a
+	// free node is only looked for when a key's main position is taken).
 	st = New()
 	tbl = st.NewLibTable(0)
 	st.growArray(tbl, 1000)
