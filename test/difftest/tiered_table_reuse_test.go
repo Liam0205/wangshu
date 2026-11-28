@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"strings"
 	"testing"
-
-	"github.com/Liam0205/wangshu"
 )
 
 // The cases here hand compiled code a table that sits where the table it warmed up on used to
@@ -32,7 +30,9 @@ end`
 
 // tableReuseRunArray builds the run chunk for a second table with n array elements. op is the
 // access under test; the chunk reports what it returned or stored, the table's length, and the
-// neighbouring table allocated right after it.
+// neighbouring table allocated right after it. Whether the second table got the address of the
+// first goes into the global REUSED362 and not into the results, since lua5.1 has its own
+// allocator.
 func tableReuseRunArray(n int, op string) string {
 	items := make([]string, n)
 	for i := range items {
@@ -47,7 +47,8 @@ local B = {%s}
 local N = {901, 902, 903, 904, 905, 906, 907, 908}
 local reused = tostring(B) == ADDR362
 local r = %s
-return first, tostring(r), tostring(rawget(B, 8)), #B, table.concat(N, ","), REUSED362 and reused`,
+REUSED362 = reused
+return first, tostring(r), tostring(rawget(B, 8)), #B, table.concat(N, ",")`,
 		strings.Join(items, ", "), op)
 }
 
@@ -95,7 +96,8 @@ local r = %s
 local keys = {}
 for k, v in pairs(B) do keys[#keys + 1] = k .. "=" .. tostring(v) end
 table.sort(keys)
-return first, tostring(r), table.concat(keys, ","), REUSED362 and reused`, n, d, op)
+REUSED362 = reused
+return first, tostring(r), table.concat(keys, ",")`, n, d, op)
 }
 
 var tableReuseNodeOps = []struct{ name, warm, op string }{
@@ -105,15 +107,22 @@ var tableReuseNodeOps = []struct{ name, warm, op string }{
 }
 
 // TestTiered_TableAtAReusedAddress runs each case the four ways TestTiered_ClearWhileTraversing
-// does and requires them to agree with each other and with lua5.1. The chunks never report
-// whether the address was reused (REUSED362 is nil), since lua5.1 has its own allocator;
-// TestTiered_TableAtAReusedAddress_Reuses checks that separately.
+// does and requires them to agree with each other and with lua5.1. It also requires that in the
+// run that warms up first and then forces promotion the second table really landed at the
+// address of the first: without that the run never hands compiled code a different table at a
+// known address.
 func TestTiered_TableAtAReusedAddress(t *testing.T) {
 	oracle := findOracle()
+	check := func(t *testing.T, warmSrc, runSrc string) {
+		tiered := runWarmThenForced(t, oracle, warmSrc, runSrc)
+		if got := tiered.GetGlobal("REUSED362").Display(); got != "true" {
+			t.Errorf("warm, then force-all: the second table is not at the address of the first (REUSED362 = %s)", got)
+		}
+	}
 	for _, o := range tableReuseArrayOps {
 		for n := 0; n <= 8; n++ {
 			t.Run(fmt.Sprintf("array_%s/length_%d", o.name, n), func(t *testing.T) {
-				checkWarmThenForced(t, oracle, tableReuseWarmArray, tableReuseRunArray(n, o.op))
+				check(t, tableReuseWarmArray, tableReuseRunArray(n, o.op))
 			})
 		}
 	}
@@ -121,41 +130,8 @@ func TestTiered_TableAtAReusedAddress(t *testing.T) {
 		for n := 1; n <= 12; n++ {
 			for d := 0; d <= n; d += 1 {
 				t.Run(fmt.Sprintf("node_%s/keys_%d_removed_%d", o.name, n, d), func(t *testing.T) {
-					checkWarmThenForced(t, oracle, o.warm, tableReuseRunNode(n, d, o.op))
+					check(t, o.warm, tableReuseRunNode(n, d, o.op))
 				})
-			}
-		}
-	}
-}
-
-// TestTiered_TableAtAReusedAddress_Reuses requires that the second table really lands at the
-// address of the first in wangshu, for every access and every second table of the test above:
-// without that it would compare runs that never hand compiled code a different table at a
-// known address.
-func TestTiered_TableAtAReusedAddress_Reuses(t *testing.T) {
-	check := func(name, warmSrc, runSrc string) {
-		warm, err := wangshu.Compile([]byte("REUSED362 = true\n"+warmSrc), "reuse-warm")
-		if err != nil {
-			t.Fatalf("wangshu compile (warm): %v", err)
-		}
-		run, err := wangshu.Compile([]byte(runSrc), "reuse-run")
-		if err != nil {
-			t.Fatalf("wangshu compile (run): %v", err)
-		}
-		got := runTieredClear(t, newInterpBaselineState(), warm, run, true, name)
-		if !strings.HasSuffix(got, "\ttrue\n") {
-			t.Errorf("%s: the second table is not at the address of the first (result %q)", name, got)
-		}
-	}
-	for _, o := range tableReuseArrayOps {
-		for n := 0; n <= 8; n++ {
-			check(fmt.Sprintf("array %s, length %d", o.name, n), tableReuseWarmArray, tableReuseRunArray(n, o.op))
-		}
-	}
-	for _, o := range tableReuseNodeOps {
-		for n := 1; n <= 12; n++ {
-			for d := 0; d <= n; d++ {
-				check(fmt.Sprintf("node %s, keys %d removed %d", o.name, n, d), o.warm, tableReuseRunNode(n, d, o.op))
 			}
 		}
 	}
