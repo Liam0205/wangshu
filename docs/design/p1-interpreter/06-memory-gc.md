@@ -468,7 +468,7 @@ host function 签名(见 [10-stdlib](./10-stdlib.md))拿到一个执行上下文
 - 一旦中间对象**写回到 Lua 栈槽 / 已存活的表 / 全局**,它就经 R5/R1 等可达,可从 shadow stack `Pop`(此后栈/表当根)。
 - **多步分配**:host 连续分配 A 再分配 B(纪律上按分配 B 时可能触发 GC 来写),A 必须先 Push,否则这中间发生的 GC 会回收 A。
   分配本身只记账、不在分配处收集(§7.1)。host function 执行期间会收集的地方有三种:它调用了另一个 host function(作回调、作元方法都算,如 `string.gsub(s, ".", string.upper)`、
-  `pcall(string.rep, s, n)`;每次 host function 调用返回之后检查一次,`collectgarbage("collect")` 自己还直接回收;`print` 遇到内置的 `tostring`、参数又没有 `__tostring` 时自己格式化,不发生这样的调用)或调用了会收集的公开 API;
+  `pcall(string.rep, s, n)`;每次 host function 调用返回之后检查一次,`collectgarbage("collect")` 自己还直接回收;`print` 遇到内置的 `tostring`、参数又没有 `__tostring` 时自己格式化,不发生这样的调用)或调用了会收集的公开 API(`State.Collect`、`State.MaybeCollectNow`;其余会分配的公开 API 只在 `SetHostTriggeredCollect` 打开并且越过阈值时在结尾回收,这一处检查不看压力模式);
   它回调的 Lua 函数(含元方法)自己执行到了安全点,即执行了 SETGLOBAL、SETTABLE、NEWTABLE、CONCAT、SETLIST、CLOSURE 之一,
   或者在里面又调用了 host function(那次调用返回之后检查一次);`coroutine.create` / `coroutine.wrap` 在分配新协程之前检查一次。
   只做比较和算术的 Lua 回调(如 `function(a, b) return a < b end`)里没有安全点。被 host function 调用的 Lua 回调自己那一帧总是由解释器执行;回调里再调用的 Lua 函数已经升层时,
@@ -877,7 +877,7 @@ GC 主流程(§8.2)的两个终结相关步骤:
 - **GC 压力 fuzz**:打开 collector 的压力模式(每个安全点都 full GC,§8.3),反复跑同一程序,验证:
   ① 输出与「正常 pacing」byte-equal(GC 透明性);② 不崩溃(捕获「漏 push shadow stack(§6.3)/mark 漏扫字段(§5.2)」类 bug)。
   这是 §6.3 纪律、§5.2 完整性的**主要自动化防线**——这类 bug 在正常 pacing 下偶发难复现,高频 GC 下必现(漏 push 要求持有窗口里有安全点,
-  §6.3 列了 host function 执行期间会收集的地方:调用了另一个 host function(返回之后检查一次,`collectgarbage` 是其中一种)或会收集的公开 API,回调的 Lua 函数自己执行到了安全点;
+  §6.3 列了 host function 执行期间会收集的地方:调用了另一个 host function(返回之后检查一次,`collectgarbage` 是其中一种)或 `State.Collect` / `State.MaybeCollectNow`,回调的 Lua 函数自己执行到了安全点;
   它自己的分配只记账,`coroutine.create` / `coroutine.wrap` 除外,它在分配新协程之前检查一次,§7.1。回调是 Lua 函数、里面只有比较和算术时窗口里没有安全点,压力模式碰不到)。
 - **finalizer 顺序**:`__gc` 调用序(创建逆序,§10)若被测试观察(终结器打印),须与 Lua 5.1 一致——属差分用例。
 
