@@ -538,7 +538,7 @@ func (vm *VM) doGetTable(f *frame, i Instruction) *LuaError {
 
 | Consumer | 命中路径 | 对 key→slot 稳定性的依赖 | 强度 |
 |---|---|---|---|
-| P1 解释器 `icGetTable` / `icGetNodeVal` | ICSlot cache 命中路径 | **每次访问都复验 NodeKey**(比对 IC 记录的 key 与该 slot 当前的 key)——若 key 已被 Brent 挪走,复验失败降级慢查找 | **弱**(自愈) |
+| P1 解释器 `icGetTable` / `icSetTable` | ICSlot cache 命中路径 | **每次访问都复验 NodeKey**(比对 IC 记录的 key 与该 slot 当前的 key,取 slot 之前先确认缓存的下标在这张表之内)——若 key 已被 Brent 挪走,复验失败降级慢查找 | **弱**(自愈) |
 | P3 wasm `emitGetGlobal` NodeHit inline | 全局表 IC 直达 | **只查 gen 是否 match**,不复验 key——**node 索引编译期烧入 wasm 字节码**;若 gen 未 bump 而 key 已挪走,读到相邻新占用者 = **静默返回错误结果** | **严** |
 | P4 native `GETGLOBAL` NodeHit inline | 全局表 IC 直达(P4 exit-reason 协议) | **同上**——node 索引编译期烧入机器码立即数,只查 gen;缺 bump = 静默返回错误结果 | **严** |
 

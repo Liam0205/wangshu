@@ -816,7 +816,7 @@ P3 IC feedback 消费的实现期硬性约束,违反即设计失败:
 
 8. **六枚举值 + nil 全覆盖**。承 §3.6。具体表现:P3 翻译器对 PointFeedback 的所有可能输入(FBUnstable / FBArithStableNumber / FBTableMono / FBTableMega / FBGlobalStable / FBSelfMono + nil)都有对应翻译形式——**switch case 不留 default panic**,通用翻译是 fallback。
 
-9. **与解释器相同的判定证据**。承 §1.2 / §1.3。具体表现:P3 IC 翻译形式里的 IsNumber×2 / 同表同代次 / globals gen 校验,与 [../p1-interpreter/05-interpreter-loop](../p1-interpreter/05-interpreter-loop.md) §4.1 / §6.3 / §6.4 解释器原版判定**逐字节同构**(Wasm 指令是 Go 代码的直译)。差分 fuzz([08-testing-strategy](./08-testing-strategy.md))保证两层 byte-equal 输出。
+9. **与解释器相同的判定证据**。承 §1.2 / §1.3。具体表现:P3 IC 翻译形式里的 IsNumber×2 / 同表同代次(连同下标和键的校验,§1.3)/ globals gen 校验,与 [../p1-interpreter/05-interpreter-loop](../p1-interpreter/05-interpreter-loop.md) §4.1 / §6.3 / §6.4 解释器原版判定**逐字节同构**(Wasm 指令是 Go 代码的直译)。差分 fuzz([08-testing-strategy](./08-testing-strategy.md))保证两层 byte-equal 输出。
 
 10. **失效后无重编译机制**。承 §2.4 / §2.5。具体表现:P3 翻译产物对「失效后的 helper 调用频率」**不计数 / 不监控 / 不触发任何动作**——helper 调用就是合法运行形式。失效计数 → 重编译协议留 P4 一并评估([../p4-method-jit/04-osr-deopt](../p4-method-jit/04-osr-deopt.md) §5)。
 

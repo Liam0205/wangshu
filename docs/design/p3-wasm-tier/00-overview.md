@@ -248,7 +248,7 @@ P1 已全部交付 + P2 PB0-PB7 全部达标 + P2 后续优化轮 #1-#4 全部�
 
 [01](./01-spike-gate.md)~[08](./08-testing-strategy.md) 各篇分别承担,本节聚合呈现:
 
-1. **语义分发非投机**:gibbous 快路径判定与解释器相同(IsNumber/同表同代次),失败走助手而非 deopt — 零 deopt 在代码层的兑现([06 §1](./06-ic-feedback-consume.md))。
+1. **语义分发非投机**:gibbous 快路径判定与解释器相同(IsNumber/同表同代次,表访问另外校验下标在表内和节点的键),失败走助手而非 deopt — 零 deopt 在代码层的兑现([06 §1](./06-ic-feedback-consume.md))。
 2. **值编码/GCRef 两层逐位同一**:Wasm 侧不引入任何私有值表示([03 §2](./03-memory-model.md))。
 3. **CallInfo 唯一真相**:gibbous 帧压 CallInfo(bit50),跨层只传 `base i32`;traceback/错误定位与解释器逐字节一致([04 §1](./04-trampoline.md) + [02 §4](./02-translation.md) pc 物化)。
 4. **错误可穿越、yield 不可穿越**:status 链冒泡 vs 线程级 tier 规则([04 §4](./04-trampoline.md) / [07](./07-coroutine-thread-rule.md))。
