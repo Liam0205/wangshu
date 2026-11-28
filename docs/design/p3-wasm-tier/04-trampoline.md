@@ -612,7 +612,7 @@ func (t *Trampoline) hCall(ctx context.Context, st *State, callBase, pc uint32) 
 |---|---|---|---|
 | **`h_call`** | CALL / TAILCALL | 三向分派(§3.1) | [02-translation](./02-translation.md) §3.6 |
 | **`h_arith`** | 算术 opcode 慢路径 | 双 number 快路径(Wasm 内直发 f64,[02-translation](./02-translation.md) §3.2)失败 → 走元方法(`__add`/`__sub`/.../字符串强转 number) | [02-translation](./02-translation.md) §3.2 + [../p1-interpreter/05](../p1-interpreter/05-interpreter-loop.md) §4 |
-| **`h_gettable`** | GETTABLE / SETTABLE / SELF 的 IC miss | IC 快照命中(同表同代次,[06-ic-feedback-consume](./06-ic-feedback-consume.md) §1)直发;miss → 走完整哈希查找 + `__index`/`__newindex` 元方法链 | [02-translation](./02-translation.md) §3.4 + [06-ic-feedback-consume](./06-ic-feedback-consume.md) §3 |
+| **`h_gettable`** | GETTABLE / SETTABLE / SELF 的 IC miss | IC 快照命中(同表同代次,加上下标在表内和节点的键,[06-ic-feedback-consume](./06-ic-feedback-consume.md) §1.3)直发;miss → 走完整哈希查找 + `__index`/`__newindex` 元方法链 | [02-translation](./02-translation.md) §3.4 + [06-ic-feedback-consume](./06-ic-feedback-consume.md) §3 |
 | **`h_safepoint`** | back edge(FORLOOP/JMP 回跳) | gcPending 检查 + 触发 GC([05-safepoint-gc](./05-safepoint-gc.md) §3);几乎恒不跳的分支 | [02-translation](./02-translation.md) §3.5 + [05-safepoint-gc](./05-safepoint-gc.md) §3 |
 | **`h_alloc`** | NEWTABLE / CLOSURE / CONCAT / SETLIST(可能 rehash) | 分配对象(table/closure/string)——gibbous 代码自身从不分配([05-safepoint-gc](./05-safepoint-gc.md) §1),分配与 GC 都在助手内同步发生 | [02-translation](./02-translation.md) §3.4/§3.7 + [05-safepoint-gc](./05-safepoint-gc.md) §1 |
 | **`h_raise`** | 解释器内在错误点(对 nil 算术、table index is nil/NaN 等翻译产物检出错误) | 构造 `*LuaError` 设 `state.pendingErr`,返回非 0(让 Wasm 帧 status 链冒泡,§4) | [../p1-interpreter/05](../p1-interpreter/05-interpreter-loop.md) §9.4 |

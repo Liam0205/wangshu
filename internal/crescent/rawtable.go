@@ -30,19 +30,11 @@
 //     the collector bumps. An array slot set to nil, by rawSet or by the
 //     collector clearing a weak value, does not bump either: the slot keeps
 //     its key, and the array consumers check the slot's value. The
-//     interpreter's icGetTable re-verifies NodeKey on every hit, but the
-//     gen-only inline consumers bake the slot index and trust gen alone: P4
-//     native GETGLOBAL/SETGLOBAL NodeHit, P3 wasm GETGLOBAL/SETGLOBAL
-//     NodeHit, and P3 wasm constant-key GETTABLE/SETTABLE/SELF NodeHit (wasm
-//     tableInlineable). A missing bump there reads another key's value. The
-//     P4 single-access templates for the array part (jit/amd64 and jit/arm64
-//     pj4_template.go, EmitGetTableArrayHit / EmitSetTableArrayHit /
-//     EmitSelfArrayHit) have no key to compare and compare no table identity
-//     either: gen is all they have for the baked index lying in the array
-//     part, and it says so only of the table the IC was filled on. On another
-//     table with the same gen and a shorter array part nothing checks the
-//     index, and the same holds for the node index of the hash-part templates
-//     (#350).
+//     interpreter's icGetTable re-verifies NodeKey on every hit, and so do
+//     the inline GETTABLE/SETTABLE/SELF paths of P3 and P4, but the gen-only
+//     inline consumers bake the slot index and trust gen alone: P4 native
+//     GETGLOBAL/SETGLOBAL NodeHit and P3 wasm GETGLOBAL/SETGLOBAL NodeHit. A
+//     missing bump there reads another key's value.
 //     An unchanged gen does not say that a node still holds a value: P3
 //     wasm emitSetGlobal stores Nil inline, making a node DEAD with no bump,
 //     and a consumer that does not compare the table's identity can be
