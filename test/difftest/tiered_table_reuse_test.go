@@ -129,8 +129,9 @@ func TestTiered_TableAtAReusedAddress(t *testing.T) {
 }
 
 // TestTiered_TableAtAReusedAddress_Reuses requires that the second table really lands at the
-// address of the first in wangshu, in every array case and in every node case: without that the
-// test above would compare runs that never hand compiled code a different table at a known address.
+// address of the first in wangshu, for every access and every second table of the test above:
+// without that it would compare runs that never hand compiled code a different table at a
+// known address.
 func TestTiered_TableAtAReusedAddress_Reuses(t *testing.T) {
 	check := func(name, warmSrc, runSrc string) {
 		warm, err := wangshu.Compile([]byte("REUSED362 = true\n"+warmSrc), "reuse-warm")
@@ -146,12 +147,16 @@ func TestTiered_TableAtAReusedAddress_Reuses(t *testing.T) {
 			t.Errorf("%s: the second table is not at the address of the first (result %q)", name, got)
 		}
 	}
-	for n := 0; n <= 8; n++ {
-		check(fmt.Sprintf("array length %d", n), tableReuseWarmArray, tableReuseRunArray(n, tableReuseArrayOps[0].op))
+	for _, o := range tableReuseArrayOps {
+		for n := 0; n <= 8; n++ {
+			check(fmt.Sprintf("array %s, length %d", o.name, n), tableReuseWarmArray, tableReuseRunArray(n, o.op))
+		}
 	}
-	for n := 1; n <= 12; n++ {
-		for d := 0; d <= n; d++ {
-			check(fmt.Sprintf("node keys %d removed %d", n, d), tableReuseWarmNode, tableReuseRunNode(n, d, tableReuseNodeOps[0].op))
+	for _, o := range tableReuseNodeOps {
+		for n := 1; n <= 12; n++ {
+			for d := 0; d <= n; d++ {
+				check(fmt.Sprintf("node %s, keys %d removed %d", o.name, n, d), o.warm, tableReuseRunNode(n, d, o.op))
+			}
 		}
 	}
 }
