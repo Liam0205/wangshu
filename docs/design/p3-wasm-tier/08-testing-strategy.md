@@ -534,8 +534,8 @@ func TestGCStressGibbousLocalsCacheAB(t *testing.T) {
     // B:locals 缓存(需写回纪律,§6.3)
     // 对照:A 与 B 在高频 GC 下输出都应 == crescent;若 B 破而 A 不破,说明写回遗漏
     for _, script := range allocHeavyCompilableScripts(t) {
-        outA := runGibbousLocalsCacheMode(t, script, /*cache=*/false, /*pause=*/1)
-        outB := runGibbousLocalsCacheMode(t, script, /*cache=*/true,  /*pause=*/1)
+        outA := runGibbousLocalsCacheMode(t, script, /*cache=*/false, /*stress=*/true)
+        outB := runGibbousLocalsCacheMode(t, script, /*cache=*/true,  /*stress=*/true)
         outCrescent := runCrescentOnly(script)
         if !bytes.Equal(outA, outCrescent) {
             t.Errorf("[A memory-resident] gibbous diverge from crescent under GC stress: %s", script)
