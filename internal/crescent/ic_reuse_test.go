@@ -16,6 +16,14 @@ import (
 // runChunk compiles src and runs it on st.
 func runChunk(t *testing.T, st *State, src string) {
 	t.Helper()
+	if err := tryChunk(t, st, src); err != nil {
+		t.Fatalf("call: %v", err)
+	}
+}
+
+// tryChunk compiles src and runs it on st, returning the error the run raised.
+func tryChunk(t *testing.T, st *State, src string) error {
+	t.Helper()
 	lx := lex.New([]byte(src), "test")
 	block, err := parse.Parse(lx, "test")
 	if err != nil {
@@ -25,9 +33,8 @@ func runChunk(t *testing.T, st *State, src string) {
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
-	if _, err := st.Call(st.LoadProgram(mainID, protos), nil, 0); err != nil {
-		t.Fatalf("call: %v", err)
-	}
+	_, err = st.Call(st.LoadProgram(mainID, protos), nil, 0)
+	return err
 }
 
 // fields returns "p1 = 1, p2 = 2, ..." with n fields.
