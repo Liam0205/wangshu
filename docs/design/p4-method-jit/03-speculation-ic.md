@@ -304,7 +304,7 @@ type PointFeedback struct {
 
 本 addendum 记录 addendum 时点的实际情况,不删除上文原设计文本——上文对 P2/P3 端的对偶描述仍字面成立;amd64 native path 的 ArrayHit / NodeHit inline 走了简化路线,单条表访问的模板实际检查的内容见下一段。addendum 时点 arm64 端的 native 接受检查还没有接上 GETTABLE/SETTABLE(承 §14.5 分岔);现在 arm64 的按指令翻译也内联这两条指令的 ArrayHit / NodeHit(`peroptranslator/emit_arm64.go` 的 `emitGETTABLEArm64`、`emitSETTABLEArm64`)。
 
-**单条表访问的模板实际检查的内容**（`internal/gibbous/jit/amd64/pj4_template.go`、`internal/gibbous/jit/arm64/pj4_template.go`，函数体只有一条 GETTABLE / SETTABLE / SELF 时使用；SELF 的哈希模板还是 `obj:method(...)` 调用的 spec 模板的前半段，`compileSpecSelfCall`）：这一组模板不比对 tableRef，所以同一个函数用在以同一种方式构造出来的许多张表上，都走内联路径。它们依次检查：
+**单条表访问的模板实际检查的内容**（`internal/gibbous/jit/amd64/pj4_template.go`、`internal/gibbous/jit/arm64/pj4_template.go`，函数体只有一条 GETTABLE / SETTABLE / SELF 时使用；SELF 的哈希模板还是 `obj:method(...)` 调用的 spec 模板的前半段，`compileSpecSelfCall`）：这一组模板不比对 tableRef：函数在一张或少数几张表上预热之后，再用到以同一种方式构造出来的别的表时仍走内联路径（预热时就轮流用在多张表上的函数，解释器的内联缓存重填 3 次之后反馈变成 megamorphic，`bridge.MegamorphicRefillThreshold`，本来就不选用模板）。它们依次检查：
 
 1. 值是表；
 2. 表的 gen 等于固化的 gen；
