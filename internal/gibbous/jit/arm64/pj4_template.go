@@ -90,7 +90,7 @@ func emitNodeIndexGuardArm64(buf []byte, stableIndex uint32) ([]byte, int) {
 
 // emitSlotAddrArm64 advances x2 from the start of an array or node block to
 // the slot at byteOff. The offset goes through a register: the immediate of
-// LDR/STR stops at 32760, which an array index of 4096 or a node index of
+// LDR/STR stops at 32760, which an array index of 4096 or the value of node
 // 1365 already passes. Clobbers x1.
 //
 //	MOV x1, byteOff imm64       ; 16
