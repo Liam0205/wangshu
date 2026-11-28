@@ -113,17 +113,20 @@ var tableReuseNodeOps = []struct{ name, warm, op string }{
 // without the first the run never hands compiled code a different table at a known address,
 // without the second it may not hand it to compiled code at all.
 //
-// What the test cannot see is whether a case really is one the inline checks decide. For the
-// array cases it always is: a second table at the first one's address with fewer than eight
-// elements is shorter than the frozen index. For the node cases the second table must also end
-// up with the generation of the first and with a live field in the node the frozen index names,
-// and that depends on the hash function and on how nodes are handed out. With the translation
-// from before the fix, 7 of the 90 node cases of each access fail (keys_6..8_removed_3 and
-// keys_9..12_removed_2 for the read and the store, keys_6..8_removed_2 and keys_9..12_removed_1
-// for the method call). internal/crescent's TestP3_NodeHitOnATableAtAReusedAddress builds the
-// same tables, looks at the caches and the nodes, and fails when no size produces such a case;
-// internal/gibbous/wasm's TestPW5_InlineSlotGuards covers the node checks on memory laid out by
-// hand and does not depend on any of this.
+// What the test cannot see is whether a case really is one the inline checks decide. The second
+// table must have the generation of the first, or the generation guard turns the access away
+// before the checks on the frozen index are reached and the result is right without them. For
+// the array cases that is all it takes: a second table with fewer than eight elements is shorter
+// than the frozen index. For the node cases the node the frozen index names must also hold a live
+// field, and that depends on the hash function and on how nodes are handed out. With the
+// translation from before the fix, all array cases shorter than eight fail, and 7 of the 90 node
+// cases of each access (keys_6..8_removed_3 and keys_9..12_removed_2 for the read and the store,
+// keys_6..8_removed_2 and keys_9..12_removed_1 for the method call). internal/crescent's
+// TestP3_ArrayHitOnATableAtAReusedAddress and TestP3_NodeHitOnATableAtAReusedAddress build the
+// same tables and look at the caches, the generations and the nodes: the first fails when a
+// shorter table is not such a case, the second when no size produces one.
+// internal/gibbous/wasm's TestPW5_InlineSlotGuards covers the checks on memory laid out by hand
+// and does not depend on any of this.
 func TestTiered_TableAtAReusedAddress(t *testing.T) {
 	oracle := findOracle()
 	check := func(t *testing.T, warmSrc, runSrc string) {
