@@ -37,9 +37,9 @@
 | `rehash`(含 array↔hash 迁移) | 是 | 有(原有) | |
 | `insertNewKey` Brent 重定位 | 是 | 有(2026-07-02,seed `4b3d10ff`) | 第一实例 |
 | `rawSet` 删键(val=Nil,节点从有值变成已删除) | 否:键留在节点里(#338 起),同键再写回到原节点 | 有 | 键→槽位没有变。现在的消费者都自己检查节点的值(见下表),没有哪一个要靠这次 bump;保留它是沿用 #338 之前的行为,见表后的说明。`TestRawTable_DeleteKeepsKeyAndNode` 断言;对已删除的键再赋 nil 不 bump |
-| `insertNewKey` 新键接管主位置上已删除的节点 | 是:节点换了键 | 有(#338) | P3 wasm `emitSetGlobal` 内联写 Nil 时不经过 `rawSet`、不 bump,所以节点换键的这一刻必须 bump,否则读方的 gen-only 快照会把新键的值当成旧键的。`TestRawTable_DeadNodeTakeoverBumpsGen` 断言,`TestTiered_ClearWhileTraversing/deleted_global_node_taken_over` 在 P3 的内联路径上断言 |
+| `insertNewKey` 新键接管主位置上已删除的节点 | 是：节点换了键 | 有（#338） | P3 wasm `emitSetGlobal` 内联写 Nil 时不经过 `rawSet`、不 bump，所以节点换键的这一刻必须 bump，否则读方的 gen-only 快照会把新键的值当成旧键的。`TestRawTable_DeadNodeTakeoverBumpsGen` 断言，`TestTiered_ClearWhileTraversing/deleted_global_node_taken_over` 在 P3 的内联路径上断言 |
 | `gc/sweep.go` weak 表清项 | 只清值时否(键保留);键指向的对象已死、换成 `object.DeadKey` 时是 | 有 | `TestWeak_SweepClearBumpsGen`、`TestWeak_ClearedValueKeepsKeyForNext` 断言 |
-| `gc/sweep.go` `clearDeadKeys`:已删除节点里对象已死的键换成 `object.DeadKey` | 是:节点不再持有原来的键 | 有(#338) | `TestDeadKey_ObjectDiesAndKeyIsReplaced` 断言;没有键被替换的回收不 bump |
+| `gc/sweep.go` `clearDeadKeys`：已删除节点里对象已死的键换成 `object.DeadKey` | 是：节点不再持有原来的键 | 有（#338） | `TestDeadKey_ObjectDiesAndKeyIsReplaced` 断言；没有键被替换的回收不 bump |
 | `insertNewKey` 新键放入空闲节点(main position 空闲 / `findFreeNode` 给的节点) | Nil→key | 不需要 | IC 只在 `val != Nil` 时回填(`ic.go` 的 `rawGetWithLoc` 对已删除的节点返回 `locNone`),空闲节点不可能被快照 |
 | `nodeSetVal` 改值、同一个键写回它已删除的节点 / `SetTableArrayAt` | 否 | 不需要 | IC「改值不 bump」正是靠它 |
 | P3 wasm `emitSetGlobal` 命中时写 Nil(P4 的 SET 类内联路径都检查新值 != Nil,它不检查) | 否:键保留、值为 Nil,与 `rawSet` 删键得到的已删除节点相同 | 不需要(它自己不 bump) | 读方的内联路径都检查节点的值 != Nil,读到已删除的节点会退到 helper;节点之后被别的键接管时由上面「接管」一行 bump。与 P4 的守卫不对称 |
@@ -77,8 +77,8 @@ SETGLOBAL / SETTABLE NodeHit 和 P3 wasm 常量键 SETTABLE NodeHit 还会检查
 | P3 wasm GETGLOBAL / SETGLOBAL NodeHit | gen + slot != Nil | `wasm/translate_table.go` `emitGetGlobal` / `emitSetGlobal` |
 | P3 wasm 常量键 GETTABLE / SETTABLE / SELF NodeHit | IsTable + TableRef + gen + slot != Nil | `wasm/translate_table.go` `tableInlineable` → `emitTableGuard` + `emitSlotBase` |
 | 解释器 `icGetTable` / `icSetTable` | gen + NodeKey 复验 + slot != Nil | `crescent/ic.go`(不是 gen-only,gen 只是快速否决) |
-| P4 单条 GETTABLE / SELF 的模板(整个函数只有一条表访问) | gen + NodeKey + slot != Nil(数组部分的模板没有键,是 gen + slot != Nil) | `jit/amd64/pj4_template.go` `EmitGetTableNodeHit` / `EmitSelfNodeHit` / `EmitSelfNodeHitNoRet`,数组部分是 `EmitGetTableArrayHit` / `EmitSelfArrayHit`;arm64 对应 `jit/arm64/pj4_template.go` |
-| P4 单条 SETTABLE 的模板 | gen + NodeKey + slot != Nil(数组部分的模板没有键,是 gen + slot != Nil) | `EmitSetTableNodeHit` / `EmitSetTableArrayHit`(arm64 同)。不比对 TableRef,所以「slot != Nil」这一项挡住的不只是同一张表上的删除,还有 gen 相同、这个字段已经删除的另一张表;`TestTiered_SingleStoreTemplate` 断言。**前提是下标在这张表之内**:P4 单条表访问的模板(本行和上一行)都不检查下标是否超出这张表的数组部分或哈希部分,换一张 gen 相同但更小的表时读写的是表外的内存,这一列的守卫都不再有意义(存量缺陷 [#350](https://github.com/Liam0205/wangshu/issues/350)) |
+| P4 单条 GETTABLE / SELF 的模板（整个函数只有一条表访问） | gen + NodeKey + slot != Nil（数组部分的模板没有键，是 gen + slot != Nil） | `jit/amd64/pj4_template.go` `EmitGetTableNodeHit` / `EmitSelfNodeHit` / `EmitSelfNodeHitNoRet`，数组部分是 `EmitGetTableArrayHit` / `EmitSelfArrayHit`；arm64 对应 `jit/arm64/pj4_template.go` |
+| P4 单条 SETTABLE 的模板 | gen + NodeKey + slot != Nil（数组部分的模板没有键，是 gen + slot != Nil） | `EmitSetTableNodeHit` / `EmitSetTableArrayHit`（arm64 同）。不比对 TableRef，所以「slot != Nil」这一项挡住的不只是同一张表上的删除，还有 gen 相同、这个字段已经删除的另一张表；`TestTiered_SingleStoreTemplate` 断言。**前提是下标在这张表之内**：P4 单条表访问的模板（本行和上一行）都不检查下标是否超出这张表的数组部分或哈希部分，换一张 gen 相同但更小的表时读写的是表外的内存，这一列的守卫都不再有意义（存量缺陷 [#350](https://github.com/Liam0205/wangshu/issues/350)） |
 
 **判据**:约定成文那一刻就把 producer 列成表并逐条标「已 bump / 补 / 不需要(为什么)」,再写一个**直接
 断言约定本身**的单元测试(`TestRawTable_SlotReuseAfterDeleteBumpsGen`、`TestRawTable_DeadNodeTakeoverBumpsGen`:槽位换主必伴随 gen 变化,gen 的基准要在删除之后取,因为删除自己也 bump;

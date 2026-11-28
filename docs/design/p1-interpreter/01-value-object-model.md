@@ -202,7 +202,7 @@ word4: metaRef   (GCRef→ metatable Table,或 Nil)
 word5: [31:0] lastfree(哈希空闲槽搜索游标) | [63:32] gen(IC 代次,单调递增)
 ```
 
-**`gen` 代次字段**(承 [05](./05-interpreter-loop.md) §6.6 回填请求,IC 失效机制的实际载体):任何改变表"形状"的操作(rehash、增删 metatable、键的数组↔哈希迁移、删除键、节点换键)递增 `gen`;已存在键改值**不**递增。`object.Table` 暴露 `Gen()`/`bumpGen()`。初始 0。详见 [05](./05-interpreter-loop.md) §6。
+**`gen` 代次字段**(承 [05](./05-interpreter-loop.md) §6.6 回填请求,IC 失效机制的实际载体):任何改变表"形状"的操作(rehash、增删 metatable、键的数组↔哈希迁移、删除哈希部分的键(节点从有值变成已删除)、节点换键;完整的清单在 [05](./05-interpreter-loop.md) §6.5)递增 `gen`;已存在键改值**不**递增。`object.Table` 暴露 `Gen()`/`bumpGen()`。初始 0。详见 [05](./05-interpreter-loop.md) §6。
 
 **Node(哈希槽,3 字 = 24 字节):**
 ```
