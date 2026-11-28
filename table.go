@@ -185,7 +185,8 @@ func (st *State) NewStringArrayTable(vals []string) Value {
 //
 // Typical use: NewTable + Preallocate(N) + SetIndex(1..N) to bypass repeated
 // rehash storms. Grow-only (n ≤ current asize → no-op); existing array segment
-// data is preserved. The hash segment is untouched.
+// data is preserved, and an integer key in 1..n that was in the hash segment
+// moves into the array segment.
 //
 //	tv := st.NewTable()
 //	tv.AsTable().Preallocate(1000)
