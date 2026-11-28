@@ -514,3 +514,35 @@ func TestPreallocate_DuringForEachOnARemovedIntegerKey(t *testing.T) {
 		t.Errorf("after the iteration t[5] = %v and t[500] = %v, want nil and 1", tt.GetIndex(5), tt.GetIndex(500))
 	}
 }
+
+// TestPreallocate_ReservationEndsAtTheNextRehash: the reserved slots survive stores of other keys
+// while the hash part has room for them, and filling 1..n afterwards keeps every entry; once a
+// store of another key makes the table rehash with the reserved slots still empty, the table
+// still holds what was stored (the slots are given up, which only costs time).
+func TestPreallocate_ReservationEndsAtTheNextRehash(t *testing.T) {
+	for _, names := range []int{0, 5, 6, 40} {
+		st := wangshu.NewState(wangshu.Options{})
+		tv := st.NewTable()
+		tt := tv.AsTable()
+		if e := tt.Preallocate(1000); e != nil {
+			t.Fatalf("Preallocate: %v", e)
+		}
+		for i := 0; i < names; i++ {
+			_ = tt.Set(wangshu.String("name"+strconv.Itoa(i)), wangshu.Number(float64(-i)))
+		}
+		for i := 1; i <= 1000; i++ {
+			_ = tt.SetIndex(i, wangshu.Number(float64(i)))
+		}
+		if got := tt.Len(); got != 1000 {
+			t.Errorf("%d other keys: Len = %d, want 1000", names, got)
+		}
+		n, sum := 0, 0.0
+		if e := tt.ForEach(func(_, v wangshu.Value) bool { n++; sum += v.Number(); return n < 5000 }); e != nil {
+			t.Fatalf("ForEach: %v", e)
+		}
+		if want := 500500.0 - float64(names*(names-1)/2); n != 1000+names || sum != want {
+			t.Errorf("%d other keys: ForEach visited %d entries adding up to %v, want %d and %v", names, n, sum, 1000+names, want)
+		}
+		tv.Release()
+	}
+}
