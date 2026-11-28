@@ -715,8 +715,8 @@ Go 堆内(crescent / gibbous 不共见,经整数 ID 桥接):
 **回答**:不需要。
 
 - **finalizer 触发时机**:GC sweep 阶段发现弱可达 userdata 时,把对象塞入 finalize 队列;**GC 结束后**(或下次 yieldPoint 时,P1 实现策略[06](../p1-interpreter/06-memory-gc.md) §10)由解释器主循环调度执行 finalizer。
-- **gibbous 帧的位置**:GC 触发于 imported 助手内(分配点),gibbous 帧已让出执行;GC 结束后控制权返回 imported 助手,继续返回 gibbous 帧——**finalizer 的执行不在 gibbous 帧内**,而是被 GC 调度回主循环单独执行(走 crescent 解释器,因为 finalizer 本身可能是任意 Lua 代码)。
-- **gibbous 翻译产物不需感知 finalizer**:整套机制对 gibbous 透明——它只看到「分配可能慢一点(GC)」与「分配后对象正常存活」。
+- **gibbous 帧的位置**:GC 触发于 imported 助手内(助手末尾的安全点,或者它调的 host function 返回之后;分配本身只记账,[P1 06](../p1-interpreter/06-memory-gc.md) §7.1),gibbous 帧已让出执行;GC 结束后控制权返回 imported 助手,继续返回 gibbous 帧——**finalizer 的执行不在 gibbous 帧内**,而是被 GC 调度回主循环单独执行(走 crescent 解释器,因为 finalizer 本身可能是任意 Lua 代码)。
+- **gibbous 翻译产物不需感知 finalizer**:整套机制对 gibbous 透明——它只看到「调用助手可能慢一点(GC)」与「分配后对象正常存活」。
 
 ### 6.4 freelist 复用:arena freelist 在 wazero memory 上仍按 size class 复用,与 P1 形式零差异
 

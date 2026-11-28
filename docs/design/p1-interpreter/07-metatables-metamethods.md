@@ -1066,7 +1066,7 @@ sweep 阶段(06 §8):
 - **Lua closure**:`callMM` → `callFixed` → `enterLuaFrame`(05 §1.4)→ **reentry 子循环**(05 §7.1,不递归 Go 栈,压 CallInfo)。元方法体是 Lua 字节码,在同一 `execute` Go 帧里继续跑。
 - **host function**:`callMM` → 同步 Go 调用(05 §7.5)。元方法是宿主/stdlib 的 Go 函数(如 `__index` 是 host 写的代理逻辑)。
 
-**两种都可能**:① 分配(造新对象)→ 触发 GC;② 扩容值栈(`ensureStack`);③ arena 搬迁(扩容/GC compaction,虽 P1 不 compact)。
+**两种都可能**:① 分配(造新对象),之后的安全点可能回收(分配本身只记账,[06](./06-memory-gc.md) §7.1);② 扩容值栈(`ensureStack`);③ arena 搬迁(扩容/GC compaction,虽 P1 不 compact)。
 
 ### 14.2 调用后必须 reload stk(贯穿纪律)
 

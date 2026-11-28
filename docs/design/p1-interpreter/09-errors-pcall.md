@@ -757,7 +757,7 @@ func (vm *VM) callHandlerOnErrorStack(th *Thread, handler, errval value.Value) (
 
 - **不动出错帧**:handler 在出错栈**之上**(当前 top 之上)压临时帧执行;出错的 CallInfo 链原封不动挂着,
   供 `debug.traceback`/`debug.getinfo` 遍历(§7/§13)。这正是「展开前调」的具体实现。
-- **errval 登记 GC 根**:handler 必然分配(拼字符串),触发 GC;`errval` 此刻只被 `LuaError.value` 这个 Go
+- **errval 登记 GC 根**:handler 必然分配(拼字符串),它执行期间的安全点可能回收;`errval` 此刻只被 `LuaError.value` 这个 Go
   指针引用(不在任何 Lua 栈槽里),GC 看不到 → 必须显式压 shadow root(§1.3)。
 - **handler 可能 reentry**:handler 是 Lua closure 时走 reentry 子循环(05 §7.1),在出错栈之上跑。这层
   reentry 也加 `nCcalls`(05 §7.4),受 C stack overflow 上限保护(防 handler 无限递归)。
