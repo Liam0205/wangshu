@@ -475,7 +475,7 @@ Time T3..Tn: 同样比对失败(SNAP_GEN 永远是 42,t.gen() 永远 ≥43)
 | R(B) 不是 table(GETTABLE/SELF) | IsTable 层 | `$h_gettable` / `$h_self` → 走 `__index` 元方法 |
 | 缓存目标表已不是当前表 | tableRef 层(GETTABLE/SELF;GETGLOBAL 无此层) | `$h_gettable` / `$h_self` → 走完整哈希 |
 | 表已 rehash(gen bump) | shape 层 | `$h_gettable` / `$h_getglobal` / `$h_self` → 走完整哈希 |
-| 同一个地址上已经是另一张表(原表被回收,新表分配在原地址,gen 相同) | 下标在表内 / 节点的键(GETTABLE/SETTABLE/SELF;GETGLOBAL 的全局表不会被回收) | `$h_gettable` / `$h_settable` / `$h_self` → 走完整哈希 |
+| 同一个地址上已经是另一张表（原表被回收，新表分配在原地址，gen 相同） | 下标在表内 / 节点的键（GETTABLE/SETTABLE/SELF；GETGLOBAL 的全局表不会被回收） | `$h_gettable` / `$h_settable` / `$h_self` → 走完整哈希 |
 
 **helper 内部都是 [../p1-interpreter/05-interpreter-loop](../p1-interpreter/05-interpreter-loop.md) §6.3/§6.4 解释器完整流程**,语义层面与解释器逐字节一致([07-tests](./08-testing-strategy.md) 差分检查保证)。
 

@@ -381,7 +381,7 @@ P3 用 feedback 的「可选」是说:**P3 在 feedback 存在时可以发更紧
 - 读 `feedback.points[pc].kind == FBTableMono` → 知道这点单态稳定;
 - 把 `stableShape` (= gen) 与 `stableIndex` (= 槽位) 烧进 Wasm 代码作为常量;
 - 失败时(表 gen 已变 / 不是同一表)走 helper 完整查找,**仍正确**。
-- 实现在「同表同代次」之后还检查固化的槽位在拿到的这张表之内,哈希部分再比对节点里的键([P3 02 §3.4.2](../p3-wasm-tier/02-translation.md) 的实现现状):地址和 gen 都相同也不一定是原来那张表。
+- 实现在「同表同代次」之后还检查固化的槽位在拿到的这张表之内，哈希部分再比对节点里的键（[P3 02 §3.4.2](../p3-wasm-tier/02-translation.md) 的实现现状）：地址和 gen 都相同也不一定是原来那张表。
 
 **若 feedback 是 nil 或 `FBTableMega`**:P3 跳过 IC 快照固化,直接发 helper 查找(完整哈希)——慢一些但仍正确。**这是「可选」的体现**:有 feedback 时锦上添花,无 feedback 时退化到通用形式。
 
