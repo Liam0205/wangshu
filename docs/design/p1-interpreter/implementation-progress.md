@@ -1294,9 +1294,15 @@ arena 大小跟着比例变。`TestTiered_StdlibNames` 加一段
   没有扩大时直接返回、不推进 gen。
 - **为什么不照官方的 `luaH_resizearray` 重建哈希部分**：官方只在 `OP_SETLIST` 里调用它，那时表还在构造中，不可能正被遍历。`Preallocate` 是宿主 API，
   可以在 `ForEach` 的回调里、或者脚本的 `pairs` 循环里经宿主函数被调用。重建会把每个键换到别的节点、丢掉已删除的节点：只有字符串键的表上，回调里调用一次
-  `Preallocate`，20 个条目只访问到 18 个；回调里先清掉当前条目再调用，下一步就报 `invalid key to 'next'`。原地搬的做法里没有键要搬时遍历完全不受影响
-  （修改前也是这样）；有键要搬时，遍历可能漏掉还没走到的被搬走的条目，站在被搬走的键上时会回到数组部分、把哈希部分再走一遍，但一定结束。
-  这一点写在 `Table.Preallocate` 的 godoc 里。
+  `Preallocate`，20 个条目只访问到 18 个；回调里先清掉当前条目再调用，下一步就报 `invalid key to 'next'`。原地搬的做法里，每个键都留在原来的节点里，
+  遍历不报错、一定结束，结果只会因为哈希部分里落进新范围的整数键而不同：
+  - 被搬走、遍历还没走到的条目可能漏掉（它的值已经在数组部分，遍历早就走过数组部分了）。
+  - 遍历正站在这样一个键上时（被搬走的，或者刚被清掉、节点还在的），`rawNext` 把它当成数组下标，从数组部分的下一格继续，走完数组再把哈希部分从头走一遍，
+    之前访问过的哈希条目会重复出现。后一种情况不需要有键被搬走：10 个字符串键加上整数键 500 和 5 的表，回调拿到 5、把它清掉、再 `Preallocate(10)`，
+    12 个条目回调 19 次。修改前的 `Preallocate` 在这种情况下结果相同，官方的 `findindex` 也是按下标落在数组范围内来判断的。
+  - 其余情况（哈希部分里没有落进新范围的整数键）遍历的结果与不调用 `Preallocate` 时相同，修改前也是这样。
+
+  这些写在 `Table.Preallocate` 的 godoc 里。
 - **分配失败**：新数组是唯一的一次分配，而且在改动表之前。arena 放不下时 panic（`Program.Run` 会把它转成 error，State 之后还能用），表保持原样。
 - **验证**：
   - `internal/crescent` 的 `TestGrowArray_MovesHashIntegerKeys`（整数键搬进数组部分，字符串键和非整数键留在哈希部分，哈希部分的块没有换，遍历正好 5 个条目，
@@ -1305,8 +1311,14 @@ arena 大小跟着比例变。`TestTiered_StdlibNames` 加一段
   - `test/api` 的 `TestPreallocate_KeepsIntegerKeysFromTheHashPart`、`TestPreallocate_KeepsEveryKindOfKey`（数组范围内外的整数键、字符串键、非整数键，读取、`Len` 和 `ForEach`）、
     `TestPreallocate_DuringForEach`（回调里每次都扩大，以及先清掉当前条目再扩大，20 个条目各访问一次）、`TestPreallocate_DuringForEachWithIntegerKeys`、
     `TestPreallocate_FailureLeavesTheTableAlone`（超出 `MaxArenaBytes` 的请求 panic 之后，原有的 21 个条目都在）、
-    `TestPreallocate_ScriptAccessAfterwards`（脚本对哈希部分里的键 5 读写 1000 次之后，宿主函数扩大数组部分，脚本接着读写同一个键，结果正确；三种构建都执行）。
-  - 变异 7 种，每一种都有测试失败：换回修改前的 `alloc.go`（4 个 API 测试失败）；换成重建哈希部分的写法（`TestGrowArray_TraversalGoesOn`、`TestPreallocate_DuringForEach` 等 3 个失败）；
+    `TestPreallocate_DuringForEachOnARemovedIntegerKey`（上面 12 个条目的例子：不报错、结束、每个条目都访问到）、
+    `TestPreallocate_ScriptAccessAfterwards`（脚本对哈希部分里的键 5 读写 1000 次之后，脚本调用的宿主函数扩大数组部分，脚本接着读写同一个键，结果正确。
+    这里的函数太短，P3、P4 构建里也不升层，检查的是解释器的内联缓存）、
+    `TestPreallocate_CompiledAccessAfterwards`（只在 P3、P4 构建里：带循环的读函数和写函数升层之后扩大数组部分，再调用它们，结果正确；
+    断言扩大之前两个函数都已升层、扩大之后三次调用都进入了编译出来的代码）。
+  - `internal/crescent` 的 `TestGrowArray_TraversalFromARemovedIntegerKey`：站在已清掉的整数键 5 上扩大数组部分，接下去的遍历把 11 个条目各返回一次。
+  - 变异 7 种，每一种都有测试失败：换回修改前的 `alloc.go`（默认构建里 5 个 API 测试失败，P3 构建里 `TestPreallocate_CompiledAccessAfterwards` 也失败）；
+    换成重建哈希部分的写法（`TestGrowArray_MovesHashIntegerKeys`、`TestGrowArray_TraversalGoesOn`、`TestPreallocate_DuringForEach` 失败）；
     不搬键；搬了值但不清原节点；不推进 gen；不复制旧数组；先改表头再分配。
     不推进 gen 只有 `TestGrowArray_MovesHashIntegerKeys` 发现，脚本层面看不出来：内联缓存命中时都检查节点的值，被搬走的键的节点没有值，本来就不会命中。
     推进 gen 是按 `rawtable.go` 文件头的约定做的（拿走一个有值节点的值的路径都推进）。
