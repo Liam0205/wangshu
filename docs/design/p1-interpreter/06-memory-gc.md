@@ -487,7 +487,7 @@ host function 签名(见 [10-stdlib](./10-stdlib.md))拿到一个执行上下文
 
 GC 只在两类受控位置介入(safepoint),**绝不异步打断**:
 
-1. **分配点**:会分配的 opcode 结束时(`safepoint`),以及 `coroutine.create` / `coroutine.wrap` 分配新协程之前，检查分配记账是否越过阈值(§8.3),
+1. **分配点**:会分配的 opcode 结束时(`safepoint`),以及 `coroutine.create` / `coroutine.wrap` 分配新协程之前,检查分配记账是否越过阈值(§8.3),
    越过就 STW 收集。arena 容量不够只会 grow(§3),不触发 GC。这是主要的主动 GC 入口;另见第 2 条宿主函数返回后的检查点(#297)。
 2. **层边界**:解释器 ↔ 编译层(P3+)、VM ↔ host 的边界。P1 只有解释器层,层边界退化为「VM ↔ host 调用边界」——
    可作为 GC 检查点(host 调用前后栈一致,适合 GC)。宿主函数返回、结果写进栈槽之后有一个检查点(`callHost` 末尾
@@ -509,7 +509,7 @@ GC 只在 mutator 主动到达检查点(分配 opcode 结束时的 `safepoint`�
 | `CONCAT` | 拼接结果新字符串(可能多个中间串;数字操作数转成的字符串也在这里分配) | 是,执行完检查一次 |
 | `SETLIST` | 可能触发表 array 段扩容(rehash → 新 array 段) | 是,执行完检查一次(这一次有没有扩容都检查) |
 | `SETTABLE`/`SETGLOBAL` | 插入新键时可能 rehash(新 array/node 段) | 是,执行完检查一次(这一次有没有 rehash 都检查) |
-| `CALL`/`TAILCALL`/`TFORLOOP`(被调的是 host function) | host 内部可能分配(见 §6) | 是(host 返回后，§7.1) |
+| `CALL`/`TAILCALL`/`TFORLOOP`(被调的是 host function) | host 内部可能分配(见 §6) | 是(host 返回后,§7.1) |
 
 其余 opcode 都不检查。Lua 函数之间的调用和返回(`CALL`/`TAILCALL`/`RETURN`)不是触发点;`VARARG` 和建帧时的值栈扩容只经 `Collector.Account` 记账,
 也不是。`GETTABLE`、算术、比较这些 opcode 自己不检查,它们走元方法时,元方法是 host function 就在它返回之后检查一次,是 Lua 函数就看它自己
@@ -614,9 +614,9 @@ updatePacing():
   threshold = live * GCPAUSE / 100     // 与「上次回收以来新分配的字节数」比较;GCPAUSE 默认 200 ⇒ 再分配 2*live 字节时 GC
 ```
 
-- `GCPAUSE`（默认 **200**）：存活 `live` 字节后，再分配 `2*live` 字节（总量到 `3*live`）触发下次 GC。
-  默认值与 Lua 5.1 `LUAI_GCPAUSE` 相同，**含义不同**：官方拿 `estimate/100 * gcpause` 与总字节数比较，200 是总量到 `2*live` 时回收。
-  所以这里的比例 `p` 大约相当于官方的 `p + 100`。脚本的 `collectgarbage("setpause")` 设置的是这个量（[10](./10-stdlib.md) §4.6）；公开的 `Options.GCPause` 目前没有接到回收器上，设了不起作用（[#356](https://github.com/Liam0205/wangshu/issues/356)）；
+- `GCPAUSE`(默认 **200**):存活 `live` 字节后,再分配 `2*live` 字节(总量到 `3*live`)触发下次 GC。
+  默认值与 Lua 5.1 `LUAI_GCPAUSE` 相同,**含义不同**:官方拿 `estimate/100 * gcpause` 与总字节数比较,200 是总量到 `2*live` 时回收。
+  所以这里的比例 `p` 大约相当于官方的 `p + 100`。脚本的 `collectgarbage("setpause")` 设置的是这个量([10](./10-stdlib.md) §4.6);公开的 `Options.GCPause` 目前没有接到回收器上,设了不起作用([#356](https://github.com/Liam0205/wangshu/issues/356));
   要不要改成官方的口径见 [#353](https://github.com/Liam0205/wangshu/issues/353)。
 - **首次触发**:`threshold` 初值 = 创建 collector 时 arena 容量的 1/4(既不过早 GC,也不拖到太晚)。
 - **下限**：每轮回收之后算出的 `threshold` 不低于 arena 容量的 1/16。所以比例再小（包括 0），两次自动回收之间也要分配这么多字节；
