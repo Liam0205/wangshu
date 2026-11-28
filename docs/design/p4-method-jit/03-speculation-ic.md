@@ -114,7 +114,7 @@ P4 (gibbous/jit,本文):
 
 | 指令族 | P1 写入字段 | 写入条件 | P4 投机的钩子 |
 |---|---|---|---|
-| GETTABLE / SETTABLE / SELF | `kind`={1,2,3,4} + `shape`/`index`/`tableRef` | 表查找命中或多次换表降级 mega | `kind∈{1,2,3}` + 同表同代次 ⇒ 直达槽投机(本文 §2.3 / §6) |
+| GETTABLE / SETTABLE / SELF | `kind`={1,2,3,4} + `shape`/`index`/`tableRef` | 表查找命中或多次换表降级 mega | `kind∈{1,2,3}` + 同表同代次 ⇒ 直达槽投机(本文 §2.3 / §6;实际生成的代码不比对 tableRef,另外检查下标在表内和节点的键,见 §2.3 末尾) |
 | GETGLOBAL / SETGLOBAL | `kind`=2(globals 恒 node hit)+ `shape` + `index` | globals 表查找命中 | 直达 globals 槽投机(本文 §2.4) |
 | SELF(`obj:m()`) | 与 GETTABLE 同构 | 方法常驻 metatable → 命中率极高 | 内联方法查找 + metatable 代次 guard(本文 §2.5) |
 | ADD / SUB / MUL / DIV / MOD / POW / UNM | 算术 IC 双计数:`shape`(numHits) / `index`(metaHits)挪用 | 快路径双 number 命中 → numHits++;走元方法 → metaHits++ | 比例 ≥0.99 ⇒ f64 投机模板(本文 §2.2) |
@@ -177,7 +177,7 @@ type PointFeedback struct {
 | feedback Kind | 投机动作 | guard 检查什么 | 失败着陆面 | confidence 阈值 | P3 镜像章节(对偶) |
 |---|---|---|---|---|---|
 | `FBArithStableNumber` | f64 直接运算指令(`mulsd`/`fmul`/`addsd`)+ NaN 规范化 | 两操作数 `IsNumber`(NaN-box 单 u64 比较)| OSR exit | ≥0.99 | P3 06 §3.1(P3 此处发完整 if-else,本文裁掉 else)|
-| `FBTableMono` | 代次比对 + 直达槽 load/store(把 IC 命中路径内联成机器码)| 同表 + 同代次(NaN-box tag + tableRef + gen)| OSR exit | =1.0(P1 mono IC 无降级历史)| P3 06 §3.2.1(P3 在 if-then 直达,本文在 guard 通过后直达)|
+| `FBTableMono` | 代次比对 + 直达槽 load/store(把 IC 命中路径内联成机器码)| 同表 + 同代次(NaN-box tag + tableRef + gen;这是设计期的形式,实现不比对 tableRef,另查下标在表内、节点的键和槽位的值,见 §2.3 末尾)| OSR exit | =1.0(P1 mono IC 无降级历史)| P3 06 §3.2.1(P3 在 if-then 直达,本文在 guard 通过后直达)|
 | `FBGlobalStable` | 常量化 / 直达 globals 槽 | globals 代次(身份恒等省 tableRef 校验)| OSR exit | =1.0 | P3 06 §3.2.2 |
 | `FBSelfMono` | 内联方法查找结果(self 传递 + 直达槽)| metatable 代次(同 FBTableMono 三层)| OSR exit | =1.0 | P3 06 §3.2.3 |
 | `FBUnstable` / `FBTableMega` | **不投机**:发通用模板(与解释器等价的语义路径) | 无 guard(语义完备)| 无(直接走通用)| n/a(本就不投机)| P3 06 §3.3 / §3.4 |
@@ -292,7 +292,7 @@ type PointFeedback struct {
 | 校验顺序 | IsTable → tableRef → gen(P3 06 §3.2.1)| 完全相同(本节)|
 | 字段来源 | SNAP_* 来自编译期 ICSlot 直接读(P3 06 §4.4)| 相同——P4 也从 ICSlot 直接读 SNAP_*(详 §6)|
 
-**关键观察**:**三层校验的物理形式、字段来源、判定顺序完全相同,只有「失败着陆面」不同**——P3 落同函数 helper,P4 落 OSR exit。这是 P3 06 §1.3 「同表同代次校验是语义分发,不是投机 guard」的对偶兑现:同样三层比较,P3 是「快路径前置检查」(失败也合法),P4 是「投机 guard」(失败 ⇒ 出函数)。
+**关键观察**:**三层校验的物理形式、字段来源、判定顺序完全相同,只有「失败着陆面」不同**——P3 落同函数 helper,P4 落 OSR exit。这是 P3 06 §1.3 「同表同代次校验是语义分发,不是投机 guard」的对偶兑现:同样三层比较,P3 是「快路径前置检查」(失败也合法),P4 是「投机 guard」(失败 ⇒ 出函数)。这是设计期的对照;两层实际生成的检查见本节末尾的实现说明和 P3 [02](../p3-wasm-tier/02-translation.md) §3.4。
 
 **2026-07-02 实现勘误(承 [implementation-progress §14.5](./implementation-progress.md) PR #34 amd64 native 扩接)**:上文「IsTable → tableRef → gen 三层校验顺序与 P3 完全相同」的设计描述在 P4 amd64 native path 的 GETTABLE / SETTABLE ArrayHit inline 上**不再字面成立**——本轮工程 amd64 native ArrayHit inline 路径**完全去掉了 TableRef + gen identity guards**,只留一层 IsTable 位 tag 检查。理由:
 
