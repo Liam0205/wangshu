@@ -223,3 +223,73 @@ func itoa(n int) string {
 	}
 	return string(buf[i:])
 }
+
+// TestPreallocate_KeepsIntegerKeysFromTheHashPart: an integer key that was stored before the array
+// part covered it is still readable after Preallocate grows the array part over it, and a traversal
+// still ends. (The key has to move from the hash part into the array part; left behind it could not
+// be looked up, while the traversal kept returning it.)
+func TestPreallocate_KeepsIntegerKeysFromTheHashPart(t *testing.T) {
+	st := wangshu.NewState(wangshu.Options{})
+	tv := st.NewTable()
+	defer tv.Release()
+	tt := tv.AsTable()
+	_ = tt.SetIndex(100, wangshu.Number(7))
+	_ = tt.Set(wangshu.String("x"), wangshu.Number(8))
+	if e := tt.Preallocate(200); e != nil {
+		t.Fatalf("Preallocate: %v", e)
+	}
+	if got := tt.GetIndex(100).Number(); got != 7 {
+		t.Errorf("t[100] = %v after Preallocate(200), want 7", got)
+	}
+	if got := tt.Get(wangshu.String("x")).Number(); got != 8 {
+		t.Errorf("t.x = %v after Preallocate(200), want 8", got)
+	}
+	n := 0
+	if e := tt.ForEach(func(_, _ wangshu.Value) bool { n++; return n < 100 }); e != nil {
+		t.Fatalf("ForEach: %v", e)
+	}
+	if n != 2 {
+		t.Errorf("ForEach visited %d entries, want 2", n)
+	}
+}
+
+// TestPreallocate_KeepsEveryKindOfKey: growing the array part over a table that already has
+// integer keys on both sides of the new size, a string key and a non-integer key leaves every
+// entry readable, the length right, and the traversal complete.
+func TestPreallocate_KeepsEveryKindOfKey(t *testing.T) {
+	st := wangshu.NewState(wangshu.Options{})
+	tv := st.NewTable()
+	defer tv.Release()
+	tt := tv.AsTable()
+	for _, i := range []int{1, 2, 3, 5, 9, 10, 11, 40} {
+		_ = tt.SetIndex(i, wangshu.Number(float64(i*10)))
+	}
+	_ = tt.Set(wangshu.String("x"), wangshu.Number(8))
+	_ = tt.Set(wangshu.Number(2.5), wangshu.Number(25))
+	if e := tt.Preallocate(10); e != nil {
+		t.Fatalf("Preallocate: %v", e)
+	}
+	for _, i := range []int{1, 2, 3, 5, 9, 10, 11, 40} {
+		if got := tt.GetIndex(i).Number(); got != float64(i*10) {
+			t.Errorf("t[%d] = %v after Preallocate(10), want %d", i, got, i*10)
+		}
+	}
+	if got := tt.Get(wangshu.String("x")).Number(); got != 8 {
+		t.Errorf("t.x = %v, want 8", got)
+	}
+	if got := tt.Get(wangshu.Number(2.5)).Number(); got != 25 {
+		t.Errorf("t[2.5] = %v, want 25", got)
+	}
+	// The array part now ends in a value (t[10]), so the border is looked for past it, in the
+	// hash part: t[11] is there and t[12] is not.
+	if got := tt.Len(); got != 11 {
+		t.Errorf("Len = %d, want 11", got)
+	}
+	sum, n := 0.0, 0
+	if e := tt.ForEach(func(_, v wangshu.Value) bool { n++; sum += v.Number(); return n < 100 }); e != nil {
+		t.Fatalf("ForEach: %v", e)
+	}
+	if n != 10 || sum != 843 {
+		t.Errorf("ForEach visited %d entries with values adding up to %v, want 10 and 843", n, sum)
+	}
+}

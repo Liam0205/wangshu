@@ -50,42 +50,14 @@ func (st *State) safepoint(_ *thread, _ *callInfo) {
 
 // PreallocateArray grows table t's array segment to n slots (issue #10
 // direction 2). Grow only, never shrink; the old array segment's contents are
-// copied into the new segment (form-Y read-now + rewrite), the old hash
-// segment is left untouched. BumpGen (IC invalidation).
+// kept, and an integer key in 1..n that was in the hash segment moves into the
+// array segment (resizeArray). BumpGen (IC invalidation).
 //
 // Typical use: NewTable + PreallocateArray(t, n) + SetIndex(1..n) to sidestep
 // repeated rehash storms — every SetIndex(1..n) lands in the array segment
 // O(1), and the whole build is a net O(n).
 func (st *State) PreallocateArray(t arena.GCRef, n uint32) {
-	curr := object.TableASize(st.arena, t)
-	if n <= curr {
-		return // grow only, never shrink
-	}
-	// Read the old array segment's contents (form-Y read-now, avoids caching a
-	// derived slice)
-	oldArr := object.TableArrayRef(st.arena, t)
-	var oldData []value.Value
-	if curr > 0 {
-		oldData = make([]value.Value, curr)
-		for i := uint32(0); i < curr; i++ {
-			oldData[i] = object.TableArrayAt(st.arena, t, i)
-		}
-	}
-	// Allocate the new segment + replace
-	newArr := object.AllocTableArray(st.arena, n)
-	st.gc.AllocCharge(n * 8)
-	object.SetTableArray(st.arena, t, newArr, n)
-	// Copy the data (SetTableArray already points t at newArr, so
-	// SetTableArrayAt writes the new segment)
-	for i, v := range oldData {
-		if v != value.Nil {
-			object.SetTableArrayAt(st.arena, t, uint32(i), v)
-		}
-	}
-	if !oldArr.IsNull() {
-		st.arena.Free(oldArr, curr*8)
-	}
-	object.BumpGen(st.arena, t)
+	st.resizeArray(t, n)
 }
 
 // NewArrayTableFromVals builds a table with the array segment preallocated to
