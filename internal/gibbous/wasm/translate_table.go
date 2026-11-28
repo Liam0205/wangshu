@@ -242,8 +242,9 @@ func (c *Compiler) emitSetGlobal(em *emitter, proto *bytecode.Proto, ins bytecod
 // shorter array part or other keys in its nodes. So every inline path also
 // checks that the frozen Index lies inside the table it was handed, and a
 // NodeHit path compares the node's key (emitSlotInTable). GETGLOBAL and
-// SETGLOBAL need neither: the globals table is never collected, and it bumps
-// its gen whenever a key moves to another node.
+// SETGLOBAL need neither: the globals table is never collected, and the key
+// in one of its nodes only changes after a bump of its gen (the key is moved
+// away, or another key takes over the node once it is DEAD).
 
 // tableInlineable decides whether a given table IC point takes the inline fast
 // path (otherwise pure helper). regKey=true means the key is a register
