@@ -95,7 +95,12 @@ for i = 1, %d do B362["j" .. i] = nil end`, n, d))
 		"store":  `store_362(B362, 777) R362 = B362.k8`,
 		"method": `R362 = method_362(B362)`,
 	}[op]
-	runChunk(t, st, call)
+	// With the frozen index unchecked the method call can fetch a number and
+	// raise; that is this case's failure, and the other cases still run.
+	if err := tryChunk(t, st, call); err != nil {
+		t.Errorf("%s: the access raised: %v", where, err)
+		return decided
+	}
 	if got := st.GibbousEntries() - before; got != 1 {
 		t.Errorf("%s: the access entered compiled code %d times, want 1", where, got)
 	}
