@@ -703,7 +703,8 @@ end
 - **修法**：`internal/gibbous/wasm/translate_table.go` 新增 `emitSlotInTable`，三条内联路径在表守卫（和寄存器键的数值比对）之后、取槽位之前调用它：
   数组部分检查 `index < asize`；哈希部分检查 `index <= hmask`、`nodeRef != 0`，再把节点里的键与指令的常量键比对（`tableInlineable` 只让常量键的 NodeHit 走内联）。
   没有哈希部分的表 `hmask` 和 `nodeRef` 都是 0，下标 0 能通过前一项，所以 `nodeRef` 要单独看。任何一项不满足都走助手，结果由完整查找给出。
-  常量键取自这个 State 自己的 `Proto.Consts`（`LoadProgram` 已经把字符串常量换成这个 State 的引用）。
+  常量键取自这个 State 自己的 `Proto.Consts`（`LoadProgram` 已经把字符串常量换成这个 State 的引用；§7「SETTABLE 值烧不出」一行和
+  `emitLoadK` 等处「字符串常量在编译期是占位」的说法是旧的，连同由它而来的两处限制记在 [#365](https://github.com/Liam0205/wangshu/issues/365)）。
   GETGLOBAL / SETGLOBAL 没有改：全局表不会被回收，键换节点时它的 gen 一定推进。
 - **验证**：
   - `internal/gibbous/wasm` 的 `TestPW5_InlineSlotGuards`：在线性内存里手工摆出表，对七种内联写法（GETTABLE / SETTABLE 的常量键数组、寄存器键数组、哈希，SELF 的哈希）
