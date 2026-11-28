@@ -31,6 +31,10 @@
 - **【未修，产品缺陷】弱表模式在 `setmetatable` 时缓存** — `setmetatable` 读一次 `__mode` 写进表头，之后改元表的 `__mode` 不起作用；
   官方每次回收都重新读，07 §13.2 和 06 §8.4 第 1 点写的也是标记时读。见 [#367](https://github.com/Liam0205/wangshu/issues/367)。
 
+- **【未修，存量问题】`Table.Preallocate` 扩大数组部分时不迁移哈希部分里的整数键** — 公开 Go API 的 `Table.Preallocate`（`internal/crescent/alloc.go` 的 `PreallocateArray`）只换一块更大的数组，
+  已经在哈希部分、落进新范围的整数键留在原处：`SetIndex(5, v)` 之后 `Preallocate(10)`，`GetIndex(5)` 读到 nil，`ForEach` 不结束。脚本碰不到这个入口，只有嵌入方的 Go 代码能触发。
+  见 [#363](https://github.com/Liam0205/wangshu/issues/363)。
+
 - **【未修，产品缺陷】`loadstring` 得到的函数丢掉之后，它的字符串常量不回收** — 每个 State 把加载过的每个代码块的字符串常量作为回收器的根
   （06 §5.1 的 R6），函数全部不可达之后这一项也不摘掉。常量各不相同的代码块反复加载时，占用随加载次数增长。脚本能观察到的差别
   （弱表里以这种字符串作键的条目被清掉之后 `next` 仍然成功）随 #338 登记在 README 的差异表里；同一行还登记了另一种望舒独有的引用
