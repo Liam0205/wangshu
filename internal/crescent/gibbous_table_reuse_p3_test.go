@@ -305,3 +305,66 @@ N362 = {901, 902, 903, 904, 905, 906, 907, 908}`, pad, strings.Join(items, ", ")
 	}
 	return true
 }
+
+// TestP3_InlineAccessStaysInlineOnItsOwnTable is the other side of the checks
+// on the frozen index: on the table an accessor was warmed up on they have to
+// pass, or every access would quietly go to the helper and still return the
+// right value. For a string key that rests on the constant in the State's own
+// copy of the Proto being the very reference the table holds as the key.
+//
+// A helper that is reached does its lookup through the accessor's inline cache
+// and fills it again when it is empty; the compiled code carries its own copy
+// of the cache and never touches the Proto's. So the test empties the Proto's
+// caches after the accessor is compiled, calls it a hundred times, and requires
+// them to be empty still.
+func TestP3_InlineAccessStaysInlineOnItsOwnTable(t *testing.T) {
+	cases := []struct{ name, fn, call string }{
+		{"string_key_read", `function f362(t) return t.k8 end`, `f362(A362)`},
+		{"string_key_store", `function f362(t) t.k8 = 5 end`, `f362(A362)`},
+		{"method_lookup", `function f362(t) return t:m8() end`, `f362(A362)`},
+		{"long_string_key_read", `function f362(t) return t.a_key_that_is_longer_than_forty_bytes_so_that_it_is_not_short end`, `f362(A362)`},
+		{"number_key_read", `function f362(t) return t[1.5] end`, `f362(A362)`},
+		{"negative_zero_key_read", `function f362(t) return t[-0] end`, `f362(A362)`},
+		{"array_constant_key_read", `function f362(t) return t[3] end`, `f362(A362)`},
+		{"array_constant_key_store", `function f362(t) t[3] = 5 end`, `f362(A362)`},
+		{"array_register_key_read", `function f362(t, i) return t[i] end`, `f362(A362, 3)`},
+		{"array_register_key_store", `function f362(t, i) t[i] = 5 end`, `f362(A362, 3)`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			st := New()
+			runChunk(t, st, c.fn+`
+A362 = {11, 22, 33, 44, k8 = 8, m8 = function() return 8 end,
+  a_key_that_is_longer_than_forty_bytes_so_that_it_is_not_short = 1, [1.5] = 15, [0] = 100}
+for i = 1, 40 do `+c.call+` end`)
+			v, _ := st.tableGet(st.globals, st.makeStringValue("f362"))
+			pid := object.ClosureProtoID(st.arena, value.GCRefOf(v))
+			filled := 0
+			for i := range st.protos[pid].IC {
+				if k := st.protos[pid].IC[i].Kind; k == bytecode.ICKindArrayHit || k == bytecode.ICKindNodeHit {
+					filled++
+				}
+			}
+			if filled != 1 {
+				t.Fatalf("the accessor has %d filled table caches after the warm-up, want 1", filled)
+			}
+			if !promoteProto(st, pid) {
+				t.Fatal("the accessor was not compiled")
+			}
+			for i := range st.protos[pid].IC {
+				st.protos[pid].IC[i] = bytecode.ICSlot{}
+			}
+
+			before := st.GibbousEntries()
+			runChunk(t, st, `for i = 1, 100 do `+c.call+` end`)
+			if got := st.GibbousEntries() - before; got != 100 {
+				t.Errorf("the accessor entered compiled code %d times, want 100", got)
+			}
+			for i := range st.protos[pid].IC {
+				if slot := st.protos[pid].IC[i]; slot != (bytecode.ICSlot{}) {
+					t.Errorf("the inline cache at pc %d was filled again (%+v): the access went to the helper", i, slot)
+				}
+			}
+		})
+	}
+}
