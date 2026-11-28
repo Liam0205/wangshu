@@ -657,3 +657,31 @@ func TestPreallocate_DuringPairs(t *testing.T) {
 		tv.Release()
 	}
 }
+
+// TestPreallocate_LenIsABorderBeforeAndAfter: on a table whose integer keys have gaps, Len returns
+// a border before Preallocate and a border after it; the two need not be the same one.
+func TestPreallocate_LenIsABorderBeforeAndAfter(t *testing.T) {
+	for _, keys := range [][]int{{1, 2, 3, 4, 6}, {1, 2, 4, 5, 9, 10}, {2, 3}, {1, 3, 5, 7, 9, 11, 13}} {
+		st := wangshu.NewState(wangshu.Options{})
+		tv := st.NewTable()
+		tt := tv.AsTable()
+		for _, k := range keys {
+			_ = tt.SetIndex(k, wangshu.Number(float64(k)))
+		}
+		isBorder := func(n int) bool {
+			return (n == 0 || !tt.GetIndex(n).IsNil()) && tt.GetIndex(n+1).IsNil()
+		}
+		if n := tt.Len(); !isBorder(n) {
+			t.Errorf("keys %v: Len = %d before Preallocate, which is not a border", keys, n)
+		}
+		for _, size := range []uint32{4, 8, 64} {
+			if e := tt.Preallocate(size); e != nil {
+				t.Fatalf("Preallocate: %v", e)
+			}
+			if n := tt.Len(); !isBorder(n) {
+				t.Errorf("keys %v: Len = %d after Preallocate(%d), which is not a border", keys, n, size)
+			}
+		}
+		tv.Release()
+	}
+}
