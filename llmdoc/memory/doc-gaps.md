@@ -21,6 +21,15 @@
   已经在哈希部分、落进新范围的整数键留在原处：`SetIndex(5, v)` 之后 `Preallocate(10)`，`GetIndex(5)` 读到 nil，`ForEach` 不结束。脚本碰不到这个入口，只有嵌入方的 Go 代码能触发。
   见 [#363](https://github.com/Liam0205/wangshu/issues/363)。
 
+- **【已完成 2026-11-28，#362 / #364】表被回收、地址被新表重用之后，内联路径认错表** — P3 的 GETTABLE / SETTABLE / SELF 内联路径和解释器的内联缓存按「地址相同、gen 相同」认表，
+  原来那张表被回收之后，新建的表可以落在同一个地址上、gen 也相同。P3 的三条内联路径现在检查固化的下标在拿到的这张表之内，哈希部分还比对节点里的键；
+  解释器命中哈希部分之前确认下标在表内。记录在 [P3 implementation-progress §15](../../docs/design/p3-wasm-tier/implementation-progress.md) 和
+  [P1 implementation-progress](../../docs/design/p1-interpreter/implementation-progress.md) 的 #364 一节。
+
+- **【未修，产品缺陷】P4：数学内建函数的调用缓存按地址认函数** — 调用点在 `math.sqrt` 等内建函数上预热之后，那个闭包被回收、地址被新的 Lua 闭包重用时，
+  升层代码仍然执行原来的内建函数（`PopulateHostIntrinsic` 记下的是闭包的整个值，检查只比较这个值）。与上一条是同一类问题，只在 P4 上出现。
+  见 [#372](https://github.com/Liam0205/wangshu/issues/372)。
+
 - **【未修，产品缺陷】`loadstring` 得到的函数丢掉之后，它的字符串常量不回收** — 每个 State 把加载过的每个代码块的字符串常量作为回收器的根
   （06 §5.1 的 R6），函数全部不可达之后这一项也不摘掉。常量各不相同的代码块反复加载时，占用随加载次数增长。脚本能观察到的差别
   （弱表里以这种字符串作键的条目被清掉之后 `next` 仍然成功）随 #338 登记在 README 的差异表里；同一行还登记了另一种望舒独有的引用
