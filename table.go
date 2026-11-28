@@ -188,15 +188,17 @@ func (st *State) NewStringArrayTable(vals []string) Value {
 // data is preserved, and an integer key in 1..n that was in the hash segment
 // moves into the array segment. Every entry stays readable under its key. For
 // a table whose integer keys have gaps, Len may return a different border
-// afterwards (any i with a value at i and none at i+1 is one, as for # in Lua).
+// afterwards (as for # in Lua, any i with a value at i and none at i+1 is a
+// border, and so is 0 when there is no value at 1).
 //
 // The slots are kept until the table's next rehash. A rehash happens when a
 // new key that the array segment does not cover is stored and the hash segment
-// finds no room for it, and it sizes the array segment anew from the integer
-// keys the table holds at that moment, whatever n was: to the largest power of
-// two m, 2^24 at most, such that more than half of 1..m is in use. Slots
-// beyond m are given up, empty or not; the entries in them go to the hash
-// segment. Fill 1..n before adding other keys.
+// finds no room for it. It sizes the array segment anew, whatever n was, from
+// the integer keys the table then holds, the new key included: to the largest
+// power of two m, 2^24 at most, such that more than half of 1..m is in use,
+// and to nothing when there is no such m. Slots beyond m are given up, empty
+// or not; the entries in them go to the hash segment. Fill 1..n before adding
+// other keys.
 //
 // Calling it on a table that is being traversed (from a ForEach callback, or
 // from a host function a script calls inside a pairs loop) is safe: the
