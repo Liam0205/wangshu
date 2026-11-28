@@ -213,7 +213,7 @@ type shapeInfo struct {
 
 	// PJ4 SELF NodeHit shape (`function(obj) obj:method() end`, the truly common OOP call):
 	//   - icSelfNodeHit = true: takes the PJ4 SELF IC NodeHit byte-level inline template
-	//     (SELF ArrayHit plus the key compare)
+	//     (SELF ArrayHit plus the node-specific checks: nodeRef guard and key compare)
 	//   - reuses icAReg (SELF.A i.e. the method result) / icBReg (SELF.B i.e. obj) /
 	//     icStableShape / icStableIndex / icStableKey fields
 	icSelfNodeHit bool
@@ -635,7 +635,7 @@ func analyzeSetTableArrayHit(proto *bytecode.Proto, feedback *bridge.TypeFeedbac
 //   - Code length 2 or 3
 //   - SELF A B C: A<=253 (reserve R(A+1) slot), B<=254, C>=256 (K constant)
 //   - RETURN A=SELF.A B=2
-//   - proto.IC[0].Kind=ArrayHit + feedback FBTableMono + shape/index consistent
+//   - proto.IC[0].Kind=ArrayHit + feedback FBSelfMono + shape/index consistent
 //
 // Any failing condition returns (shapeInfo{}, false) — falls through to the
 // analyzeShape path (if a SELF + RETURN host helper is available) or
@@ -800,7 +800,7 @@ func analyzeSetTableNodeHit(proto *bytecode.Proto, feedback *bridge.TypeFeedback
 //   - Code length 2 or 3
 //   - SELF A B C + RETURN A 2 shape guard
 //   - proto.IC[0].Kind == ICKindNodeHit
-//   - feedback FBTableMono + Confidence >= 0.99 + shape/index consistent
+//   - feedback FBSelfMono + Confidence >= 0.99 + shape/index consistent
 //   - stableKey frozen at compile time (LoadProgram already interned the string)
 //
 // Any failing condition returns (shapeInfo{}, false) — falls through to the
@@ -4427,7 +4427,8 @@ func (c *Compiler) Compile(proto *bytecode.Proto, feedback *bridge.TypeFeedback)
 		// reusing the same IC + feedback double-check as ArrayHit; the
 		// difference is IC[0].Kind=NodeHit + freezing stableKey from
 		// proto.Consts at compile time. The NodeHit template is longer than
-		// ArrayHit by the key-compare section; on a hit it
+		// ArrayHit by the node-specific checks (nodeRef guard and key
+		// compare); on a hit it
 		// byte-inlines, on failure it falls through to host.GetTable byte-equal
 		// P1.
 		if icInfo, ok := analyzeGetTableNodeHit(proto, feedback); ok {
@@ -5203,7 +5204,8 @@ func (c *Compiler) compileIcSetNodeHit(proto *bytecode.Proto, info shapeInfo) (b
 
 // compileIcSelfNodeHit compiles the PJ4 SELF IC NodeHit shape (per
 // analyzeSelfNodeHit): it emits the SELF NodeHit IC inline template
-// (SELF ArrayHit plus the key-comparison segment); on failure, deopt →
+// (SELF ArrayHit plus the node-specific checks: nodeRef guard and key
+// comparison); on failure, deopt →
 // the Run side calls host.GetTable byte-equal P1 (R(A+1) is already stored, and
 // the P1 SELF case performs the same steps; P1 icGetTable supports NodeHit).
 //
