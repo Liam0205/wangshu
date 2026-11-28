@@ -579,7 +579,7 @@ func (e *Emitter) emitGettable(pc int32, ins bytecode.Instruction, fb *bridge.Ty
 | FBArithStableNumber | 双 number 快路径放 if-then,helper 放 else | else 分支 → `$h_arith` → metamethod / coercion | §3.1 |
 | FBTableMono | 三层校验(IsTable + tableRef + gen),实现另加下标在表内和节点的键(§1.3)+ SNAP_KIND 单态选定的直达槽 | 任一层失败 → `$h_gettable` → 完整哈希 + `__index` | §3.2.1 |
 | FBGlobalStable | 单层校验(globals gen)+ SNAP_INDEX 直达 globals node 槽 | gen miss → `$h_getglobal` → 完整哈希 | §3.2.2 |
-| FBSelfMono | self 传递 + GETTABLE 同构(三层校验 + 直达) | 同 FBTableMono → `$h_self` → 完整 SELF 流程 | §3.2.3 |
+| FBSelfMono | self 传递 + GETTABLE 同构(三层校验 + 直达;实现同样另加下标在表内和节点的键,§1.3) | 同 FBTableMono → `$h_self` → 完整 SELF 流程 | §3.2.3 |
 | FBTableMega | 不内联快照,直接发 helper 调用 | n/a(本来就是慢路径) | §3.3 |
 | FBUnstable | 等同 FBTableMega(表 IC)/ 仍内联快路径(算术 IC,可选) | 同 FBTableMega(表)/ §3.1 路径(算术) | §3.4 |
 | nil feedback | 等价 FBUnstable | 同 FBUnstable | §3.5 |
