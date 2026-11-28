@@ -38,7 +38,7 @@
 | `insertNewKey` Brent 重定位 | 是 | 有(2026-07-02,seed `4b3d10ff`) | 第一实例 |
 | `rawSet` 删键(val=Nil,节点从有值变成已删除) | 否:键留在节点里(#338 起),同键再写回到原节点 | 有 | 键→槽位没有变。现在的消费者都自己检查节点的值(见下表),没有哪一个要靠这次 bump;保留它是沿用 #338 之前的行为,见表后的说明。`TestRawTable_DeleteKeepsKeyAndNode` 断言;对已删除的键再赋 nil 不 bump |
 | `insertNewKey` 新键接管主位置上已删除的节点 | 是：节点换了键 | 有（#338） | P3 wasm `emitSetGlobal` 内联写 Nil 时不经过 `rawSet`、不 bump，所以节点换键的这一刻必须 bump，否则读方的 gen-only 快照会把新键的值当成旧键的。`TestRawTable_DeadNodeTakeoverBumpsGen` 断言，`TestTiered_ClearWhileTraversing/deleted_global_node_taken_over` 在 P3 的内联路径上断言 |
-| `gc/sweep.go` weak 表清项 | 只清值时否(键保留);键指向的对象已死、换成 `object.DeadKey` 时是 | 有 | `TestWeak_SweepClearBumpsGen`、`TestWeak_ClearedValueKeepsKeyForNext` 断言 |
+| `gc/sweep.go` weak 表清项(哈希部分) | 只清值时否(键保留);键指向的对象已死、换成 `object.DeadKey` 时是 | 有 | `TestWeak_SweepClearBumpsGen`、`TestWeak_ClearedValueKeepsKeyForNext` 断言;只清了数组槽时不 bump(与 `rawSet` 在数组部分赋 nil 一样) |
 | `gc/sweep.go` `clearDeadKeys`：已删除节点里对象已死的键换成 `object.DeadKey` | 是：节点不再持有原来的键 | 有（#338） | `TestDeadKey_ObjectDiesAndKeyIsReplaced` 断言；没有键被替换的回收不 bump |
 | `insertNewKey` 新键放入空闲节点(main position 空闲 / `findFreeNode` 给的节点) | Nil→key | 不需要 | IC 只在 `val != Nil` 时回填(`ic.go` 的 `rawGetWithLoc` 对已删除的节点返回 `locNone`),空闲节点不可能被快照 |
 | `nodeSetVal` 改值、同一个键写回它已删除的节点 / `SetTableArrayAt` | 否 | 不需要 | IC「改值不 bump」正是靠它 |
