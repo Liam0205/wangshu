@@ -535,7 +535,7 @@ F2 保守 yield 判定同源)。
 | 类别 | fullmoon 物理形式 |
 |---|---|
 | **分配点** | trace 内所有分配一律经 exit-reason 通道调 helper(未 sink 的分配)或按 sink 配方在 deopt 时物化(sink 优化产物);**trace 段本体 emit 的机器码永不分配** |
-| **层边界** | trampoline 进出即 safepoint,与 P4 相同 |
+| **层边界** | trampoline 进出即 safepoint,与 P4 相同(进出时栈一致、可以回收;已实现的各层实际在哪里检查见 [P1 06 §6.3](../p1-interpreter/06-memory-gc.md)) |
 | **back edge** | trace loop 的 back edge emit `cmpb byte ptr [r15+preemptFlagOff], 0; jne exit_to_safepoint`,依据 §4.2 |
 
 ### 8.2 GC 根:零新增
