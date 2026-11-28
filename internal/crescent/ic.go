@@ -22,6 +22,15 @@ import (
 // key is a dynamic RK, and the same pc may rotate through different keys (typical:
 // t[i] in a loop), so an array hit must validate arrayIndex(key)==Index and a
 // node hit must validate NodeKey==key.
+//
+// "Same table" is the address, and an address does not identify a table for
+// good: once the cached table is collected, a new one can be allocated there
+// and start from the same generation, with fewer nodes. A node hit therefore
+// also requires Index to lie inside the table it is handed
+// (object.NodeIfInside); without that the key compare reads past the node
+// block, into whatever follows it (another table's nodes, where the same key
+// may sit). The array hit takes its index from the key and the table's
+// current asize.
 func (st *State) icGetTable(th *thread, ci *callInfo, pc int32, obj, key value.Value) (value.Value, *LuaError) {
 	if value.Tag(obj) != value.TagTable {
 		return st.indexWithMeta(th, obj, key)
@@ -41,11 +50,8 @@ func (st *State) icGetTable(th *thread, ci *callInfo, pc int32, obj, key value.V
 	} else if slot.Kind == bytecode.ICKindNodeHit &&
 		slot.TableRef == uint32(t) &&
 		slot.Shape == object.TableGen(st.arena, t) {
-		if keyEqual(object.NodeKey(st.arena, t, slot.Index), normKey(key)) {
-			v := object.NodeVal(st.arena, t, slot.Index)
-			if v != value.Nil {
-				return v, nil
-			}
+		if k, v, ok := object.NodeIfInside(st.arena, t, slot.Index); ok && v != value.Nil && keyEqual(k, normKey(key)) {
+			return v, nil
 		}
 	}
 	// —— Miss: full lookup + backfill ——
@@ -99,8 +105,7 @@ func (st *State) icSetTable(th *thread, ci *callInfo, pc int32, obj, key, val va
 		} else if slot.Kind == bytecode.ICKindNodeHit &&
 			slot.TableRef == uint32(t) &&
 			slot.Shape == object.TableGen(st.arena, t) {
-			if keyEqual(object.NodeKey(st.arena, t, slot.Index), normKey(key)) &&
-				object.NodeVal(st.arena, t, slot.Index) != value.Nil {
+			if k, v, ok := object.NodeIfInside(st.arena, t, slot.Index); ok && v != value.Nil && keyEqual(k, normKey(key)) {
 				st.nodeSetVal(t, slot.Index, val)
 				return nil
 			}

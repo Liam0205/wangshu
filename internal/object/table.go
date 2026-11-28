@@ -236,6 +236,19 @@ func NodeVal(a *arena.Arena, t arena.GCRef, idx uint32) value.Value {
 	return value.Value(a.WordAt(node + arena.GCRef(idx*nodeWords*8+8)))
 }
 
+// NodeIfInside returns the key and the value of node idx when idx addresses a
+// node of t: idx <= hmask and t has a node block (a table without a hash part
+// records hmask 0 as well). For a caller that holds an index it did not take
+// from t's current state, such as an inline cache.
+func NodeIfInside(a *arena.Arena, t arena.GCRef, idx uint32) (key, val value.Value, ok bool) {
+	node := TableNodeRef(a, t)
+	if node == 0 || idx > TableHMask(a, t) {
+		return value.Nil, value.Nil, false
+	}
+	base := node + arena.GCRef(idx*nodeWords*8)
+	return value.Value(a.WordAt(base)), value.Value(a.WordAt(base + 8)), true
+}
+
 func NodeNext(a *arena.Arena, t arena.GCRef, idx uint32) int32 {
 	node := TableNodeRef(a, t)
 	return int32(a.WordAt(node + arena.GCRef(idx*nodeWords*8+16)))

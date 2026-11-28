@@ -304,3 +304,44 @@ func TestObjectSizeFormulas(t *testing.T) {
 		}
 	}
 }
+
+// TestNodeIfInside: the accessor for an index that was not taken from the
+// table's current state answers only for the table's own nodes.
+func TestNodeIfInside(t *testing.T) {
+	a := arena.New(arena.Options{})
+	tbl := AllocTable(a, 0, 4)
+	// A second table's nodes follow tbl's in the arena, so an index past
+	// tbl's block finds a key there if nothing stops it.
+	next := AllocTable(a, 0, 4)
+	key := value.NumberValue(7)
+	for i := uint32(0); i < 4; i++ {
+		SetNode(a, tbl, i, key, value.NumberValue(float64(i)), -1)
+		SetNode(a, next, i, key, value.NumberValue(100), -1)
+	}
+	for i := uint32(0); i < 4; i++ {
+		k, v, ok := NodeIfInside(a, tbl, i)
+		if !ok || k != key || v != value.NumberValue(float64(i)) {
+			t.Errorf("node %d: got (%x, %x, %v)", i, uint64(k), uint64(v), ok)
+		}
+	}
+	for _, i := range []uint32{4, 5, 7, 1 << 20} {
+		if k, v, ok := NodeIfInside(a, tbl, i); ok || k != value.Nil || v != value.Nil {
+			t.Errorf("index %d is outside a table of 4 nodes: got (%x, %x, %v)", i, uint64(k), uint64(v), ok)
+		}
+	}
+	// A table without a hash part records hmask 0, like one with a single node.
+	plain := AllocTable(a, 2, 0)
+	if TableHMask(a, plain) != 0 || TableNodeRef(a, plain) != 0 {
+		t.Fatalf("a table without a hash part: hmask %d, nodeRef %d", TableHMask(a, plain), TableNodeRef(a, plain))
+	}
+	if _, _, ok := NodeIfInside(a, plain, 0); ok {
+		t.Errorf("index 0 of a table without a hash part was accepted")
+	}
+	one := AllocTable(a, 0, 1)
+	if _, _, ok := NodeIfInside(a, one, 0); !ok {
+		t.Errorf("index 0 of a table with one node was refused")
+	}
+	if _, _, ok := NodeIfInside(a, one, 1); ok {
+		t.Errorf("index 1 of a table with one node was accepted")
+	}
+}
