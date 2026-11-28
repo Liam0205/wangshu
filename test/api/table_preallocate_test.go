@@ -264,7 +264,7 @@ func stringKeyed(st *wangshu.State, n int) wangshu.Value {
 }
 
 // TestPreallocate_DuringForEach: growing the array part from inside a ForEach callback does not
-// disturb the traversal when no integer key has to move. Every entry is visited once, whether the
+// disturb the traversal of a table with string keys only. Every entry is visited once, whether the
 // callback only grows the table or also clears the entry it was given, as ForEach allows.
 func TestPreallocate_DuringForEach(t *testing.T) {
 	for _, clear := range []bool{false, true} {
