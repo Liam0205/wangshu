@@ -186,7 +186,9 @@ func (st *State) NewStringArrayTable(vals []string) Value {
 // Typical use: NewTable + Preallocate(N) + SetIndex(1..N) to bypass repeated
 // rehash storms. Grow-only (n ≤ current asize → no-op); existing array segment
 // data is preserved, and an integer key in 1..n that was in the hash segment
-// moves into the array segment.
+// moves into the array segment. Every entry stays readable under its key. For
+// a table whose integer keys have gaps, Len may return a different border
+// afterwards (any i with a value at i and none at i+1 is one, as for # in Lua).
 //
 // The slots are kept until the table's next rehash. A rehash happens when a
 // new key that the array segment does not cover is stored and the hash segment
