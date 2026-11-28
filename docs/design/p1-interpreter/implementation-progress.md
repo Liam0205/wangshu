@@ -1319,7 +1319,9 @@ arena 大小跟着比例变。`TestTiered_StdlibNames` 加一段
     `TestPreallocate_ScriptAccessAfterwards`（脚本对哈希部分里的键 5 读写 1000 次之后，脚本调用的宿主函数扩大数组部分，脚本接着读写同一个键，结果正确。
     这里的函数太短，P3、P4 构建里也不升层，检查的是解释器的内联缓存）、
     `TestPreallocate_CompiledAccessAfterwards`（只在 P3、P4 构建里：带循环的读函数和写函数升层之后扩大数组部分，再调用它们，结果正确；
-    断言扩大之前两个函数都已升层、扩大之后三次调用都进入了编译出来的代码）。
+    断言扩大之前两个函数都已升层、扩大之后三次调用都进入了编译出来的代码）、
+    `TestPreallocate_DuringCompiledLoop`（只在 P3、P4 构建里：编译出来的循环读写键 5，循环到一半时经 `__index` 的宿主函数扩大数组部分，
+    之后的读写结果正确。直接调用宿主函数的函数不会被编译，所以经元方法进宿主）。
   - `internal/crescent` 的 `TestGrowArray_TraversalFromARemovedIntegerKey`：站在已清掉的整数键 5 上扩大数组部分，接下去的遍历把 11 个条目各返回一次。
   - 变异 7 种，每一种都有测试失败：换回修改前的 `alloc.go`（默认构建里 5 个 API 测试失败，P3 构建里 `TestPreallocate_CompiledAccessAfterwards` 也失败）；
     换成重建哈希部分的写法（`TestGrowArray_MovesHashIntegerKeys`、`TestGrowArray_TraversalGoesOn`、`TestGrowArray_TraversalWhenKeysMove`、`TestPreallocate_DuringForEach` 失败）；
