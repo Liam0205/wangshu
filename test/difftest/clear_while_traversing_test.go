@@ -878,3 +878,48 @@ func TestNextOnRemovedKey_ObjectKeysInsertedAfterwards(t *testing.T) {
 		t.Logf("collecting at every safepoint: %v: %s", stress, got)
 	}
 }
+
+// nextWithObjectKeyInsertedBeforehand puts one key of the given kind into each of 60 tables
+// before a string key is removed, inserts only string keys afterwards and asks next for the
+// removed key. KEYEXPR stands for the code after "local k =" that yields that one key: a fresh
+// table, a string, or a fresh table that is stored and removed again before a string takes its place.
+const nextWithObjectKeyInsertedBeforehand = `
+local keep, out = {}, {}
+for j = 1, 60 do
+  local t = {}
+  for i = 1, 16 do t["s" .. i] = i end
+  t["del" .. j] = 1
+  local k = KEYEXPR keep[#keep + 1] = k t[k] = true
+  t["del" .. j] = nil
+  for i = 1, 11 do t["n" .. i] = i end
+  out[j] = pcall(next, t, "del" .. j) and "o" or "x"
+end
+return table.concat(out)`
+
+// TestNextOnRemovedKey_ObjectKeyInsertedBeforehand shows that an object key does not have to be
+// inserted after the removal for the answer of next to follow the timing of collections: the node
+// an object key sits in follows its address, so it decides which nodes the later string keys find
+// free, whether one of them takes over the removed key's node and when the table rehashes. That
+// holds for an object key that was removed again as well, since its node stays where it was. With
+// a table as the one key, or as a key stored and removed before a string is stored in its place,
+// the two results are allowed to differ, and are logged. With a string as the only extra key no
+// object was ever a key of the table, and the two results have to be the same.
+func TestNextOnRemovedKey_ObjectKeyInsertedBeforehand(t *testing.T) {
+	run := func(key string, stress bool) string {
+		got := runClearCase(t, strings.Replace(nextWithObjectKeyInsertedBeforehand, "KEYEXPR", key, 1), stress)
+		if len(got) != 60 || strings.Trim(got, "ox") != "" {
+			t.Errorf("key %s, collecting at every safepoint: %v: got %q, want 60 marks of o or x", key, stress, got)
+		}
+		return got
+	}
+	for _, key := range []string{`{}`, `{} t[k] = true t[k] = nil k = "obj" .. j`} {
+		for _, stress := range []bool{false, true} {
+			t.Logf("key %s, collecting at every safepoint: %v: %s", key, stress, run(key, stress))
+		}
+	}
+	normal, every := run(`"obj" .. j`, false), run(`"obj" .. j`, true)
+	if normal != every {
+		t.Errorf("no object was ever a key: the answers differ with the timing of collections:\n normal: %s\n every safepoint: %s",
+			normal, every)
+	}
+}
