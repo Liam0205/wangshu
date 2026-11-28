@@ -79,7 +79,7 @@ func TestPreallocate_CompiledAccessAfterwards(t *testing.T) {
 
 // TestPreallocate_DuringCompiledLoop: the array part grows while compiled code is in the middle of
 // a loop that reads and writes an integer key of the hash part. The loop reaches the host through
-// an __index handler (a function that calls a host function directly is not compiled), and the
+// an __add handler (a function that calls a host function directly is not compiled), and the
 // handler grows the table on one iteration. The accesses after it see the key in the array part.
 func TestPreallocate_DuringCompiledLoop(t *testing.T) {
 	st := wangshu.NewState(wangshu.Options{})
@@ -90,23 +90,27 @@ func TestPreallocate_DuringCompiledLoop(t *testing.T) {
 	_ = tt.SetIndex(5, wangshu.Number(0))
 	_ = tt.Set(wangshu.String("x"), wangshu.Number(8))
 	st.SetGlobal("T", tv)
-	armed, grown := false, 0
+	armed, calls, grown := false, 0, 0
 	st.Register("handler", func(_ *wangshu.State, args []wangshu.Value) ([]wangshu.Value, error) {
-		if !armed || len(args) < 2 || args[1].Number() != 1000 {
-			return nil, nil
+		if armed {
+			if calls++; calls == 1000 {
+				grown++
+				if e := tt.Preallocate(10); e != nil {
+					return nil, e
+				}
+			}
 		}
-		grown++
-		return nil, tt.Preallocate(10)
+		return args[:1], nil
 	})
 	prog, err := wangshu.Compile([]byte(`
 		local t = T
-		local p = setmetatable({}, {__index = handler})
+		local p = setmetatable({}, {__add = handler})
 		function run()
 			local s = 0
 			for i = 1, 2000 do
 				t[5] = t[5] + 1
 				s = s + t[5]
-				local _ = p[i]
+				s = s + p
 			end
 			return s, t[5]
 		end
@@ -136,8 +140,8 @@ func TestPreallocate_DuringCompiledLoop(t *testing.T) {
 	if n := st.GibbousEntries() - entered; n != 1 {
 		t.Fatalf("compiled code was entered %d times, want 1", n)
 	}
-	if grown != 1 {
-		t.Fatalf("the handler grew the table %d times, want 1", grown)
+	if calls != 2000 || grown != 1 {
+		t.Fatalf("the handler was called %d times and grew the table %d times, want 2000 and 1", calls, grown)
 	}
 	// t[5] went from 10000 to 12000 in this call; s adds up 10001..12000.
 	if len(r) != 2 || r[0].Number() != 22001000 || r[1].Number() != 12000 {
