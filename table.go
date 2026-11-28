@@ -191,8 +191,10 @@ func (st *State) NewStringArrayTable(vals []string) Value {
 // The slots are kept until the table's next rehash. A rehash happens when a
 // new key that the array segment does not cover is stored and the hash segment
 // finds no room for it, and it sizes the array segment anew from the integer
-// keys the table holds at that moment: slots that are still empty may be given
-// up. Fill 1..n before adding other keys.
+// keys the table holds at that moment, whatever n was: to the largest power of
+// two m, 2^24 at most, such that more than half of 1..m is in use. Slots
+// beyond m are given up, empty or not; the entries in them go to the hash
+// segment. Fill 1..n before adding other keys.
 //
 // Calling it on a table that is being traversed (from a ForEach callback, or
 // from a host function a script calls inside a pairs loop) is safe: the

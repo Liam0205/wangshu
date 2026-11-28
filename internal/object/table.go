@@ -18,9 +18,9 @@
 // (key non-Nil, val Nil: the key was deleted and stays in place so that
 // next(t, key) still finds it; crescent's growArray leaves the same kind of node
 // behind for a key whose value it moved into the array part). The key of a DEAD
-// node is the deleted key, or DeadKey once the collector has found the key's
-// object dead. crescent's
-// rawtable.go owns the transitions. Bit 32 of word2 tells the two sources of a
+// node is the key that was deleted or moved, or DeadKey once the collector has
+// found the key's object dead. crescent's rawtable.go owns the transitions. Bit
+// 32 of word2 tells the two sources of a
 // DEAD node apart while its key is still an object: it is set on a node whose
 // value the collector cleared (an entry of a weak table) and clear on one a
 // store of nil made. A node whose key the collector replaced with DeadKey has
