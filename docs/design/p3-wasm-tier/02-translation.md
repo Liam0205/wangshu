@@ -696,7 +696,7 @@ GETGLOBAL/SETGLOBAL 是「目标表恒为 globals」的表访问特例(02 §4):
 ```wat
 ;; GETGLOBAL A Bx —— R(A) := Gtable[K(Bx)]
 ;; 与 GETTABLE 同构,但表对象恒为 globals(编译期已知 globals 的 GCRef)
-;; key 是常量 K(Bx)(编译期已知),所以 key 校验可省(同一 pc 的 key 恒定)
+;; key 是常量 K(Bx)(编译期已知),表又恒为不会被回收的 globals,所以 key 校验可省(见下面「与 GETTABLE 的差异」)
 (local.set $vt (i64.const <globals.rawU64>))   ;; globals 表恒定,直接烧 NaN-box u64
 (if (i32.and
       (i32.eq (call $gcref_low32 (local.get $vt)) (i32.const SNAP_TABLEREF))
@@ -719,7 +719,7 @@ GETGLOBAL/SETGLOBAL 是「目标表恒为 globals」的表访问特例(02 §4):
 
 - 与 GETTABLE 的差异:
   - 表对象恒为 globals(编译期烧 `globals.rawU64` 立即数,无 `i64.load`)。
-  - key 是常量 `K(Bx)`(编译期已知),同一 pc 的 key 恒定,**可省 key 校验**(GETTABLE 因 RK(C) 动态而必须校验)。
+  - key 是常量 `K(Bx)`(编译期已知),同一 pc 的 key 恒定,而且全局表在 State 存活期间不会被回收、地址不变,键换到别的节点时 gen 一定推进,所以**可省 key 校验和下标检查**(GETTABLE 的表会被回收、地址会被新表重用,常量键也要校验,见 §3.4.2 的实现现状和 #362)。
   - globals 恒为 node hit(globals 表无 array 段,02-ic-feedback §2.2),`SNAP_KIND` 恒为 `ICKindNodeHit`。
 - globals 失效:新增全局键触发 globals rehash → bump gen → 快照永久 miss → 该点走助手。这与 ic.go 的 globals IC 失效语义一致。
 - SETGLOBAL 对称(改已存在全局键走快路径;新增键 rehash 走慢路径)。execute.go 88-96 行 GETGLOBAL/SETGLOBAL 经 `icGetTable`/`icSetTable` 复用,Wasm 助手同样复用。
