@@ -179,9 +179,10 @@ func TestGrowArray_TraversalGoesOn(t *testing.T) {
 	}
 }
 
-// TestGrowArray_TraversalEndsWhenKeysMove: when integer keys move, a traversal standing anywhere
-// still ends, and it returns no key more than once unless it stood on a moved key (from there it
-// continues in the array part and meets the hash part again).
+// TestGrowArray_TraversalEndsWhenKeysMove: when integer keys move, a traversal that goes on from
+// any key of the table ends and returns no key twice. From a key that did not move it returns at
+// most the other entries. (From a moved key it continues in the array part and then goes through
+// the hash part from its start, entries it had passed before the growth included.)
 func TestGrowArray_TraversalEndsWhenKeysMove(t *testing.T) {
 	num := func(n int) value.Value { return value.NumberValue(float64(n)) }
 	build := func() (*State, arena.GCRef, []value.Value) {
