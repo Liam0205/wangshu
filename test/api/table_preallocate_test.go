@@ -565,3 +565,95 @@ func TestPreallocate_OtherKeysBeforeTheFill(t *testing.T) {
 		tv.Release()
 	}
 }
+
+// TestPreallocate_DuringPairs: a host function grows the table that the calling script is
+// traversing with pairs. The traversal raises no error and ends, as from a ForEach callback: on a
+// table with string keys only every entry is returned once, also when the loop removes the entry
+// it stands on, and on a table with integer keys in the hash part every entry is reached.
+func TestPreallocate_DuringPairs(t *testing.T) {
+	prog, err := wangshu.Compile([]byte(`
+		local n, seen = 0, {}
+		for k in pairs(T) do
+			n = n + 1
+			if n > 1000 then break end -- a traversal that does not end fails the test instead of hanging it
+			seen[k] = (seen[k] or 0) + 1
+			if clear == true or clear == k then T[k] = nil end
+			if growAt == nil or growAt == k then grow() end
+		end
+		local distinct, repeated = 0, 0
+		for _, c in pairs(seen) do
+			distinct = distinct + 1
+			if c > 1 then repeated = repeated + 1 end
+		end
+		return n, distinct, repeated
+	`), "preallocate")
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	run := func(st *wangshu.State, tv wangshu.Value, clear, growAt wangshu.Value, grow func(tt *wangshu.Table) error) (n, distinct, repeated int) {
+		t.Helper()
+		tt := tv.AsTable()
+		st.SetGlobal("T", tv)
+		st.SetGlobal("clear", clear)
+		st.SetGlobal("growAt", growAt)
+		st.Register("grow", func(*wangshu.State, []wangshu.Value) ([]wangshu.Value, error) {
+			return nil, grow(tt)
+		})
+		r, err := prog.Run(st)
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		return int(r[0].Number()), int(r[1].Number()), int(r[2].Number())
+	}
+	count := func(tt *wangshu.Table) int {
+		n := 0
+		_ = tt.ForEach(func(_, _ wangshu.Value) bool { n++; return n < 1000 })
+		return n
+	}
+
+	// String keys only; every iteration grows the table a little more.
+	for _, clear := range []bool{false, true} {
+		st := wangshu.NewState(wangshu.Options{})
+		tv := stringKeyed(st, 20)
+		size := uint32(16)
+		n, distinct, repeated := run(st, tv, wangshu.Bool(clear), wangshu.Nil(), func(tt *wangshu.Table) error {
+			size += 8
+			return tt.Preallocate(size)
+		})
+		if n != 20 || distinct != 20 || repeated != 0 {
+			t.Errorf("clearing %v: pairs returned %d entries, %d different, %d repeated; want 20, 20, 0", clear, n, distinct, repeated)
+		}
+		if left, want := count(tv.AsTable()), map[bool]int{false: 20, true: 0}[clear]; left != want {
+			t.Errorf("clearing %v: %d entries are left, want %d", clear, left, want)
+		}
+		tv.Release()
+	}
+
+	// Integer keys 5 and 500 in the hash part; the loop grows the array part over 5 when it
+	// stands on it, once leaving the entry and once removing it first.
+	for _, clear := range []bool{false, true} {
+		st := wangshu.NewState(wangshu.Options{})
+		tv := stringKeyed(st, 10)
+		tt := tv.AsTable()
+		_ = tt.SetIndex(500, wangshu.Number(1))
+		_ = tt.SetIndex(5, wangshu.Number(2))
+		clearKey := wangshu.Nil()
+		if clear {
+			clearKey = wangshu.Number(5)
+		}
+		n, distinct, _ := run(st, tv, clearKey, wangshu.Number(5), func(tt *wangshu.Table) error { return tt.Preallocate(10) })
+		if distinct != 12 {
+			t.Errorf("clearing %v: pairs reached %d different keys, want 12", clear, distinct)
+		}
+		if n > 23 {
+			t.Errorf("clearing %v: pairs returned %d entries; one pass and one repeat of the hash part are 23 at most", clear, n)
+		}
+		if left, want := count(tt), map[bool]int{false: 12, true: 11}[clear]; left != want {
+			t.Errorf("clearing %v: %d entries are left, want %d", clear, left, want)
+		}
+		if tt.GetIndex(500).Number() != 1 {
+			t.Errorf("clearing %v: t[500] = %v afterwards, want 1", clear, tt.GetIndex(500))
+		}
+		tv.Release()
+	}
+}
