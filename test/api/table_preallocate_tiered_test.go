@@ -76,3 +76,81 @@ func TestPreallocate_CompiledAccessAfterwards(t *testing.T) {
 		t.Errorf("ForEach visited %d entries, want 2", n)
 	}
 }
+
+// TestPreallocate_DuringCompiledLoop: the array part grows while compiled code is in the middle of
+// a loop that reads and writes an integer key of the hash part. The loop reaches the host through
+// an __index handler (a function that calls a host function directly is not compiled), and the
+// handler grows the table on one iteration. The accesses after it see the key in the array part.
+func TestPreallocate_DuringCompiledLoop(t *testing.T) {
+	st := wangshu.NewState(wangshu.Options{})
+	st.SetForceAllPromote(true)
+	tv := st.NewTable()
+	defer tv.Release()
+	tt := tv.AsTable()
+	_ = tt.SetIndex(5, wangshu.Number(0))
+	_ = tt.Set(wangshu.String("x"), wangshu.Number(8))
+	st.SetGlobal("T", tv)
+	armed, grown := false, 0
+	st.Register("handler", func(_ *wangshu.State, args []wangshu.Value) ([]wangshu.Value, error) {
+		if !armed || len(args) < 2 || args[1].Number() != 1000 {
+			return nil, nil
+		}
+		grown++
+		return nil, tt.Preallocate(10)
+	})
+	prog, err := wangshu.Compile([]byte(`
+		local t = T
+		local p = setmetatable({}, {__index = handler})
+		function run()
+			local s = 0
+			for i = 1, 2000 do
+				t[5] = t[5] + 1
+				s = s + t[5]
+				local _ = p[i]
+			end
+			return s, t[5]
+		end
+	`), "preallocate")
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	if _, err := prog.Run(st); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	run := st.GetGlobal("run")
+	for i := 0; i < 5; i++ {
+		if _, err := st.Call(run); err != nil {
+			t.Fatalf("Call: %v", err)
+		}
+	}
+	if st.PromotionCount() < 1 {
+		t.Fatal("run was not promoted before the growth")
+	}
+
+	armed = true
+	entered := st.GibbousEntries()
+	r, err := st.Call(run)
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	if n := st.GibbousEntries() - entered; n != 1 {
+		t.Fatalf("compiled code was entered %d times, want 1", n)
+	}
+	if grown != 1 {
+		t.Fatalf("the handler grew the table %d times, want 1", grown)
+	}
+	// t[5] went from 10000 to 12000 in this call; s adds up 10001..12000.
+	if len(r) != 2 || r[0].Number() != 22001000 || r[1].Number() != 12000 {
+		t.Errorf("run returned %v and %v, want 22001000 and 12000", r[0].Number(), r[1].Number())
+	}
+	if got := tt.GetIndex(5).Number(); got != 12000 {
+		t.Errorf("the host reads t[5] = %v, want 12000", got)
+	}
+	n := 0
+	if e := tt.ForEach(func(_, _ wangshu.Value) bool { n++; return n < 100 }); e != nil {
+		t.Fatalf("ForEach: %v", e)
+	}
+	if n != 2 {
+		t.Errorf("ForEach visited %d entries, want 2", n)
+	}
+}
