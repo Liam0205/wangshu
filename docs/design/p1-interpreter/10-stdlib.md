@@ -819,7 +819,7 @@ STW §7.3)。本文只列 opt 字符串 → 行为映射(对齐 Lua 5.1):
 | `"collect"`(默认) | 跑一次 full GC | 0 | ✅ | 06 §8.2 `collect()` |
 | `"count"` | 返回当前 arena 使用的 KB 数(浮点,含小数 = 字节/1024) | number | ✅ | 06 §8.3 live 字节 / 1024 |
 | `"step"` | 跑一步增量 GC(arg = 步长 KB) | bool(是否完成一轮) | △ | **P1 只 full GC**(06 §8.3:无增量步长);P1 把 `step` 实现为「触发一次 full GC,返回 true」(语义近似,记口径) |
-| `"setpause"` | 设 GCPAUSE（arg = 百分比），返回旧值 | number（旧值） | △ | 06 §8.3 GCPAUSE（每个 State 从 200 开始）；新值从下一次回收结束、计算下次触发阈值时起生效，与官方相同。返回值和参数转换与官方一致；**比例的含义不同**（见下面「`setpause` 的比例」） |
+| `"setpause"` | 设 GCPAUSE(arg = 百分比),返回旧值 | number(旧值) | △ | 06 §8.3 GCPAUSE(每个 State 从 200 开始);新值从下一次回收结束、计算下次触发阈值时起生效,与官方相同。返回值和参数转换与官方一致;**比例的含义不同**(见下面「`setpause` 的比例」) |
 | `"setstepmul"` | 设步长倍率,返回旧值 | number(旧值) | △ | P1 无增量,`setstepmul` 存值但不生效(记口径);默认 200 |
 | `"stop"` | 停止自动 GC | 0 | △ | P1:把 collector 的 `stopped` 置为 true(`SetStopped`),此后 `MaybeCollect` 直接返回,安全点不再回收(06 §8.2)。官方在 `stop` 之后的 `collectgarbage()` / `("step")` 会恢复自动回收,望舒要等 `restart`(存量缺陷 [#354](https://github.com/Liam0205/wangshu/issues/354)) |
 | `"restart"` | 重启自动 GC | 0 | ✅ | 把 `stopped` 置回 false。官方 `restart` 之后下一次分配就回收,望舒按原来的阈值继续,只是时机不同([#354](https://github.com/Liam0205/wangshu/issues/354)) |

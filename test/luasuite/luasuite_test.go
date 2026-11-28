@@ -66,7 +66,7 @@ var stopAt = map[string]int{
 	"closure.lua": 163,
 	// Real incremental step-stepping semantics (gc.lua:111 dosteps asserts
 	// completion over multiple steps; a STW full GC's step always completes in
-	// one step, 10 §13 exempt: collectgarbage step/setstepmul). The first 110
+	// one step, 10 §4.6 exempt: collectgarbage step/setstepmul). The first 110
 	// lines (table/string/function churn, gcinfo settle loop) must pass entirely.
 	"gc.lua": 111,
 	// short_src truncation formatting for a long/multiline chunkname (db.lua:44 asserts the

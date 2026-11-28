@@ -920,7 +920,7 @@ jobs:
 
 - **PJ7 第二检查时若 amd64 单架构 Horner 距 luajc 档仍远**(承 §1.6),先跑 cpuprofile 定位主导项,**不为追原数字硬上**:
   - 若主导项是 dispatch 残余(应该被 P4 消解但实测仍占 30%)⇒ 模板编译质量有问题,回 §3 模板分级表逐 opcode review;
-  - 若主导项是 GC pacing(高频 ns/op 抖动)⇒ 调 GCPAUSE / arena cap;
+  - 若主导项是 GC pacing(高频 ns/op 抖动)⇒ 调 GCPAUSE / arena cap(GCPAUSE 现在只能由脚本的 `collectgarbage("setpause")` 调,公开的 `Options.GCPause` 不起作用,[#356](https://github.com/Liam0205/wangshu/issues/356));
   - 若主导项是边界税(jit→helper 跨层调用占 50%)⇒ 那就是与 P3 一样的 F2-b 架构边界,文档化为已知边界,不硬上;
 - **PJ11 luajc 档全验收时 V15 realworld geomean 不达预期** ⇒ 同上 profile 优先,不强行刷数字。
 
