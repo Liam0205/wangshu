@@ -13,7 +13,8 @@ import (
 // generation (it was built the same way) and a shorter array part. P4 compiles such a function
 // into a template that addresses the array slot directly; the slot it would address lies past
 // the end of the shorter table's array, in whatever object the arena holds next, so each case
-// allocates a second table right after the short one and reports both.
+// allocates a second table right after the short one: a read past the end would return one of
+// its elements, and the store cases report its first element next to what the short table got.
 //
 // The cases have the two-chunk form of tieredClearCases, for the same reason: the template is only
 // emitted from an inline cache the interpreter has filled. natural says that the warm chunk calls
