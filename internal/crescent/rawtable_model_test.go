@@ -19,12 +19,22 @@ import (
 // may be dropped, and its object is then collectable although a DEAD node still holds it.
 func TestRawTable_ModelCheck(t *testing.T) {
 	for seed := int64(1); seed <= 40; seed++ {
-		t.Run(fmt.Sprint(seed), func(t *testing.T) { modelCheck(t, seed) })
+		t.Run(fmt.Sprint(seed), func(t *testing.T) { modelCheck(t, seed, false) })
 	}
 }
 
-func modelCheck(t *testing.T, seed int64) {
+// TestRawTable_ModelCheckWithGrowArray is the same walk with the array part grown at random
+// steps (growArray, what Table.Preallocate does): integer keys of the hash part move into the
+// array part and leave DEAD nodes behind, which later stores take over and rehashes drop.
+func TestRawTable_ModelCheckWithGrowArray(t *testing.T) {
+	for seed := int64(1); seed <= 40; seed++ {
+		t.Run(fmt.Sprint(seed), func(t *testing.T) { modelCheck(t, seed, true) })
+	}
+}
+
+func modelCheck(t *testing.T, seed int64, grow bool) {
 	rng := rand.New(rand.NewSource(seed))
+	growRng := rand.New(rand.NewSource(seed + 1000)) // its own source: the walk is the same with and without growths
 	st, th := gcTestState(t)
 	tbl := st.allocTable(0, 0)
 	th.push(value.MakeGC(value.TagTable, tbl))
@@ -100,6 +110,10 @@ func modelCheck(t *testing.T, seed int64) {
 		return universe[rng.Intn(len(universe))]
 	}
 	for step := 0; step < 3000; step++ {
+		if grow && growRng.Intn(8) == 0 {
+			st.growArray(tbl, uint32(1+growRng.Intn(16)))
+			check(step, "grow")
+		}
 		switch r := rng.Intn(100); {
 		case r < 45:
 			k, v := pick(), value.NumberValue(float64(step))
@@ -158,8 +172,8 @@ func modelCheck(t *testing.T, seed int64) {
 }
 
 // checkNodeInvariants checks the structure of the hash part: every node holding a key is reached
-// from that key's main position, no chain has a cycle, no node refers to a freed object, and a
-// FREE node has no chain link.
+// from that key's main position, no chain has a cycle, no node refers to a freed object, a FREE
+// node has no chain link, and no node holds a value under a key that belongs to the array part.
 func checkNodeInvariants(t *testing.T, st *State, tbl arena.GCRef) {
 	t.Helper()
 	hsize := object.TableHSize(st.arena, tbl)
@@ -167,10 +181,14 @@ func checkNodeInvariants(t *testing.T, st *State, tbl arena.GCRef) {
 		return
 	}
 	hmask := hsize - 1
+	asize := object.TableASize(st.arena, tbl)
 	for i := uint32(0); i < hsize; i++ {
 		k := object.NodeKey(st.arena, tbl, i)
 		v := object.NodeVal(st.arena, tbl, i)
 		next := object.NodeNext(st.arena, tbl, i)
+		if _, in := arrayIndex(k, asize); in && v != value.Nil {
+			t.Fatalf("node %d holds a value under key %x, which belongs to the array part (%d slots)", i, uint64(k), asize)
+		}
 		if next >= int32(hsize) {
 			t.Fatalf("node %d links to %d, beyond the hash part (%d nodes)", i, next, hsize)
 		}
