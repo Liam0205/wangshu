@@ -719,7 +719,7 @@ GETGLOBAL/SETGLOBAL 是「目标表恒为 globals」的表访问特例(02 §4):
 
 - 与 GETTABLE 的差异:
   - 表对象恒为 globals(编译期烧 `globals.rawU64` 立即数,无 `i64.load`)。
-  - key 是常量 `K(Bx)`(编译期已知),同一 pc 的 key 恒定,而且全局表在 State 存活期间不会被回收、地址不变,键换到别的节点时 gen 一定推进,所以**可省 key 校验和下标检查**(GETTABLE 的表会被回收、地址会被新表重用,常量键也要校验,见 §3.4.2 的实现现状和 #362)。
+  - key 是常量 `K(Bx)`(编译期已知),同一 pc 的 key 恒定,而且全局表在 State 存活期间不会被回收、地址不变,一个节点里的键只有在 gen 推进之后才会变(键被挪走,或者已删除的节点被别的键接管),所以**可省 key 校验和下标检查**(GETTABLE 的表会被回收、地址会被新表重用,常量键也要校验,见 §3.4.2 的实现现状和 #362)。
   - globals 恒为 node hit(globals 表无 array 段,02-ic-feedback §2.2),`SNAP_KIND` 恒为 `ICKindNodeHit`。
 - globals 失效:新增全局键触发 globals rehash → bump gen → 快照永久 miss → 该点走助手。这与 ic.go 的 globals IC 失效语义一致。
 - SETGLOBAL 对称(改已存在全局键走快路径;新增键 rehash 走慢路径)。execute.go 88-96 行 GETGLOBAL/SETGLOBAL 经 `icGetTable`/`icSetTable` 复用,Wasm 助手同样复用。
