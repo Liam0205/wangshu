@@ -869,54 +869,6 @@ func EmitSetTableNodeHit(buf []byte, aReg, cReg uint8,
 	return buf
 }
 
-// EmitSelfNodeHit assembles the byte-level PJ4 SELF IC NodeHit inline template
-// (see 03 §6 + SELF ArrayHit + GetTable NodeHit, combining the same structures).
-//
-// **Shape**: in `function(obj) obj:method(args) end`, method is a string
-// identifier (luac compiles SELF A B C with A=R(m) / B=R(obj) /
-// C=K(string method name)). This is the typical shape of a real-world
-// `obj:method()` call (nearly all OOP-style Lua code goes through this path).
-//
-// When IC[0].Kind=NodeHit + Shape/Index/Key hits, byte-level inline:
-//
-//	R(A+1) := R(B)  ; self/this argument
-//	R(A)   := R(B)[K_string]  ; method function (direct hit via hash-segment NodeHit)
-//
-// **Byte layout** (198 bytes, SELF ArrayHit 158 + 40 as in GETTABLE NodeHit):
-//
-//	[0-6]    load R(B) → rax (7 bytes)
-//	[7-13]   store R(A+1) = rax (7 bytes, SELF's first step)
-//	[14-28]  strict IsTable guard (15 bytes)
-//	[29-35]  re-load R(B) → rax (7 bytes)
-//	[36-51]  GCRef extract + rcx = offset (16 bytes)
-//	[52-58]  load arena base → r14 (7 bytes)
-//	[59-81]  gen check (23 bytes)
-//	[82-104] index guard (load word1 + shr + cmp eax + jb, 23 bytes)
-//	[105-112] load nodeRef = [r14+rcx+24] → rax (8 bytes, word3)
-//	[113-121] nodeRef guard (test rax, rax + je, 9 bytes)
-//	[122-124] mov rcx, rax (rcx = nodeRef offset) (3 bytes)
-//	[125-132] load NodeKey = [r14+rcx+stableIndex*24] → rax (8 bytes)
-//	[133-142] mov rdx, stableKey (10 bytes)
-//	[143-145] cmp rax, rdx (3 bytes)
-//	[146-151] jne deopt (6 bytes)
-//	[152-159] load NodeVal = [r14+rcx+stableIndex*24+8] → rax (8 bytes)
-//	[160-169] mov rcx, qNanBoxNil (10 bytes)
-//	[170-172] cmp rax, rcx (3 bytes)
-//	[173-178] je deopt (6 bytes, NodeVal == Nil)
-//	[179-185] store R(A) = rax (7 bytes)
-//	[186]    ret (1 byte)
-//	[187-197] deopt block (11 bytes)
-//	——— total 198 bytes ———
-//
-// Key differences vs SELF ArrayHit:
-//   - fetches word3=nodeRef (offset 24) instead of word2=arrayRef (offset 16)
-//   - node stride is 24 bytes
-//   - one extra key comparison segment (mov rdx stableKey + cmp rax rdx + jne)
-//   - the index guard compares hmask, and a zero nodeRef goes to the deopt block
-//
-// **deopt path**: when the Run side sees raxSpec==deoptCode it calls
-// host.GetTable byte-equal to P1 (R(A+1)=R(B) already stored, same steps as the
-// P1 SELF case; P1 icGetTable is compatible with NodeHit).
 // EmitSelfNodeHitNoRet is the same as EmitSelfNodeHit, but its success path
 // **does not emit ret** — it falls through into the caller-emitted following
 // segment (see §9.20.9 commit-5j fixing the useFrameInline path so it is
@@ -930,6 +882,9 @@ func EmitSetTableNodeHit(buf []byte, aReg, cReg uint8,
 //     the SELF segment stores R(A)=method, BuildVoid0Arg's
 //     LoadClosureGCRef(callA) automatically reads the method GCRef payload)
 //   - the deopt path is the same as EmitSelfNodeHit (write RAX=deoptCode + ret)
+//
+// 202 bytes: the layout of EmitSelfNodeHit with the ret at [186] replaced by a
+// 5-byte jmp over the deopt block.
 func EmitSelfNodeHitNoRet(buf []byte, aReg, bReg uint8,
 	stableShape, stableIndex uint32, stableKey uint64,
 	arenaBaseOff int32, deoptCode uint64) []byte {
@@ -1010,7 +965,54 @@ func EmitSelfNodeHitNoRet(buf []byte, aReg, bReg uint8,
 	return buf
 }
 
-// EmitSelfNodeHit ... (original function, kept unchanged)
+// EmitSelfNodeHit assembles the byte-level PJ4 SELF IC NodeHit inline template
+// (see 03 §6 + SELF ArrayHit + GetTable NodeHit, combining the same structures).
+//
+// **Shape**: in `function(obj) obj:method(args) end`, method is a string
+// identifier (luac compiles SELF A B C with A=R(m) / B=R(obj) /
+// C=K(string method name)). This is the typical shape of a real-world
+// `obj:method()` call (nearly all OOP-style Lua code goes through this path).
+//
+// When IC[0].Kind=NodeHit + Shape/Index/Key hits, byte-level inline:
+//
+//	R(A+1) := R(B)  ; self/this argument
+//	R(A)   := R(B)[K_string]  ; method function (direct hit via hash-segment NodeHit)
+//
+// **Byte layout** (198 bytes, SELF ArrayHit 158 + 40 as in GETTABLE NodeHit):
+//
+//	[0-6]    load R(B) → rax (7 bytes)
+//	[7-13]   store R(A+1) = rax (7 bytes, SELF's first step)
+//	[14-28]  strict IsTable guard (15 bytes)
+//	[29-35]  re-load R(B) → rax (7 bytes)
+//	[36-51]  GCRef extract + rcx = offset (16 bytes)
+//	[52-58]  load arena base → r14 (7 bytes)
+//	[59-81]  gen check (23 bytes)
+//	[82-104] index guard (load word1 + shr + cmp eax + jb, 23 bytes)
+//	[105-112] load nodeRef = [r14+rcx+24] → rax (8 bytes, word3)
+//	[113-121] nodeRef guard (test rax, rax + je, 9 bytes)
+//	[122-124] mov rcx, rax (rcx = nodeRef offset) (3 bytes)
+//	[125-132] load NodeKey = [r14+rcx+stableIndex*24] → rax (8 bytes)
+//	[133-142] mov rdx, stableKey (10 bytes)
+//	[143-145] cmp rax, rdx (3 bytes)
+//	[146-151] jne deopt (6 bytes)
+//	[152-159] load NodeVal = [r14+rcx+stableIndex*24+8] → rax (8 bytes)
+//	[160-169] mov rcx, qNanBoxNil (10 bytes)
+//	[170-172] cmp rax, rcx (3 bytes)
+//	[173-178] je deopt (6 bytes, NodeVal == Nil)
+//	[179-185] store R(A) = rax (7 bytes)
+//	[186]    ret (1 byte)
+//	[187-197] deopt block (11 bytes)
+//	——— total 198 bytes ———
+//
+// Key differences vs SELF ArrayHit:
+//   - fetches word3=nodeRef (offset 24) instead of word2=arrayRef (offset 16)
+//   - node stride is 24 bytes
+//   - one extra key comparison segment (mov rdx stableKey + cmp rax rdx + jne)
+//   - the index guard compares hmask, and a zero nodeRef goes to the deopt block
+//
+// **deopt path**: when the Run side sees raxSpec==deoptCode it calls
+// host.GetTable byte-equal to P1 (R(A+1)=R(B) already stored, same steps as the
+// P1 SELF case; P1 icGetTable is compatible with NodeHit).
 func EmitSelfNodeHit(buf []byte, aReg, bReg uint8,
 	stableShape, stableIndex uint32, stableKey uint64,
 	arenaBaseOff int32, deoptCode uint64) []byte {

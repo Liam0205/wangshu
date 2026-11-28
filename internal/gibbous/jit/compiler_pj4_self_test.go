@@ -22,7 +22,7 @@ import (
 // This file builds a **synthetic proto + IC slot + feedback** to drive the
 // SELF main path directly, verifying:
 //   1. analyzeSelfArrayHit form recognition returns true (SELF + RETURN A 2 +
-//      IC ArrayHit + feedback FBTableMono + Confidence>=0.99 + matching
+//      IC ArrayHit + feedback FBSelfMono + Confidence>=0.99 + matching
 //      stableShape/Index)
 //   2. compileIcSelfArrayHit emits the template + incSpecTableHits()
 //   3. the returned GibbousCode.Proto() points to the input proto, Slot()
@@ -47,7 +47,7 @@ import (
 //
 // SELF semantics: R(A+1)=R(B); R(A)=R(B)[K] —— i.e. R(3)=R(0); R(2)=R(0)[K[1]].
 // The compile-time path needs the ArrayHit signal: proto.IC[0].Kind=ArrayHit +
-// feedback.Points[0].Kind=FBTableMono with matching shape/index.
+// feedback.Points[0].Kind=FBSelfMono with matching shape/index.
 func TestPJ4_SelfArrayHit_MainPath_Synthesized(t *testing.T) {
 	ResetSpecHits()
 
@@ -72,7 +72,7 @@ func TestPJ4_SelfArrayHit_MainPath_Synthesized(t *testing.T) {
 		Index: 1,
 	}
 
-	// Synthetic feedback: FBTableMono + Confidence=1.0 + matching shape/index
+	// Synthetic feedback: FBSelfMono + Confidence=1.0 + matching shape/index
 	feedback := &bridge.TypeFeedback{
 		Points: []bridge.PointFeedback{
 			{
