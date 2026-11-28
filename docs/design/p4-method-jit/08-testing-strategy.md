@@ -219,7 +219,7 @@ P3 08 §1.1 定的 V1-V13 是**正确性轴主防线**——crescent vs gibbous(
 | V3 | 算术慢路径 | 走 helper byte-equal | **+** P4 失败 OSR exit 后解释续跑 byte-equal(承 §4)|
 | V4 | 数值 for | FORPREP/FORLOOP byte-equal | **+** P4 数值 for 投机模板 byte-equal(若做循环变量寄存器驻留,需 V19 物化序列)|
 | V5 | back edge GC | gcPending inline byte-equal | **+** P4 back edge 检查点(自管栈 + preemptFlag,承 [./05-system-pipeline.md](./05-system-pipeline.md) §1)+ GC 压力 byte-equal |
-| V6 | 表 IC 命中 | 单态命中跳哈希 byte-equal | **+** P4 直达槽 + 同表+同代次 guard byte-equal(承 [./03-speculation-ic.md](./03-speculation-ic.md) §2.3 / §6;实际生成的检查见 §2.3 末尾)|
+| V6 | 表 IC 命中 | 单态命中跳哈希 byte-equal | **+** P4 直达槽 + 同表+同代次 guard byte-equal(承 [./03-speculation-ic.md](./03-speculation-ic.md) §2.3 / §6;实际生成的检查见 [03](./03-speculation-ic.md) §2.3 末尾)|
 | V7 | 表 IC 失效 | gen bump 走 helper byte-equal | **+** P4 guard 失败 OSR exit + 解释续跑 byte-equal |
 | V8 | 跨层 CALL 链 | 错误冒泡 byte-equal | **+** P4 jit→jit / jit→crescent / jit→host 三向互调 byte-equal(承 [./05-system-pipeline.md](./05-system-pipeline.md) §3 世界边界)|
 | V9 | gibbous traceback | 帧 pc 物化 byte-equal | **+** P4 帧 pc 物化(经 OSR exit 写 savedPC,承 [./04-osr-deopt.md](./04-osr-deopt.md) §4)byte-equal |
