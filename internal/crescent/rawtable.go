@@ -473,6 +473,7 @@ func (st *State) growArray(t arena.GCRef, nasize uint32) {
 		return
 	}
 	newArr := object.AllocTableArray(st.arena, nasize)
+	// nasize*8 fits: the allocation above panics on a block beyond the arena limit, a uint32.
 	st.gc.AllocCharge(nasize * 8)
 	oldArr := object.TableArrayRef(st.arena, t)
 	for i := uint32(0); i < asize; i++ {
