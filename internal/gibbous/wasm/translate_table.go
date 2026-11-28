@@ -342,6 +342,14 @@ func (c *Compiler) emitSlotInTable(em *emitter, snap icSnapshot, key uint64) {
 // constKey returns the constant an RK operand names, in the form a table
 // stores it as a key (-0 is stored as +0), or 0 for a register operand (an
 // ArrayHit with a register key matches the key at run time).
+//
+// The comparison with a node's key is bitwise, so a string constant has to be
+// the reference the State's tables hold for that string. It is: the compiler
+// is handed the State's own copy of the Proto, in which LoadProgram replaced
+// every string constant by the string interned in that State. With any other
+// Proto the constant-key NodeHit paths would send every access to the helper
+// and still return the right value; crescent's
+// TestP3_InlineAccessStaysInlineOnItsOwnTable is the test that notices.
 func constKey(proto *bytecode.Proto, rk int) uint64 {
 	if !bytecode.IsK(rk) {
 		return 0
@@ -445,8 +453,10 @@ func (c *Compiler) emitSetTable(em *emitter, proto *bytecode.Proto, ins bytecode
 	snap := snapshotICSlot(proto, pc)
 	regKey := !bytecode.IsK(int(b))
 
-	// The value RK(C) being a string constant → cannot bake a real GCRef at
-	// compile time → drop the whole instruction to the helper.
+	// A string constant as the value RK(C) is not stored inline: the whole
+	// instruction goes to the helper. The constant is the State's own
+	// reference (see constKey), so nothing but this check stands in the way
+	// (#365).
 	valStrConst := bytecode.IsK(int(cc)) && proto.IsStringConst(bytecode.KIdx(int(cc)))
 	if valStrConst || !tableInlineable(snap, regKey) {
 		c.emitHelperEpilogue5(em, helperSetTable, pc, a, b, cc)
