@@ -456,12 +456,13 @@ func (st *State) rehash(t arena.GCRef, extraKey value.Value) {
 //
 // The hash part stays where it is. The node of a moved key keeps the key and
 // loses its value, like the node of a removed key (DEAD), so every other key
-// stays in its node and a traversal standing on one of them goes on from there.
-// Such a traversal can miss a moved entry it had not reached. A traversal that
-// stands on a key the array part now covers (a moved one, or one that was
-// DEAD already) continues in the array part behind that key, because rawNext
-// takes a key in 1..asize for an array index, and meets the hash entries a
-// second time. Every traversal still ends.
+// stays in its node and a traversal standing on one of them goes on from there,
+// without the moved entries it had not reached. A traversal that stands on a
+// key the array part now covers (a moved one, or one that was DEAD already)
+// continues with the array slots behind that key, because rawNext takes a key
+// in 1..asize for an array index, and then goes through the hash part from its
+// start: it returns the hash entries it had passed a second time, and none of
+// the entries that moved to a slot below that key. Every traversal still ends.
 //
 // The new array block is the only allocation and comes before any change to the
 // table. Grow only: nasize at or below the current size is a no-op. BumpGen
