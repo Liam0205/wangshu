@@ -469,3 +469,48 @@ func TestPreallocate_ScriptAccessAfterwards(t *testing.T) {
 		t.Errorf("ForEach visited %v, want 5 and x once each", seen)
 	}
 }
+
+// TestPreallocate_DuringForEachOnARemovedIntegerKey: the callback removes the integer key it is
+// given and then grows the array part over it. The iteration continues in the array part and goes
+// through the hash part again, so entries repeat (see Preallocate); it ends without an error and
+// reaches every entry.
+func TestPreallocate_DuringForEachOnARemovedIntegerKey(t *testing.T) {
+	st := wangshu.NewState(wangshu.Options{})
+	tv := stringKeyed(st, 10)
+	defer tv.Release()
+	tt := tv.AsTable()
+	_ = tt.SetIndex(500, wangshu.Number(1))
+	_ = tt.SetIndex(5, wangshu.Number(2))
+	seen := map[string]int{}
+	calls := 0
+	if e := tt.ForEach(func(k, _ wangshu.Value) bool {
+		calls++
+		if k.IsNumber() {
+			seen[strconv.Itoa(int(k.Number()))]++
+			if k.Number() == 5 {
+				_ = tt.SetIndex(5, wangshu.Nil())
+				if e := tt.Preallocate(10); e != nil {
+					t.Errorf("Preallocate: %v", e)
+				}
+			}
+		} else {
+			seen[k.Str()]++
+		}
+		return calls < 100
+	}); e != nil {
+		t.Fatalf("ForEach: %v", e)
+	}
+	t.Logf("ForEach called back %d times for 12 entries", calls)
+	if len(seen) != 12 {
+		t.Errorf("ForEach reached %d different keys, want 12", len(seen))
+	}
+	if seen["5"] != 1 {
+		t.Errorf("the removed key 5 was given %d times, want 1", seen["5"])
+	}
+	if calls > 23 {
+		t.Errorf("ForEach called back %d times; one pass and one repeat of the hash part are 23 at most", calls)
+	}
+	if !tt.GetIndex(5).IsNil() || tt.GetIndex(500).Number() != 1 {
+		t.Errorf("after the iteration t[5] = %v and t[500] = %v, want nil and 1", tt.GetIndex(5), tt.GetIndex(500))
+	}
+}

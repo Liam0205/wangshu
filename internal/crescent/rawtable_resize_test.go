@@ -220,3 +220,38 @@ func TestGrowArray_TraversalEndsWhenKeysMove(t *testing.T) {
 		}
 	}
 }
+
+// TestGrowArray_TraversalFromARemovedIntegerKey: a traversal that stands on an integer key of the
+// hash part whose entry was removed, and that the grown array part covers, continues in the array
+// part and goes through the whole hash part again, although no key had to move: next takes a key
+// in 1..asize for an array index. It ends, and it returns every entry once.
+func TestGrowArray_TraversalFromARemovedIntegerKey(t *testing.T) {
+	num := func(n int) value.Value { return value.NumberValue(float64(n)) }
+	st := New()
+	tbl := st.allocTable(0, 0)
+	for i := 0; i < 10; i++ {
+		_ = st.rawSet(tbl, st.makeStringValue(fmt.Sprintf("k%d", i)), num(i))
+	}
+	_ = st.rawSet(tbl, num(500), num(1))
+	_ = st.rawSet(tbl, num(5), num(2))
+	if object.TableASize(st.arena, tbl) != 0 {
+		t.Fatalf("setup: array part has %d slots, want 0", object.TableASize(st.arena, tbl))
+	}
+	_ = st.rawSet(tbl, num(5), value.Nil)
+	rest := traverse(t, st, tbl, num(5))
+	if len(rest) == 0 || len(rest) >= 11 {
+		t.Fatalf("setup: %d entries follow key 5, want some but not all of the 11 others", len(rest))
+	}
+
+	st.growArray(tbl, 10)
+
+	got := traverse(t, st, tbl, num(5))
+	if len(got) != 11 {
+		t.Errorf("%d entries are returned from the removed key 5 after the growth, want all 11", len(got))
+	}
+	for k, n := range got {
+		if n != 1 {
+			t.Errorf("key %x is returned %d times", uint64(k), n)
+		}
+	}
+}
