@@ -1312,17 +1312,18 @@ arena 大小跟着比例变。`TestTiered_StdlibNames` 加一段
   这些写在 `Table.Preallocate` 的 godoc 里。不重建的代价是被搬走的键留下的节点在下一次 rehash 之前仍然占着哈希部分的位置
   （修改前这些键的节点有值，同样占着）。
 - **预留能保持到什么时候**（修改前后相同，这次写进了 godoc）：预留的格子保持到表的下一次 rehash。往表里写一个数组部分不覆盖的新键、哈希部分又没有空闲节点时发生 rehash，
-  rehash 按当时表里的整数键重新定数组部分的大小，与预留过多少无关：取最大的 2 的幂 m（不超过 2^24），使 1..m 里用掉的超过一半。m 之后的格子不管空不空都被收回，
-  里面的条目回到哈希部分（`Preallocate(1000)` 之后写入 1..10 和 600、再写字符串键引起 rehash，数组部分是 16 格，键 600 在哈希部分）。`NewTable` 建出来的表哈希部分有 8 个节点，第几个新键引起 rehash 取决于这些键的哈希
+  rehash 按当时表里的整数键、连同正在写入的那个新键，重新定数组部分的大小，与预留过多少无关：取最大的 2 的幂 m（不超过 2^24），使 1..m 里用掉的超过一半；
+  没有这样的 m 时数组部分是 0。m 之后的格子不管空不空都被收回，里面的条目回到哈希部分（`Preallocate(1000)` 之后写入 1..10 和 600、再写字符串键引起 rehash，
+  数组部分是 16 格，键 600 在哈希部分；没有哈希部分的表 `Preallocate(6)` 之后写入 1、2、5、6，再写 7 引起 rehash，数组部分是 8 格，新键 7 算在里面）。`NewTable` 建出来的表哈希部分有 8 个节点，第几个新键引起 rehash 取决于这些键的哈希
   （主位置被占时才去找空闲节点）：`Preallocate(1000)` 之后逐个写字符串键，`name0`、`name1`…… 这组键是第 6 个引起 rehash，`k0`…… 和 `col0`…… 是第 5 个，
   `field_0`…… 是第 4 个，`x0`…… 是第 9 个，rehash 之后数组部分都回到 0。用 `name` 这组键量耗时：`Preallocate(n)` 之后先写 5 个再填 1..n，
   每个元素约 19 纳秒，与不写字符串键相同；先写 6 个再填，N 为 1000、10000、100000 时每个元素 57、78、63 纳秒，与不预留（46、62、58 纳秒）差不多。
   官方 `lua_createtable(L, n, 0)` 建出来的表哈希部分是空的，写第一个哈希键就 rehash，预留同样被收回。
   `internal/crescent` 的 `TestGrowArray_SlotsAreKeptUntilTheNextRehash` 直接看数组部分的大小：写入字符串键而没有 rehash 时保持 1000，
-  rehash 之后是 0；只写了 1..10 和 600 时 rehash 之后是 16；先填满 1..1000 再写 40 个字符串键，数组部分不小于 1000。`test/api` 的 `TestPreallocate_OtherKeysBeforeTheFill` 检查的是另一件事：
+  rehash 之后是 0；只写了 1..10 和 600 时 rehash 之后是 16；写了 1、2、5、6 再写 7 时是 8；先填满 1..1000 再写 40 个字符串键，数组部分不小于 1000。`test/api` 的 `TestPreallocate_OtherKeysBeforeTheFill` 检查的是另一件事：
   预留和填充之间写入 0、5、6、40 个别的键，表最后的内容都正确。
 - **`Len` 在带空洞的表上可能换一个边界**：整数键有空洞的表有不止一个边界，`#` 返回哪一个取决于键在数组部分还是哈希部分。键搬进数组部分之后，
-  `Len` 可能从一个边界变成另一个：只有键 2、3 的表，`Preallocate(4)` 之前 `Len` 是 0，之后是 3，两个都是合法的边界。godoc 写了这一点，
+  `Len` 可能从一个边界变成另一个：只有键 2、3 的表，`Preallocate(4)` 之前 `Len` 是 0，之后是 3，两个都是合法的边界（`t[1]` 是 nil 时 0 也是边界）。godoc 写了这一点，
   `TestPreallocate_LenIsABorderBeforeAndAfter` 对四组带空洞的键断言扩大前后 `Len` 都是边界。
 - **分配失败**：新数组是唯一的一次分配，而且在改动表之前。arena 放不下时 panic（`Program.Run` 会把它转成 error，State 之后还能用），表保持原样。
 - **验证**：
@@ -1338,7 +1339,7 @@ arena 大小跟着比例变。`TestTiered_StdlibNames` 加一段
     `TestPreallocate_DuringForEachOnARemovedIntegerKey`（上面 12 个条目的例子：不报错、结束、每个条目都访问到）、
     `TestPreallocate_DuringPairs`（脚本的 `pairs` 循环里经宿主函数扩大：只有字符串键的表每轮都扩大、以及先清掉当前条目再扩大，20 个条目各返回一次；
     哈希部分里有整数键 5 和 500 的表，循环走到 5 时扩大、以及先清掉 5 再扩大，12 个键都走到、循环结束；三种构建都执行。
-    换回修改前的代码、不搬键、不清原节点和两种重建写法下这个测试失败）、
+    它在哪些变异下失败见下面的表）、
     `TestPreallocate_ScriptAccessAfterwards`（脚本对哈希部分里的键 5 读写 1000 次之后，脚本调用的宿主函数扩大数组部分，脚本接着读写同一个键，结果正确。
     这里的函数太短，P3、P4 构建里也不升层，检查的是解释器的内联缓存）、
     `TestPreallocate_CompiledAccessAfterwards`（只在 P3、P4 构建里：带循环的读函数和写函数升层之后扩大数组部分，再调用它们，结果正确；
@@ -1349,18 +1350,29 @@ arena 大小跟着比例变。`TestTiered_StdlibNames` 加一段
   - `internal/crescent` 的 `TestGrowArray_TraversalFromARemovedIntegerKey`：站在已清掉的整数键 5 上扩大数组部分，接下去的遍历把 11 个条目各返回一次。
   - `internal/crescent` 的 `TestRawTable_ModelCheckWithGrowArray`：随机模型比对（40 个种子各 3000 步的写入、删除、回收、边遍历边清空）里随机插入 `growArray`，
     每一步之后与 Go map 比对读取和遍历，并检查哈希部分的结构；`checkNodeInvariants` 新增一项「数组范围内的键在哈希部分没有有值的节点」。
-    不搬键、不清原节点、不复制旧数组三种变异下这个测试失败。
-  - 变异 10 种，每一种都有测试失败：
-    - 换回修改前的 `alloc.go`：默认构建里 5 个 API 测试失败，P3、P4 构建里 `TestPreallocate_CompiledAccessAfterwards`、`TestPreallocate_DuringCompiledLoop` 也失败。
-    - 换成重建哈希部分的写法（从最后一个节点往前重新插入）：`TestGrowArray_MovesHashIntegerKeys`、`TestGrowArray_TraversalGoesOn`、`TestGrowArray_TraversalWhenKeysMove`、`TestPreallocate_DuringForEach` 失败。
-    - `growArray` 什么都不做：5 个 `TestGrowArray_*` 和 3 个 API 测试失败。`TestPreallocate_FixesQuadraticBuild` 这时仍然通过，它比较的是两个规模下每个元素耗时的比值，
-      不预留时比值也在限内，所以它不能说明预留生效（[#374](https://github.com/Liam0205/wangshu/issues/374)）；说明预留生效的是直接看数组部分大小的测试。
-    - 不搬键、搬了值但不清原节点：`TestRawTable_ModelCheckWithGrowArray`、两个 `TestGrowArray_*`、5 个 API 测试失败，P3、P4 构建里两个编译代码测试也失败。
-    - 不推进 gen：只有 `TestGrowArray_MovesHashIntegerKeys` 发现，脚本层面看不出来，因为内联缓存命中时都检查节点的值，被搬走的键的节点没有值，本来就不会命中。
-      推进 gen 是按 `rawtable.go` 文件头的约定做的（拿走一个有值节点的值的路径都推进）。
-    - 不复制旧数组：`TestRawTable_ModelCheckWithGrowArray`、两个 `TestGrowArray_*`、3 个 API 测试失败。
-    - 分配之前先改表头，两种写法（先把数组大小改成新值；先把数组部分摘掉、分配之后从留下的旧块复制）：都只有 `TestPreallocate_FailureLeavesTheTableAlone` 发现。
-    - 不释放换下来的旧数组块：`TestGrowArray_KeepsArrayAndNeverShrinks` 发现（下一块同样大小的分配应该拿到它）。
+    它在哪些变异下失败见下面的表。
+  - 变异 11 种，每一种都有测试失败。下表是在这一节列出的全部测试上执行的结果（默认构建执行 `internal/crescent` 和 `test/api` 里名字含 `GrowArray`、`Preallocate`、`ModelCheck` 的测试；
+    「编译代码测试」指 P3、P4 构建里的 `TestPreallocate_CompiledAccessAfterwards` 和 `TestPreallocate_DuringCompiledLoop`，两种构建结果相同）。
+    测试名省去 `TestGrowArray_`、`TestPreallocate_` 前缀，前者标 G，后者标 P。
+
+    | 变异 | 默认构建里失败的测试 | 编译代码测试 |
+    |---|---|---|
+    | 换回修改前的 `alloc.go` | P：`KeepsIntegerKeysFromTheHashPart`、`KeepsEveryKindOfKey`、`DuringForEachWithIntegerKeys`、`DuringPairs`、`FailureLeavesTheTableAlone`、`ScriptAccessAfterwards` | 两个都失败 |
+    | 重建哈希部分，从最后一个节点往前重新插入 | G：`MovesHashIntegerKeys`、`TraversalGoesOn`、`TraversalWhenKeysMove`；P：`DuringForEach`、`DuringPairs` | 通过 |
+    | 重建哈希部分，从第一个节点往后重新插入 | 与上一行相同 | 通过 |
+    | `growArray` 什么都不做 | G：`MovesHashIntegerKeys`、`KeepsArrayAndNeverShrinks`、`TraversalWhenKeysMove`、`TraversalFromARemovedIntegerKey`、`SlotsAreKeptUntilTheNextRehash`；P：`ExceedsMaxArenaBytes`、`FailureLeavesTheTableAlone`、`KeepsEveryKindOfKey` | 通过 |
+    | 不搬键 | `TestRawTable_ModelCheckWithGrowArray`；G：`MovesHashIntegerKeys`、`TraversalWhenKeysMove`；P：与第一行相同的 6 个 | 两个都失败 |
+    | 搬了值但不清原节点 | 与上一行相同 | 两个都失败 |
+    | 不推进 gen | G：`MovesHashIntegerKeys` | 通过 |
+    | 不复制旧数组 | `TestRawTable_ModelCheckWithGrowArray`；G：`KeepsArrayAndNeverShrinks`、`TraversalWhenKeysMove`；P：`DataPreserved`、`FailureLeavesTheTableAlone`、`KeepsEveryKindOfKey` | 通过 |
+    | 分配之前先把数组大小改成新值 | P：`FailureLeavesTheTableAlone`（读到旧块之外，测试程序 panic） | 通过 |
+    | 分配之前先把数组部分摘掉，分配之后从留下的旧块复制 | P：`FailureLeavesTheTableAlone` | 通过 |
+    | 不释放换下来的旧数组块 | G：`KeepsArrayAndNeverShrinks`（下一块同样大小的分配应该拿到它） | 通过 |
+
+    几点说明：`growArray` 什么都不做时 `TestPreallocate_FixesQuadraticBuild` 仍然通过，它比较的是两个规模下每个元素耗时的比值，不预留时比值也在限内，
+    所以它不能说明预留生效（[#374](https://github.com/Liam0205/wangshu/issues/374)）；说明预留生效的是直接看数组部分大小的测试。
+    不推进 gen 在脚本层面看不出来，因为内联缓存命中时都检查节点的值，被搬走的键的节点没有值，本来就不会命中；推进 gen 是按 `rawtable.go` 文件头的约定做的
+    （拿走一个有值节点的值的路径都推进）。
   - 「先 `Preallocate` 再逐个 `SetIndex`」没有变慢：这种用法里哈希部分是空的，扫描没有代价。`BenchmarkTableBuild_Preallocate`（`-cpu=1`，每个规模 5000 次，修改前后交替各跑两遍）
     N=1000 修改后 23.0、23.1 微秒，修改前 23.2、23.3 微秒；N=100 修改后 2.3、2.4 微秒，修改前 2.3、2.4 微秒。
 
