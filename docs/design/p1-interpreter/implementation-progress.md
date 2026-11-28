@@ -1294,8 +1294,9 @@ arena 大小跟着比例变。`TestTiered_StdlibNames` 加一段
   没有扩大时直接返回、不推进 gen。
 - **为什么不照官方的 `luaH_resizearray` 重建哈希部分**：官方只在 `OP_SETLIST` 里调用它，那时表还在构造中，不可能正被遍历。`Preallocate` 是宿主 API，
   可以在 `ForEach` 的回调里、或者脚本的 `pairs` 循环里经宿主函数被调用。重建会把每个键换到别的节点、丢掉已删除的节点，只有字符串键的表上遍历也会出错
-  （把 `growArray` 换成重建的写法执行 `TestPreallocate_DuringForEach`：回调里每次都扩大，20 个条目访问不全，还有重复的，
-  按原大小重建、依节点顺序重新插入时只访问到 11 个，具体个数随重建的写法变化；回调里先清掉当前条目再扩大，下一步就报 `invalid key to 'next'`）。原地搬的做法里，每个键都留在原来的节点里，
+  （把 `growArray` 换成重建的写法执行 `TestPreallocate_DuringForEach`：回调里每次都扩大，20 个条目访问不全。
+  按原大小重建、照官方 `resize` 的顺序从最后一个节点往前重新插入时，只访问到 11 个不同的键，其中一个访问了两次；从第一个节点往后重新插入时访问到 17 个，没有重复。
+  两种顺序下，回调里先清掉当前条目再扩大，下一步都报 `invalid key to 'next'`）。原地搬的做法里，每个键都留在原来的节点里，
   遍历不报错、一定结束。与不调用 `Preallocate` 时从当前位置接下去会返回的条目相比，结果取决于遍历正站在哪个键上：
   - 站在数组部分的键上：返回的条目相同，被搬走的那些提前从数组部分返回。
   - 站在哈希部分一个不是「落进新范围的整数」的键上：顺序不变，只是少了被搬走的条目（它的值已经在数组部分，遍历早就走过数组部分了）。
@@ -1342,7 +1343,7 @@ arena 大小跟着比例变。`TestTiered_StdlibNames` 加一段
     不搬键、不清原节点、不复制旧数组三种变异下这个测试失败。
   - 变异 10 种，每一种都有测试失败：
     - 换回修改前的 `alloc.go`：默认构建里 5 个 API 测试失败，P3、P4 构建里 `TestPreallocate_CompiledAccessAfterwards`、`TestPreallocate_DuringCompiledLoop` 也失败。
-    - 换成重建哈希部分的写法：`TestGrowArray_MovesHashIntegerKeys`、`TestGrowArray_TraversalGoesOn`、`TestGrowArray_TraversalWhenKeysMove`、`TestPreallocate_DuringForEach` 失败。
+    - 换成重建哈希部分的写法（从最后一个节点往前重新插入）：`TestGrowArray_MovesHashIntegerKeys`、`TestGrowArray_TraversalGoesOn`、`TestGrowArray_TraversalWhenKeysMove`、`TestPreallocate_DuringForEach` 失败。
     - `growArray` 什么都不做：5 个 `TestGrowArray_*` 和 3 个 API 测试失败。`TestPreallocate_FixesQuadraticBuild` 这时仍然通过，它比较的是两个规模下每个元素耗时的比值，
       不预留时比值也在限内，所以它不能说明预留生效；说明预留生效的是直接看数组部分大小的测试。
     - 不搬键、搬了值但不清原节点：`TestRawTable_ModelCheckWithGrowArray`、两个 `TestGrowArray_*`、5 个 API 测试失败，P3、P4 构建里两个编译代码测试也失败。
