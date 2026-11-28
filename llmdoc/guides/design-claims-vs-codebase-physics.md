@@ -40,6 +40,7 @@
 | `insertNewKey` 新键接管主位置上已删除的节点 | 是：节点换了键 | 有（#338） | P3 wasm `emitSetGlobal` 内联写 Nil 时不经过 `rawSet`、不 bump，所以节点换键的这一刻必须 bump，否则读方的 gen-only 快照会把新键的值当成旧键的。`TestRawTable_DeadNodeTakeoverBumpsGen` 断言，`TestTiered_ClearWhileTraversing/deleted_global_node_taken_over` 在 P3 的内联路径上断言 |
 | `gc/sweep.go` weak 表清项(哈希部分) | 只清值时否(键保留);键指向的对象已死、换成 `object.DeadKey` 时是 | 有 | `TestWeak_SweepClearBumpsGen`、`TestWeak_ClearedValueKeepsKeyForNext` 断言;只清了数组槽时不 bump(与 `rawSet` 在数组部分赋 nil 一样) |
 | `gc/sweep.go` `clearDeadKeys`：已删除节点里对象已死的键换成 `object.DeadKey` | 是：节点不再持有原来的键 | 有（#338） | `TestDeadKey_ObjectDiesAndKeyIsReplaced` 断言；没有键被替换的回收不 bump |
+| `resizeArray`（`Table.Preallocate` 扩大数组部分；哈希部分按原大小重建，落进新范围的整数键搬进数组部分） | 是 | 有（#363） | 没有扩大时直接返回、不 bump；`TestResizeArray_KeepsArrayAndNeverShrinks`、`TestResizeArray_MovesHashIntegerKeys` 断言 |
 | `insertNewKey` 新键放入空闲节点(main position 空闲 / `findFreeNode` 给的节点) | Nil→key | 不需要 | IC 只在 `val != Nil` 时回填(`ic.go` 的 `rawGetWithLoc` 对已删除的节点返回 `locNone`),空闲节点不可能被快照 |
 | `nodeSetVal` 改值、同一个键写回它已删除的节点 / `SetTableArrayAt` | 否 | 不需要 | IC「改值不 bump」正是靠它 |
 | P3 wasm `emitSetGlobal` 命中时写 Nil(P4 的 SET 类内联路径都检查新值 != Nil,它不检查) | 否:键保留、值为 Nil,与 `rawSet` 删键得到的已删除节点相同 | 不需要(它自己不 bump) | 读方的内联路径都检查节点的值 != Nil,读到已删除的节点会退到 helper;节点之后被别的键接管时由上面「接管」一行 bump。与 P4 的守卫不对称 |
