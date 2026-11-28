@@ -213,6 +213,9 @@ func CompileProto(proto *bytecode.Proto, fb *bridge.TypeFeedback, e Emitter) (*J
 
 guard 语义(IsNumber / 同表同代次 / 单态 metatable / globals 代次 / 方法点单态)在 `internal/gibbous/jit/guard.go` 定义为枚举:
 
+> **实现现状**：下面的枚举是设计期的形式，代码里没有 `guard.go` 和 `GuardKind`，各模板直接生成自己的检查。表访问的检查不比对 tableRef，
+> 在代次之外还检查固化的下标在拿到的这张表之内、哈希部分节点里的键和槽位的值，见 [03](./03-speculation-ic.md) §2.3 末尾。
+
 ```go
 type GuardKind uint8
 const (
@@ -507,7 +510,7 @@ per-arch 进度对账(amd64 / arm64 各自一份白名单):amd64 先行(§5.4 / 
 | feedback Kind | 投机模板 | 通用模板 |
 |---|---|---|
 | `FBArithStableNumber` | f64 直算 + IsNumber × 2 guard | helper 调 doArithSlow |
-| `FBTableMono` | 直达槽 + 同表同代次 guard | helper 调 doGetTable |
+| `FBTableMono` | 直达槽 + 同表同代次 guard(设计期的说法;实际生成的检查见 [03](./03-speculation-ic.md) §2.3 末尾) | helper 调 doGetTable |
 | `FBGlobalStable` | 常量化 / 直达 globals 槽 + globals 代次 guard | helper 调 doGetGlobal |
 | `FBSelfMono` | inline 方法查找 + metatable 代次 guard | helper 调 doSelf |
 | `FBUnstable` / `FBTableMega` | **不投机** | helper(等价解释器语义) |
@@ -875,7 +878,7 @@ arm64 启动(PJ8)时,既有 amd64 实现是「镜子」——所有泄漏成本�
 | **PJ1** | amd64 trampoline + 直线模板 | trampoline 进出 stub + MOVE/LOADK/LOADBOOL/LOADNIL/RETURN | crescent vs gibbous-jit byte-equal(直线脚本) |
 | **PJ2** | amd64 算术 + 比较模板 | 全 §3.1 / §3.2 投机模板 + IsNumber × 2 guard + 通用模板 + helper 接线 | 算术/比较脚本差分;FBArithStableNumber 投机命中 + guard 失败 OSR exit 走通 |
 | **PJ3** | amd64 控制流 + FORLOOP + back edge safepoint | JMP / FORLOOP / FORPREP / TFORLOOP + 反向跳 safepoint + 跳转回填 | 循环脚本差分;preemptFlag 触发 GC/调度 |
-| **PJ4** | amd64 表 IC 模板(投机版) | FBTableMono 直达槽 + 同表同代次 guard + 通用模板 helper | 表 IC 脚本差分;IC 失效 → OSR exit;IC 命中证明走 fastpath |
+| **PJ4** | amd64 表 IC 模板(投机版) | FBTableMono 直达槽 + 同表同代次 guard(实际生成的检查见 [03](./03-speculation-ic.md) §2.3 末尾) + 通用模板 helper | 表 IC 脚本差分;IC 失效 → OSR exit;IC 命中证明走 fastpath |
 | **PJ5** | amd64 CALL/TAILCALL + 跨层互调 + OSR exit | jit→jit 直跳 + jit→crescent 经 trampoline + jit→host helper + 错误冒泡 | 跨层调用脚本差分(沿用 P3 PW6 同样的语料);OSR exit 物化无损 |
 | **PJ6** | amd64 CLOSURE/CLOSE + upvalue | CLOSURE / CLOSE / GETUPVAL / SETUPVAL inline + skip 协议(承 P3 PW7) | 闭包脚本差分 |
 | **PJ7** | amd64 端到端验收 + 性能基准 | 全 §3 模板 + V1-V13 差分语料 + V14-V18 性能/race 验收 | luasuite 全绿;Horner 校准 ≥ luajc 档 |

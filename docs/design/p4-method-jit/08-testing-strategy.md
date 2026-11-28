@@ -118,7 +118,7 @@ P4 兑现这条核心论据的方式:
 
 - **dispatch 税消除**:per-opcode 模板 + 直线机器码,消解释器取指/译码/dispatch 的恒定税(承 [./02-template-direction.md](./02-template-direction.md) §1.1);
 - **f64 直算**:NaN-box u64 直接 `movq xmm` + `addsd`,无装箱解箱(承 [./03-speculation-ic.md](./03-speculation-ic.md) §2.2 + §3.4);
-- **直达槽 IC**:表/全局/SELF 的命中走「同表+同代次 guard + 编译期立即数 offset」直达槽 load(承 [./03-speculation-ic.md](./03-speculation-ic.md) §6);
+- **直达槽 IC**:表/全局/SELF 的命中走「同表+同代次 guard + 编译期立即数 offset」直达槽 load(承 [./03-speculation-ic.md](./03-speculation-ic.md) §6;表访问实际生成的检查不比对 tableRef,另查下标在表内和节点的键,见 03 §2.3 末尾);
 - **Go runtime 四项税自付**:trampoline 切自管栈 + 循环回跳(back edge)检查点 + 自管 arena 值世界——边界成本自付而不假手 wazero(承 [./05-system-pipeline.md](./05-system-pipeline.md) 全节)。
 
 **P4 = dispatch 消除器 + IC 投机注入器**(承 [./00-overview.md](./00-overview.md) §0.1),做到 luajc 档即兑现「纯 Go 逼近 LuaJIT」承诺。这是项目立项核心论据的实际验收时刻。
@@ -219,7 +219,7 @@ P3 08 §1.1 定的 V1-V13 是**正确性轴主防线**——crescent vs gibbous(
 | V3 | 算术慢路径 | 走 helper byte-equal | **+** P4 失败 OSR exit 后解释续跑 byte-equal(承 §4)|
 | V4 | 数值 for | FORPREP/FORLOOP byte-equal | **+** P4 数值 for 投机模板 byte-equal(若做循环变量寄存器驻留,需 V19 物化序列)|
 | V5 | back edge GC | gcPending inline byte-equal | **+** P4 back edge 检查点(自管栈 + preemptFlag,承 [./05-system-pipeline.md](./05-system-pipeline.md) §1)+ GC 压力 byte-equal |
-| V6 | 表 IC 命中 | 单态命中跳哈希 byte-equal | **+** P4 直达槽 + 同表+同代次 guard byte-equal(承 [./03-speculation-ic.md](./03-speculation-ic.md) §2.3 / §6)|
+| V6 | 表 IC 命中 | 单态命中跳哈希 byte-equal | **+** P4 直达槽 + 同表+同代次 guard byte-equal(承 [./03-speculation-ic.md](./03-speculation-ic.md) §2.3 / §6;实际生成的检查见 §2.3 末尾)|
 | V7 | 表 IC 失效 | gen bump 走 helper byte-equal | **+** P4 guard 失败 OSR exit + 解释续跑 byte-equal |
 | V8 | 跨层 CALL 链 | 错误冒泡 byte-equal | **+** P4 jit→jit / jit→crescent / jit→host 三向互调 byte-equal(承 [./05-system-pipeline.md](./05-system-pipeline.md) §3 世界边界)|
 | V9 | gibbous traceback | 帧 pc 物化 byte-equal | **+** P4 帧 pc 物化(经 OSR exit 写 savedPC,承 [./04-osr-deopt.md](./04-osr-deopt.md) §4)byte-equal |

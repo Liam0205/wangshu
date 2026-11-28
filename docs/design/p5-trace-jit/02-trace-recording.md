@@ -250,6 +250,10 @@ considerTraceRecording:
 | `SETTABLE A B C` | ① `tbl := SLOAD A (tag=table)`;② IC 分流同 GETTABLE,写侧改 `ASTORE`/`HSTORE`;③ 如果可能 rehash(新键)→ abort;④ `GCSTEP` 写屏障 IR | 表 shape gen | 写触发 rehash / mega / `__newindex` | 写侧对 CSE 的 FENCE 效果详见 [04 §3](./04-optimization-passes.md) |
 | `SELF A B C` | 等价于 GETTABLE 到 `R(A)` 加 `MOVE B → R(A+1)`;录制期展开成两条 IR ins:`ASTORE A+1, SLOAD B` 加 GETTABLE 序列 | GETTABLE 全部 | GETTABLE 全部 | 方法查找命中率高,是 up-recursion trace 的重要入口 |
 
+> **实现时要补的检查**：`GUARD_TABLESHAPE tbl, gen` 只说明这张表的 gen 等于录制时的值，说明不了 `tbl` 就是录制时那张表：用同一种方式构造出来的表 gen 相同，
+> 表被回收之后新表还会分配在同一个地址上。所以 `ALOAD` / `HLOAD` / `ASTORE` / `HSTORE` 之前还要检查 `index` 在拿到的这张表之内，哈希部分还要比对节点里的键。
+> P3 和 P4 的内联路径原来缺这些检查（[#350](https://github.com/Liam0205/wangshu/issues/350)、[#362](https://github.com/Liam0205/wangshu/issues/362)），现在的检查见 P4 [03](../p4-method-jit/03-speculation-ic.md) §2.3 末尾和 P3 [02](../p3-wasm-tier/02-translation.md) §3.4.2。
+
 ### 3.5 表构造(2 op)
 
 | Op | 录制发射 | Guard | Abort | 备注 |
