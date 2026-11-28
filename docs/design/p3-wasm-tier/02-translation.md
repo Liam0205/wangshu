@@ -577,7 +577,7 @@ POW:  没有 wasm 直发指令,需经助手 $h_pow:
 
 ### 3.4 表 IC opcode(PW5)—— GETTABLE/SETTABLE/GETGLOBAL/SETGLOBAL/SELF
 
-这是 **P3 翻译复杂度峰值**(承 [00-overview](./00-overview.md) §5 人月分解 PW5 = 1-2 人月)。核心机制:**编译期把 IC 快照固化进代码,运行期同表同代次直达槽,失效降级走助手**。本节给翻译形式;IC 失效后的运行期机制(降级语义、是否重编译)在 [06-ic-feedback-consume](./06-ic-feedback-consume.md) 展开。
+这是 **P3 翻译复杂度峰值**(承 [00-overview](./00-overview.md) §5 人月分解 PW5 = 1-2 人月)。核心机制:**编译期把 IC 快照固化进代码,运行期同表同代次直达槽,失效降级走助手**(实现在「同表同代次」之外还检查下标在表内和节点的键,见 §3.4.2 的实现现状)。本节给翻译形式;IC 失效后的运行期机制(降级语义、是否重编译)在 [06-ic-feedback-consume](./06-ic-feedback-consume.md) 展开。
 
 #### 3.4.1 IC 快照固化的来源
 
@@ -985,10 +985,10 @@ GETGLOBAL/SETGLOBAL 是「目标表恒为 globals」的表访问特例(02 §4):
 | 5 | SETUPVAL | 经助手 | — | `$h_setupval` | §3.1.6 |
 | 6 | GETGLOBAL | IC 快照(globals 特例) | 同表同代次直达 | `$h_getglobal` | §3.4.4 |
 | 7 | SETGLOBAL | IC 快照(globals 特例) | 改值直达 | `$h_setglobal` | §3.4.4 |
-| 8 | GETTABLE | IC 快照内联 | 同表同代次同键直达 | `$h_gettable` | §3.4.2 |
-| 9 | SETTABLE | IC 快照内联 | 改值直达 | `$h_settable` | §3.4.3 |
+| 8 | GETTABLE | IC 快照内联 | 同表同代次同键直达(实现另查下标在表内,§3.4.2) | `$h_gettable` | §3.4.2 |
+| 9 | SETTABLE | IC 快照内联 | 改值直达(检查同 GETTABLE) | `$h_settable` | §3.4.3 |
 | 10 | NEWTABLE | 经助手(分配) | — | `$h_newtable` | §3.4.6 |
-| 11 | SELF | setReg(A+1) + IC 快照 | 同表同代次同键直达 | `$h_self` | §3.4.5 |
+| 11 | SELF | setReg(A+1) + IC 快照 | 同表同代次同键直达(检查同 GETTABLE) | `$h_self` | §3.4.5 |
 | 12-17 | ADD/SUB/MUL/DIV/MOD/POW | 双 number 快路径 + NaN 规范化 | f64 算术 | `$h_arith`(op 分流) | §3.2.1/§3.2.2 |
 | 18 | UNM | f64.neg 快路径 | f64.neg | `$h_unm` | §3.2.3 |
 | 19 | NOT | 直线真值取反 | Truthy 双比较 | — | §3.2.4 |
@@ -1297,7 +1297,7 @@ func emitGetTable(em *emitter, pc int32, instr bytecode.Instruction) {
         em.emitGetTableSlowOnly(pc, a, b, c)  // 无快照:直发助手(§3.4.4)
         return
     }
-    em.emitGetTableFastPath(pc, a, b, c, snap)  // 同表同代次同键直达(§3.4.2)
+    em.emitGetTableFastPath(pc, a, b, c, snap)  // 同表同代次同键直达,下标在表内(§3.4.2)
     em.emitGetTableSlowPath(pc, a, b, c)        // else:$h_gettable 助手
 }
 ```
@@ -1366,7 +1366,7 @@ func (em *emitter) icSnapshot(pc int32) icSnapshot {
 
 - 快照源优先级:P2 feedback(聚合后的稳定值)> Proto.IC[pc](单次 IC slot 读取)。feedback 为 nil 时退化读 ICSlot(承 [../p2-bridge/05](../p2-bridge/05-p3-p4-interface.md) §2「实现方必须容忍 nil」)。
 - megamorphic / 从未命中的点:不固化快照,直发助手(无快路径)——避免烧一个必然 miss 的快照浪费指令。
-- 快照固化后烧成 WAT 立即数(§3.4.2 的 `SNAP_TABLEREF`/`SNAP_GEN`/`SNAP_KIND`/`SNAP_INDEX`)。运行期同表同代次直达,失效降级走助手(详见 [06-ic-feedback-consume](./06-ic-feedback-consume.md))。
+- 快照固化后烧成 WAT 立即数(§3.4.2 的 `SNAP_TABLEREF`/`SNAP_GEN`/`SNAP_KIND`/`SNAP_INDEX`)。运行期同表同代次直达(GETTABLE / SETTABLE / SELF 另查下标在表内和节点的键,§3.4.2),失效降级走助手(详见 [06-ic-feedback-consume](./06-ic-feedback-consume.md))。
 
 ---
 

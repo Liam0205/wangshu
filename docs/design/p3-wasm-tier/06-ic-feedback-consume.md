@@ -413,7 +413,7 @@ Time T3..Tn: 同样比对失败(SNAP_GEN 永远是 42,t.gen() 永远 ≥43)
 1. **三层校验依次失败都走同一个 helper**(`$h_gettable`)——helper 内部走 [../p1-interpreter/05-interpreter-loop](../p1-interpreter/05-interpreter-loop.md) §6.3 完整 doGetTable(含哈希查找 + `__index` 元方法 + nil 处理)。**任何 IC miss 形式都正确**。
 2. **SNAP_KIND 编译期单态选定**——在 emit_gettable 内 `switch fb.kind { case 1: emit_array_at; case 2: emit_node_val_at; case 3: emit_meta_invoke }`,**不发 runtime switch**(代码体积省 + 分支预测无干扰)。
 3. **校验顺序遵循 [../p1-interpreter/05-interpreter-loop](../p1-interpreter/05-interpreter-loop.md) §6.3 的 doGetTable**:先 IsTable → 再 tableRef 同表 → 再 shape 同代次。**三层与解释器一致,是语义分发**。
-4. **实现在三层之后还有两项**（§1.3 的实现现状）：固化的下标在这张表之内；哈希部分的节点里放的是这条指令的常量键。解释器的 `icGetTable` 同样比对键、用运行时的大小，所以这两项也与解释器一致。
+4. **实现在三层之后还有两项**（§1.3 的实现现状）：固化的下标在这张表之内；哈希部分的节点里放的是这条指令的常量键。数组部分与解释器的 `icGetTable` 一样用运行时的 `asize`；哈希部分的键比对与解释器相同，下标检查（`index <= hmask`、`nodeRef != 0`）是 P3 自己加的，与 P4 按指令翻译的快路径相同。
 
 #### 3.2.2 GETGLOBAL 的 FBGlobalStable 翻译形式
 
