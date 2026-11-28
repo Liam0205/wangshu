@@ -35,7 +35,11 @@
 //     P4 single-access templates for the array part (jit/amd64 and jit/arm64
 //     pj4_template.go, EmitGetTableArrayHit / EmitSetTableArrayHit /
 //     EmitSelfArrayHit) have no key to compare and compare no table identity
-//     either: gen is all that says the baked index lies in the array part.
+//     either: gen is all they have for the baked index lying in the array
+//     part, and it says so only of the table the IC was filled on. On another
+//     table with the same gen and a shorter array part nothing checks the
+//     index, and the same holds for the node index of the hash-part templates
+//     (#350).
 //     An unchanged gen does not say that a node still holds a value: P3
 //     wasm emitSetGlobal stores Nil inline, making a node DEAD with no bump,
 //     and a consumer that does not compare the table's identity can be
