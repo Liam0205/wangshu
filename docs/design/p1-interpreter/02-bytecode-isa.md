@@ -155,7 +155,7 @@ thread.valueStack:
 type ICSlot struct {
     shape    uint32 // 缓存的 table "形状":目标表的 gen 代次(01 §5.2;globals 是其特例)
     index    uint32 // 命中时直达的数组/节点槽索引
-    tableRef uint32 // 目标表 arena 偏移低 32 位,身份比对用(非 GC 根;承 05 §6.6 回填)
+    tableRef uint32 // 目标表 arena 偏移低 32 位,比对地址用(非 GC 根;地址会被新表重用,命中还要校验下标和键,05 §6.3)
     kind     uint8  // 0 未初始化 / 1 array hit / 2 node hit / 3 mono-metamethod / 4 megamorphic
 }
 ```

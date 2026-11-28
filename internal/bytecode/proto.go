@@ -107,7 +107,9 @@ func (p *Proto) IsStringConst(i int) bool {
 // Table IC (GETTABLE/SETTABLE/GETGLOBAL/SETGLOBAL/SELF):
 //   - Shape: the target table's gen generation
 //   - Index: the hit slot (array index / node index)
-//   - TableRef: low 32 bits of the target table's arena offset (identity check, not a GC root)
+//   - TableRef: low 32 bits of the target table's arena offset (compared with the table handed in,
+//     not a GC root; an address can be reused once the table is collected, so a hit also checks
+//     the index and the key against that table)
 //   - Kind: 0/uninitialized  1/array hit  2/node hit  3/mono-meta  4/megamorphic
 //   - Refill: table-swap/shape-change refill count (P2 follow-up optimization round #4 megamorphic
 //     proactive detection, simplified version of 02 §6.2 scheme (B)): P1 ic.go accumulates it on the
