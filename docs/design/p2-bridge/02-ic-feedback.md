@@ -38,7 +38,7 @@ P2 启动前置条件是 P1 已经把 IC 写满,本节对账 P1 实际完成的�
 type ICSlot struct {
     shape    uint32 // 表 IC:目标表的 gen 代次 / 算术 IC:numHits 双计数低 32 位(挪用)
     index    uint32 // 表 IC:命中槽位下标 / 算术 IC:metaHits 双计数低 32 位(挪用)
-    tableRef uint32 // 表 IC:目标表 arena 偏移低 32 位身份比对(05 §6.2,非 GC 根)
+    tableRef uint32 // 表 IC:目标表 arena 偏移低 32 位,比对地址用(05 §6.2,非 GC 根;地址会被新表重用)
                     // 算术 IC:留空(05 §6.4 双计数挪用占 shape/index 即够,本字段恒 0)
     kind     uint8  // 0 未初始化 / 1 array hit / 2 node hit / 3 mono-metamethod / 4 megamorphic
 }

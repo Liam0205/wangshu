@@ -378,6 +378,9 @@ func newDefaultEmitter() Emitter { return arm64.NewEmitter() }
 
 **投机模板**(典型 GETTABLE,FBTableMono 命中):
 
+> **实现现状**：下面的序列是设计期的形式。实际生成的代码不比对 tableRef，在代次之外还检查固化的下标在拿到的这张表之内、哈希部分节点里的键和槽位的值，
+> 见 [03](./03-speculation-ic.md) §2.3 末尾的「单条表访问的模板实际检查的内容」。同表同代次不足以直达槽位：gen 相同的可以是另一张表。
+
 ```
 ;; GETTABLE 投机模板(amd64,FBTableMono 直达槽)
 mov  rax, [rbx + 8*B]          ; load R(B) = 表 GCRef
