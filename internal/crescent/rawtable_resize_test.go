@@ -179,45 +179,84 @@ func TestGrowArray_TraversalGoesOn(t *testing.T) {
 	}
 }
 
-// TestGrowArray_TraversalEndsWhenKeysMove: when integer keys move, a traversal that goes on from
-// any key of the table ends and returns no key twice. From a key that did not move it returns at
-// most the other entries. (From a moved key it continues in the array part and then goes through
-// the hash part from its start, entries it had passed before the growth included.)
-func TestGrowArray_TraversalEndsWhenKeysMove(t *testing.T) {
+// TestGrowArray_TraversalWhenKeysMove: what a traversal returns after a growth that moved integer
+// keys, from every key it can stand on. The table has an array part, integer keys of the hash part
+// that the growth covers (9, 20, 40) and one it does not (900), and string keys.
+//
+//   - From a key of the old array part: every entry that followed, once.
+//   - From a hash key the growth does not cover: the entries that followed, without the moved ones.
+//   - From a moved key k: the moved entries with a key above k and every entry left in the hash
+//     part, whether it came before k or after it; no moved entry with a key below k.
+func TestGrowArray_TraversalWhenKeysMove(t *testing.T) {
 	num := func(n int) value.Value { return value.NumberValue(float64(n)) }
+	const oldSize, newSize = 4, 64
+	// build returns the table and its keys in the order of a traversal. Every build lays the
+	// table out the same way, so position i names the same entry in each of them.
 	build := func() (*State, arena.GCRef, []value.Value) {
 		st := New()
 		tbl := st.allocTable(0, 0)
-		var keys []value.Value
-		for _, k := range []int{40, 50, 60, 900} {
-			keys = append(keys, num(k))
-		}
-		for i := 0; i < 6; i++ {
-			keys = append(keys, st.makeStringValue(fmt.Sprintf("k%d", i)))
-		}
-		for i, k := range keys {
-			if e := st.rawSet(tbl, k, num(i)); e != nil {
+		for _, k := range []int{1, 2, 3, 4, 40, 20, 900, 9} {
+			if e := st.rawSet(tbl, num(k), num(k)); e != nil {
 				t.Fatal(e)
 			}
 		}
-		if object.TableASize(st.arena, tbl) != 0 {
-			t.Fatalf("setup: array part has %d slots, want 0", object.TableASize(st.arena, tbl))
+		for i := 0; i < 6; i++ {
+			_ = st.rawSet(tbl, st.makeStringValue(fmt.Sprintf("k%d", i)), num(i))
+		}
+		if got := object.TableASize(st.arena, tbl); got != oldSize {
+			t.Fatalf("setup: array part has %d slots, want %d", got, oldSize)
+		}
+		var keys []value.Value
+		key := value.Nil
+		for {
+			k, _, ok, e := st.rawNext(tbl, key)
+			if e != nil {
+				t.Fatal(e.Msg)
+			}
+			if !ok {
+				break
+			}
+			keys = append(keys, k)
+			key = k
+		}
+		if len(keys) != 14 {
+			t.Fatalf("setup: the traversal returns %d entries, want 14", len(keys))
 		}
 		return st, tbl, keys
 	}
-	_, _, keys := build()
-	for at := range keys {
+	moves := func(k value.Value) bool {
+		idx, in := arrayIndex(k, newSize)
+		return in && idx >= oldSize
+	}
+	for at := 0; at < 14; at++ {
 		st, tbl, keys := build()
-		st.growArray(tbl, 100)
-		got := traverse(t, st, tbl, keys[at])
-		_, moved := arrayIndex(keys[at], 100)
-		for k, n := range got {
-			if n != 1 {
-				t.Errorf("standing on key %d: key %x is returned %d times", at, uint64(k), n)
+		here := keys[at]
+
+		st.growArray(tbl, newSize)
+
+		want := map[value.Value]bool{}
+		for i, k := range keys {
+			switch {
+			case i == at:
+			case at < oldSize: // from a key of the old array part
+				want[k] = i > at
+			case !moves(here): // from a hash key that stays
+				want[k] = i > at && !moves(k)
+			default: // from a moved key
+				want[k] = i >= oldSize && (!moves(k) || value.AsNumber(k) > value.AsNumber(here))
 			}
 		}
-		if !moved && len(got) > len(keys)-1 {
-			t.Errorf("standing on key %d, which did not move: %d entries follow, more than the table has left", at, len(got))
+		got := traverse(t, st, tbl, here)
+		for k, wanted := range want {
+			switch n := got[k]; {
+			case wanted && n != 1:
+				t.Errorf("from %s: %s is returned %d times, want once", debugVal(st, here), debugVal(st, k), n)
+			case !wanted && n != 0:
+				t.Errorf("from %s: %s is returned, which the rule leaves out", debugVal(st, here), debugVal(st, k))
+			}
+		}
+		if n := got[here]; n != 0 {
+			t.Errorf("from %s: the key itself is returned again", debugVal(st, here))
 		}
 	}
 }
