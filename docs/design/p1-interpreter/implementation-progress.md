@@ -1271,7 +1271,7 @@ arena 大小跟着比例变。`TestTiered_StdlibNames` 加一段
 - **修法**：`internal/object/table.go` 新增 `NodeIfInside`，下标在表内（`index <= hmask`，而且表有节点块；没有哈希部分的表 `hmask` 也是 0）时返回节点的键和值，
   否则返回不在表内。`ic.go` 的两处哈希命中改用它，不在表内就当未命中，走完整查找并重填缓存。
 - **验证**：
-  - `internal/object` 的 `TestNodeIfInside`：4 个节点的表（后面紧跟另一张表的节点块）、没有哈希部分的表、只有 1 个节点的表，各自的界内和界外下标。
+  - `internal/object` 的 `TestNodeIfInside`：4 个节点的表（再往后是另一张表的表头和节点块）、没有哈希部分的表、只有 1 个节点的表，各自的界内和界外下标。
   - `internal/crescent` 的 `TestIC_NodeHitOnATableAtAReusedAddress`：A 的字段数 2 到 8、B 的 0 到 4、C 另外的 0 到 4，每一种都执行读和写并检查三个结果；
     同时用内部接口检查「缓存指着 B 的地址和 gen、下标在 B 之外、不看大小的读取在那里找到这个键」这个布局有没有出现，一种都没有出现时测试失败。
     现在有 2 种大小出现这个布局，去掉修复时这 2 种的读、写和 C 的值都错。
