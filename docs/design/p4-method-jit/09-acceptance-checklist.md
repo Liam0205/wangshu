@@ -46,7 +46,7 @@ PR #29 三平台 9 个 P4 相关 job (test / difftest / fuzz-smoke × 三平台)
 | V2 | 算术快路径 (f64 + IsNumber guard) | ✅ | ✅ | ✅ | 同上; p4Corpus 8 个 case (算术 6 + 比较 2) |
 | V3 | 算术慢路径 (走 helper) | ✅ | ✅ | ✅ | 同上; helper 路径混在 force-all 语料里 |
 | V4 | 数值 for (FORPREP/FORLOOP) | ✅ | ✅ | ✅ | 同上; p4Corpus 2 个 case (`p4_for_empty/p4_for_accumulate`) |
-| V5 | 循环回跳 (back edge) GC (gcPending inline) | ✅ | ✅ | ✅ | `gcstress_test.go` 在 P4 build 下也跑 |
+| V5 | 循环回跳 (back edge) GC (gcPending inline) | ✅ | ✅ | ✅ | `gcstress_test.go` 在 P4 build 下也跑。P4 编译的循环在回跳处不检查 gcPending、不回收(只查步数预算和取消),循环体里的回收发生在分配类助手末尾和 host function 返回之后([05 §6](./05-system-pipeline.md) 的实现现状);这一项验收的是 GC 压力下结果与解释器相同 |
 | V6 | 表 IC 命中 (单态跳哈希) | ✅ | ✅ | ✅ | 同上; p4Corpus 4 个表 IC case |
 | V7 | 表 IC 失效 (gen bump 走 helper) | ✅ | ✅ | ✅ | 同上; force-all 触发 gen bump |
 | V8 | 跨层 CALL 链 (jit→jit / jit→crescent / jit→host) | ✅ | ✅ | ✅ | 同上; p4Corpus 89 个 PJ5 调用族 case 全覆盖 |

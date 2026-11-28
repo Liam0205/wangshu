@@ -994,7 +994,7 @@ P3 PW6 完成了「`h_call` 返回 i64 同载新 base 刷新 + 错误负哨兵�
 
 > **实现现状**：本节记的是设计期的协议。实现里回收只发生在 [P1 06 §6.3](../p1-interpreter/06-memory-gc.md) 列的安全点（分配类助手末尾、host function 返回之后等）。
 > P4 的回跳处有两样检查，都不回收：`preemptFlag`（置位则 deopt 退出；只有测试会置它）和循环燃料（`loopFuel` 用完时经 `host.LoopPreempt` 检查步数预算和取消）。
-> 本节和 [06](./06-backends.md)、[08](./08-testing-strategy.md) 里把回跳写成 GC 安全点的地方，按这一条读。
+> 本文各节（§1.2、§3、§4 和本节）以及 [06](./06-backends.md)、[08](./08-testing-strategy.md)、[09](./09-acceptance-checklist.md)、[10](./10-per-op-translator.md) 里把回跳写成 GC 安全点、写编译代码读 `gcPending` 的地方，按这一条读。
 
 ### 6.1 三类 safepoint(承 P3 05):分配点 + 层边界 + back edge
 
