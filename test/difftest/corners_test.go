@@ -558,7 +558,7 @@ var readmeListsProvided = map[string]string{
 	"dofile":          "provided, off by default",
 	"io.lines":        "provided; the filename form raises",
 	"string.char":     "provided; the row is about arguments outside the int range",
-	"next":            "provided; the row is about calling it with a removed key after other keys were inserted",
+	"next":            "provided; the row is about next on a removed key after other keys were inserted, and on an absent key that was assigned nil",
 	"type":            "not listed itself: the abbreviation of math.type on the 5.3 row reads as the global",
 }
 

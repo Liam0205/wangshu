@@ -380,7 +380,32 @@ return count(function() return "zzqq" .. "local" end), count(function() return "
   count(function() return "zzqq" .. "chunk" end), count(function() return "zzqq" .. "other" end),
   held(), heldchunk()`
 
-// TestDiff_NextFromDebugNamesOfClearedEntries pins both sides of that.
+// checkOracleHeldKeys compares lua5.1's counts with the recorded ones. The count at index control
+// belongs to a key that nothing holds: lua5.1 accepts it only in the rounds where the rebuilt
+// string lands on the address of the collected one, and that depends on the C allocator. It is
+// logged and only required to stay below the 30 rounds, since a control key accepted every time
+// would say nothing about the other answers.
+func checkOracleHeldKeys(t *testing.T, got, recorded string, control int) {
+	t.Helper()
+	g, r := strings.Split(got, "\t"), strings.Split(recorded, "\t")
+	if len(g) != len(r) {
+		t.Errorf("lua5.1 no longer answers as recorded:\n  got:      %q\n  recorded: %q", got, recorded)
+		return
+	}
+	for i := range r {
+		switch {
+		case i == control && g[i] == "30":
+			t.Errorf("lua5.1 accepted the control key in every round, so its other answers may be address reuse: %q", got)
+		case i != control && g[i] != r[i]:
+			t.Errorf("lua5.1 no longer answers as recorded:\n  got:      %q\n  recorded: %q", got, recorded)
+			return
+		}
+	}
+	t.Logf("lua5.1 here: %s", got)
+}
+
+// TestDiff_NextFromDebugNamesOfClearedEntries pins both sides of that; of lua5.1's answers the
+// one for the fourth key is the control (see checkOracleHeldKeys).
 func TestDiff_NextFromDebugNamesOfClearedEntries(t *testing.T) {
 	const wantWangshu, wantOracle = "0\t0\t0\t0\t2\t1", "30\t30\t30\t0\t2\t1"
 	for _, stress := range []bool{false, true} {
@@ -389,9 +414,7 @@ func TestDiff_NextFromDebugNamesOfClearedEntries(t *testing.T) {
 		}
 	}
 	if oracle := findOracle(); oracle != "" {
-		if got := strings.TrimSuffix(runOracle(t, oracle, wrapForOracle(nextFromDebugNamesOfClearedEntries)), "\n"); got != wantOracle {
-			t.Errorf("lua5.1 no longer answers as recorded:\n  got:      %q\n  recorded: %q", got, wantOracle)
-		}
+		checkOracleHeldKeys(t, strings.TrimSuffix(runOracle(t, oracle, wrapForOracle(nextFromDebugNamesOfClearedEntries)), "\n"), wantOracle, 3)
 	}
 }
 
@@ -425,7 +448,8 @@ local function count(prefix, hold)
 end
 return count("zzwk", "k"), count("zzwv", "v"), count("zzvk", "vkey"), count("zzkv", "kval"), count("zzno")`
 
-// TestDiff_NextFromKeysHeldByWeakTables pins both sides of that.
+// TestDiff_NextFromKeysHeldByWeakTables pins both sides of that; of lua5.1's answers the last one
+// is the control (see checkOracleHeldKeys).
 func TestDiff_NextFromKeysHeldByWeakTables(t *testing.T) {
 	const wantWangshu, wantOracle = "0\t0\t30\t30\t0", "30\t30\t30\t30\t0"
 	for _, stress := range []bool{false, true} {
@@ -434,9 +458,7 @@ func TestDiff_NextFromKeysHeldByWeakTables(t *testing.T) {
 		}
 	}
 	if oracle := findOracle(); oracle != "" {
-		if got := strings.TrimSuffix(runOracle(t, oracle, wrapForOracle(nextFromKeysHeldByWeakTables)), "\n"); got != wantOracle {
-			t.Errorf("lua5.1 no longer answers as recorded:\n  got:      %q\n  recorded: %q", got, wantOracle)
-		}
+		checkOracleHeldKeys(t, strings.TrimSuffix(runOracle(t, oracle, wrapForOracle(nextFromKeysHeldByWeakTables)), "\n"), wantOracle, 4)
 	}
 }
 
