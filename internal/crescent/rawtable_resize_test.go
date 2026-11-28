@@ -411,6 +411,25 @@ func TestGrowArray_SlotsAreKeptUntilTheNextRehash(t *testing.T) {
 		t.Errorf("after 5 string keys the array part has %d slots, want 1000", got)
 	}
 
+	// Sparsely filled slots: the rehash keeps 1..16, of which 10 are in use, and the entry at 600
+	// goes to the hash part.
+	st = New()
+	tbl = st.NewLibTable(0)
+	st.growArray(tbl, 1000)
+	for i := 1; i <= 10; i++ {
+		_ = st.rawSet(tbl, num(i), num(i))
+	}
+	_ = st.rawSet(tbl, num(600), num(600))
+	addStrings(st, tbl, 0, 40)
+	if got := asize(st, tbl); got != 16 {
+		t.Errorf("after 1..10, 600 and 40 string keys the array part has %d slots, want 16", got)
+	}
+	for _, i := range []int{1, 10, 600} {
+		if v := st.rawGet(tbl, num(i)); v != num(i) {
+			t.Errorf("t[%d] reads %x after the rehash", i, uint64(v))
+		}
+	}
+
 	// Filled slots: a rehash keeps an array part that the integer keys fill more than half.
 	st = New()
 	tbl = st.NewLibTable(0)
