@@ -1019,7 +1019,7 @@ func EmitSelfNodeHitNoRetArm64(buf []byte, aReg, bReg uint8,
 	bSuccessOff := len(buf)
 	buf = EmitB(buf, 0) // placeholder, patched afterwards
 
-	// 31. deopt block (writes x0=deoptCode + RET, 12 bytes = MovXdImm64 8 + Ret 4)
+	// 31. deopt block (writes x0=deoptCode + RET, 20 bytes = MovXdImm64 16 + Ret 4)
 	deoptStart := len(buf)
 	buf = EmitMovXdImm64(buf, 0, deoptCode)
 	buf = EmitRet(buf)

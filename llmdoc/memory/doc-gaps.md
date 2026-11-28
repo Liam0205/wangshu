@@ -163,6 +163,10 @@
   [#353](https://github.com/Liam0205/wangshu/issues/353)；现状登记在 README 的差异表、`exemptions` 和
   [10 §4.6](../../docs/design/p1-interpreter/10-stdlib.md)。
 
+- **【已完成 2026-11-28，#350 / #351】P4：单条表访问的模板不检查下标是否在表内；arm64 的同一组模板在下标较大时访问到错误的槽位** —
+  两个架构的七个模板在 gen 检查之后检查固化的下标在拿到的表之内，arm64 取槽位改成把字节偏移装进寄存器再相加，分析阶段不接受超过
+  `maxTemplateSlotIndex` 的下标。记录在 [P4 implementation-progress §30](../../docs/design/p4-method-jit/implementation-progress.md)，
+  `internal/gibbous/jit` 的 `TestPJ4Templates_Execute` 和 `test/difftest` 的 `TestTiered_TemplateOnShorterTable`、`TestTiered_TemplateFarSlot` 固定。
 - **【已完成 2026-11-27，#347】P4：单条 SETTABLE 的函数升层后，对不存在的字段赋值会跳过 `__newindex`** — 四个模板
   （哈希部分、数组部分，amd64、arm64）补上「槽位现有的值不是 nil」和「要写入的值不是 nil」两项检查，与 #338 在同一个 PR 里。
   `test/difftest` 的 `TestTiered_SingleStoreTemplate` 固定。
