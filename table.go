@@ -189,10 +189,18 @@ func (st *State) NewStringArrayTable(vals []string) Value {
 // moves into the array segment.
 //
 // Calling it on a table that is being traversed (from a ForEach callback, or
-// from a host function a script calls inside a pairs loop) is safe: when no
-// integer key has to move the traversal is not affected at all, and when one
-// has to, the traversal may miss or repeat entries but still ends. A request
-// the arena has no room for panics before the table is changed.
+// from a host function a script calls inside a pairs loop) is safe: the
+// traversal raises no error and ends. What it returns changes only through
+// integer keys in 1..n that were stored in the hash segment:
+//
+//   - an entry that moves and that the traversal had not reached may be missed;
+//   - a traversal that stands on such a key (one that moves, or one whose
+//     entry has just been removed) continues in the array segment behind that
+//     key and then goes through the hash segment again, so entries repeat.
+//
+// Otherwise the traversal returns what it would have returned without the
+// call. A request the arena has no room for panics before the table is
+// changed.
 //
 //	tv := st.NewTable()
 //	tv.AsTable().Preallocate(1000)
