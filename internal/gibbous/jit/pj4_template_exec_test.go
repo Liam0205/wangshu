@@ -25,7 +25,7 @@ const (
 
 	tmplHeadWord   = 16    // the table head
 	tmplBlockWord  = 64    // its array or node block
-	tmplArenaWords = 16384 // room for 4096 nodes after the block start
+	tmplArenaWords = 32768 // room for 8192 array slots or 10000 nodes after the block start
 )
 
 // tmplForm is one template: how to emit it for an index, and which of the
@@ -101,6 +101,10 @@ var tmplNodeCases = []tmplCase{
 	{index: 1365, size: 2048, hit: true},
 	{index: 1366, size: 2048, hit: true},
 	{index: 3000, size: 4096, hit: true},
+	// Byte offsets past 65535 and past 3*65536: a template that cut the offset to 16 bits before
+	// encoding it would land on the link word of node 538 and on node 5.
+	{index: 6000, size: 8192, hit: true},
+	{index: 8197, size: 16384, hit: true},
 	{index: 1365, size: 1024},
 }
 
