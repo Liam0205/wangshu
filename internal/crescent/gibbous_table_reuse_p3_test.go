@@ -176,10 +176,14 @@ func TestP3_ArrayHitOnATableAtAReusedAddress(t *testing.T) {
 
 func p3ArrayReuseCase(t *testing.T, op string, n int) {
 	t.Helper()
-	// Which freed block the next table head gets is the allocator's business
-	// (a six-element array part is as large as a table head and can take the
-	// block itself). Each attempt starts over and puts one more empty table in
-	// front of B, until B's head is where A's was.
+	// Which freed block the next table head gets is the allocator's business:
+	// it hands out the block of that size freed last. Here that is not A's
+	// head. The State keeps one word per loaded proto in a segment it
+	// reallocates whenever a chunk is loaded; six protos are loaded by the
+	// time B's chunk is, so the segment freed then is as large as a table
+	// head, and the first head allocated afterwards takes it. Each attempt
+	// starts over and puts one more empty table in front of B, until B's head
+	// is where A's was.
 	for pad := 0; pad <= 16; pad++ {
 		if p3ArrayReuseAttempt(t, op, n, pad) {
 			return
