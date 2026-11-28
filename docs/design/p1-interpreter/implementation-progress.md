@@ -1193,7 +1193,7 @@ arena 大小跟着比例变。`TestTiered_StdlibNames` 加一段
   不同的那一种情况（见下）。`TestDiff_NextFromKeysOfClearedEntries`、`TestRemovedStringKeysOfWeakValuedTable` 固定弱表上两种已删除节点
   各自的结果，`TestDiff_InsertionsAfterClearedEntries` 固定「回收器清掉过条目的表里再插入新键，结果随回收时机变化」（弱表上两边相同；
   变成强表之后望舒仍随回收变化），`TestDiff_NextFromRuntimeHeldKeysOfClearedEntries`、`TestDiff_NextFromDebugNamesOfClearedEntries` 固定键是官方另有引用的字符串
-  （库表和注册表里的名字、函数原型里的源名和局部变量名、只被另一张弱表引用的字符串，最后一种是 `TestDiff_NextFromKeysHeldByWeakTables`）时两边各自的结果，`TestDiff_NextFromConstantsOfDroppedChunks` 固定键是已经丢掉的
+  （库表和注册表里的名字、函数原型里的源名和局部变量名、只作为另一张弱键表里条目的键、或者另一张弱值表里条目的值存在的字符串，最后一种是 `TestDiff_NextFromKeysHeldByWeakTables`）时两边各自的结果，`TestDiff_NextFromConstantsOfDroppedChunks` 固定键是已经丢掉的
   代码块的字符串常量（望舒一直让它存活，[#359](https://github.com/Liam0205/wangshu/issues/359)）时望舒一侧的结果，
   `TestDiff_NextFromKeysRemovedFromAnotherTable` 固定键在别的表里被赋 nil 删过（望舒由那张表的节点保活）时望舒一侧的结果。
 - `test/api`：`TestTableForEach_ClearingEntries`；`TestTableForeach_PanicInCallbackReleasesTheValue`（`table.foreach` 的回调里 arena 用尽，
@@ -1247,8 +1247,8 @@ arena 大小跟着比例变。`TestTiered_StdlibNames` 加一段
 **这一轮没有修、另外登记的存量问题**：弱表会清掉字符串（[#348](https://github.com/Liam0205/wangshu/issues/348)）；
 `loadstring` 得到的函数丢掉之后它的字符串常量不回收（[#359](https://github.com/Liam0205/wangshu/issues/359)）；
 哈希部分的遍历顺序与官方不同（[#349](https://github.com/Liam0205/wangshu/issues/349)）；P4 单条表访问的模板不检查下标是否在表内
-（[#350](https://github.com/Liam0205/wangshu/issues/350)）；P4 arm64 的同一组模板在数组下标 4096 以上、哈希部分节点下标是 1365
-或者 2731 以上时访问到错误的槽位（[#351](https://github.com/Liam0205/wangshu/issues/351)）。
+（[#350](https://github.com/Liam0205/wangshu/issues/350)）；P4 arm64 的同一组模板在数组下标 4096 以上、哈希部分节点下标从 1365 起的
+若干段上访问到错误的槽位（逐段的情况在 issue 里，[#351](https://github.com/Liam0205/wangshu/issues/351)）。
 
 过程记录见 [#338 复盘](../../../llmdoc/memory/reflections/2026-11-27-issue338-deleted-key-stays-in-node.md)。
 

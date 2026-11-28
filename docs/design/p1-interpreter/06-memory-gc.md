@@ -691,8 +691,8 @@ type Collector struct {
    `TestDiff_NextFromFixedKeysOfClearedEntries` 固定两边各自的结果。一个字符串在两边是否另有引用不一定相同，效果相同，
    而且两个方向都有：官方的库表、`package` 表和注册表引用着 `execute`、`tmpname`、`path`、`_LOADED`、`FILE*` 这类名字，官方的函数原型还
    引用着自己的源名、局部变量名和 upvalue 名（调试信息；望舒的这些名字是 Go 字符串，不在 arena 里，[01](./01-value-object-model.md) §5.7），
-   官方的弱表也从不清字符串（`iscleared` 对字符串只做标记），另一张弱表里有值的条目的字符串键和字符串值在官方一直活着，望舒会把它们清掉
-   （[#348](https://github.com/Liam0205/wangshu/issues/348)）；望舒没有这些引用，这些字符串作键的条目被清掉之后官方的 `next` 成功、望舒报错（`TestDiff_NextFromRuntimeHeldKeysOfClearedEntries`、
+   官方的弱表也从不清字符串（`iscleared` 对字符串只做标记），只作为另一张弱键表里条目的键、或者另一张弱值表里条目的值存在的字符串在官方一直活着，
+   望舒会把这样的条目连同字符串清掉（[#348](https://github.com/Liam0205/wangshu/issues/348)；弱值表里条目的键、弱键表里条目的值是强引用，两边都保活）；望舒没有这些引用，这些字符串作键的条目被清掉之后官方的 `next` 成功、望舒报错（`TestDiff_NextFromRuntimeHeldKeysOfClearedEntries`、
    `TestDiff_NextFromDebugNamesOfClearedEntries`、`TestDiff_NextFromKeysHeldByWeakTables`）；反过来，望舒有两种官方没有的引用。一是加载过的每个代码块的字符串常量一直存活（§5.1 的 R6，函数丢掉之后也是，
    [#359](https://github.com/Liam0205/wangshu/issues/359)），官方随函数一起回收（`TestDiff_NextFromConstantsOfDroppedChunks`）。
    二是上面说的保活本身：别的表里用赋 nil 删掉的键由那张表的节点保活，官方的已删除节点不算引用，所以同一个字符串在别的表里被这样删过、

@@ -398,18 +398,24 @@ func TestDiff_NextFromDebugNamesOfClearedEntries(t *testing.T) {
 // nextFromKeysHeldByWeakTables is the same for strings that only another weak table refers to,
 // as the key of an entry of a weak-keyed table or as the value of an entry of a weak-valued one.
 // lua5.1 never clears a string from a weak table (iscleared marks it), so those strings stay
-// alive; wangshu's weak tables clear strings like other objects (issue #348). The third key is
-// held by nothing and shows that lua5.1's answers to the first two are not address reuse.
+// alive; wangshu's weak tables clear strings like other objects (issue #348). The next two keys
+// are held from the strong side of a weak table (the key of an entry of a weak-valued table, the
+// value of an entry of a weak-keyed one) and stay alive on both sides. The last key is held by
+// nothing and shows that lua5.1's answers to the others are not address reuse.
 const nextFromKeysHeldByWeakTables = `
 local wk = setmetatable({}, {__mode = "k"})
 local wv = setmetatable({}, {__mode = "v"})
+local keep = {}
 local function count(prefix, hold)
   local ok = 0
   for round = 1, 30 do
     local c = setmetatable({}, {__mode = "v"})
     for i = 1, 4 do c["pad" .. i .. "_" .. round] = true end
     c[prefix .. round] = {}
-    if hold == "k" then wk[prefix .. round] = true elseif hold == "v" then wv[round] = prefix .. round end
+    if hold == "k" then wk[prefix .. round] = true
+    elseif hold == "v" then wv[round] = prefix .. round
+    elseif hold == "vkey" then wv[prefix .. round] = keep
+    elseif hold == "kval" then local t = {} keep[#keep + 1] = t wk[t] = prefix .. round end
     collectgarbage() collectgarbage() collectgarbage()
     local junk = {}
     for j = 1, 64 do junk[j] = ("#"):rep(7) .. j end
@@ -417,11 +423,11 @@ local function count(prefix, hold)
   end
   return ok
 end
-return count("zzwk", "k"), count("zzwv", "v"), count("zzno")`
+return count("zzwk", "k"), count("zzwv", "v"), count("zzvk", "vkey"), count("zzkv", "kval"), count("zzno")`
 
 // TestDiff_NextFromKeysHeldByWeakTables pins both sides of that.
 func TestDiff_NextFromKeysHeldByWeakTables(t *testing.T) {
-	const wantWangshu, wantOracle = "0\t0\t0", "30\t30\t0"
+	const wantWangshu, wantOracle = "0\t0\t30\t30\t0", "30\t30\t30\t30\t0"
 	for _, stress := range []bool{false, true} {
 		if got := runClearCase(t, nextFromKeysHeldByWeakTables, stress); got != wantWangshu {
 			t.Errorf("wangshu (collecting at every safepoint: %v):\n  got:  %q\n  want: %q", stress, got, wantWangshu)
