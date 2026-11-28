@@ -14,7 +14,7 @@
 
 - **shadow stack** —— 自管的 GC 根集合栈,使 GC 不依赖 Go 的精确栈扫描即可找到根。
 
-- **safepoint** —— 允许 GC 介入的受控位置;本项目限定在**分配点与层边界**。
+- **safepoint** —— 允许 GC 介入的受控位置;本项目限定在**分配点与层边界**。分配本身只记账、不回收:「分配点」指会分配的 opcode(SETGLOBAL / SETTABLE / NEWTABLE / CONCAT / SETLIST / CLOSURE)执行完的那一刻和 `coroutine.create` / `coroutine.wrap` 分配新协程之前,「层边界」指每次 host function 返回之后与 P3 编译循环的跳回处;Lua 函数之间的调用和返回、P4 的跳回处都不检查。完整清单以 `docs/design/p1-interpreter/06-memory-gc.md` §6.3 为准。
 
 - **tier(执行层级)** —— 执行层的编号。tier 比演进阶段粗一层:tier-0=P1、tier-1=P3+P4、tier-2=P5;P2 是基建不分配 tier。详见 [[evolution-roadmap]]。
 
