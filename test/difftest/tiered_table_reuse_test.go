@@ -112,6 +112,17 @@ var tableReuseNodeOps = []struct{ name, warm, op string }{
 // address of the first, and that the access to it was the run's one entry into compiled code:
 // without the first the run never hands compiled code a different table at a known address,
 // without the second it may not hand it to compiled code at all.
+//
+// What the test cannot see is whether a case really is one the inline checks decide. For the
+// array cases it always is: a second table at the first one's address with fewer than eight
+// elements is shorter than the frozen index. For the node cases the second table must also end
+// up with the generation of the first and with a live field in the node the frozen index names,
+// and that depends on the hash function and on how nodes are handed out. With the translation
+// from before the fix, 7 of the 90 node cases of each access fail (keys_6..8_removed_3 and
+// keys_9..12_removed_2 for the read and the store, keys_6..8_removed_2 and keys_9..12_removed_1
+// for the method call); if a change to the table moves those away, the node cases pass without
+// testing anything. internal/gibbous/wasm's TestPW5_InlineSlotGuards covers the node checks on
+// memory laid out by hand and does not depend on any of this.
 func TestTiered_TableAtAReusedAddress(t *testing.T) {
 	oracle := findOracle()
 	check := func(t *testing.T, warmSrc, runSrc string) {

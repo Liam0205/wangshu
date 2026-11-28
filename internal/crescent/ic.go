@@ -1,10 +1,11 @@
 // Inline cache execution (05 §6) — mono IC on GETGLOBAL/SETGLOBAL/GETTABLE/
 // SETTABLE/SELF.
 //
-// Hit = same table (low 32 bits of tableRef) + same generation (gen) → go
-// straight to the array/node slot, skipping the hash and collision chain. Miss =
-// full lookup + backfill slot. Write-side invalidation: rehash/setmetatable
-// BumpGen (rawtable.go / object.SetTableMeta).
+// Hit = same table (low 32 bits of tableRef) + same generation (gen), with the
+// cached index and the key checked against the table handed in (see
+// icGetTable) → go straight to the array/node slot, skipping the hash and
+// collision chain. Miss = full lookup + backfill slot. Write-side invalidation:
+// rehash/setmetatable BumpGen (rawtable.go / object.SetTableMeta).
 package crescent
 
 import (
