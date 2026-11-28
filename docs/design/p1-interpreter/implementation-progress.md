@@ -1305,7 +1305,8 @@ arena 大小跟着比例变。`TestTiered_StdlibNames` 加一段
     这种情况不需要有键被搬走：10 个字符串键加上整数键 500 和 5 的表，回调拿到 5、把它清掉、再 `Preallocate(10)`，
     12 个条目回调 19 次。修改前的 `Preallocate` 在这种情况下结果相同，官方的 `findindex` 也是按下标落在数组范围内来判断的。
 
-  这些写在 `Table.Preallocate` 的 godoc 里。
+  这些写在 `Table.Preallocate` 的 godoc 里。不重建的代价是被搬走的键留下的节点在下一次 rehash 之前仍然占着哈希部分的位置
+  （修改前这些键的节点有值，同样占着）。
 - **分配失败**：新数组是唯一的一次分配，而且在改动表之前。arena 放不下时 panic（`Program.Run` 会把它转成 error，State 之后还能用），表保持原样。
 - **验证**：
   - `internal/crescent` 的 `TestGrowArray_MovesHashIntegerKeys`（整数键搬进数组部分，字符串键和非整数键留在哈希部分，哈希部分的块没有换，遍历正好 5 个条目，
