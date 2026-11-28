@@ -504,7 +504,7 @@ func (vm *VM) doGetTable(f *frame, i Instruction) *LuaError {
 
 ### 6.4 各 IC 指令的差异
 
-- **GETGLOBAL/SETGLOBAL**(ABx,key 是 `K(Bx)` 字符串常量):目标表恒为 globals,`tableRef` 恒等,只需代次比对。命中直达槽位写/读。SETGLOBAL 插入**新**全局键 → globals rehash → globals 代次自增 → 自动失效旧 IC(正确)。
+- **GETGLOBAL/SETGLOBAL**(ABx,key 是 `K(Bx)` 字符串常量):目标表恒为 globals,`tableRef` 恒等,设计上只需代次比对;实现里与 GETTABLE / SETTABLE 走同一个 `icGetTable` / `icSetTable`,命中时做 §6.3 的全部校验。命中直达槽位写/读。SETGLOBAL 插入**新**全局键 → globals rehash → globals 代次自增 → 自动失效旧 IC(正确)。
 - **GETTABLE/SETTABLE**:目标表是 `R(B)`/`R(A)`,运行期变,需「同表 + 同代次」双重校验,之后再校验下标和键(§6.3)。
 - **SELF**(`R(A+1):=R(B); R(A):=R(B)[RK(C)]`,[02](./02-bytecode-isa.md) §4-11):IC 缓存的是 `R(B)[method]` 的查找(方法通常在 metatable 的 `__index` 表里,常驻不变 → IC 命中率极高,这正是 `obj:m()` 优化的意义)。先做 `R(A+1):=R(B)`(self 传递),再走与 GETTABLE 同构的 IC 取方法。
 - **算术 IC**(ADD 等,[02](./02-bytecode-isa.md) §4-12 仅 ADD 标 IC,但同族适用):**不参与取值快路径**(§4.1 已说明,P1 快路径靠现场 `IsNumber`)。算术 IC slot 记录操作数实际类型分布——承 [../p2-bridge/00-overview](../p2-bridge/00-overview.md) §3.6 回填,定为 **`numHits`/`metaHits` 双计数**(快路径 `numHits++`、元方法慢路径 `metaHits++`,挪用算术 IC 闲置的 shape/index/tableRef 字段,[02](./02-bytecode-isa.md) §7 已登记)——纯为 P2 类型 feedback 与 P4 f64 投机供料([../p4-method-jit](../p4-method-jit/00-overview.md))。P1 写它、不读它分支。
@@ -1140,7 +1140,7 @@ case bytecode.SETLIST:
 
 ### 11.3 GETGLOBAL / SETGLOBAL(IC,见 §6.4)
 
-`GETGLOBAL A Bx`:`R(A) := Gtable[K(Bx)]`,`K(Bx)` 是字符串常量键。走 §6.3 的 IC 流程,目标表恒为 globals。globals 在 Lua 5.1 是当前环境表(经 closure 的 `_ENV` upvalue / registry,[02](./02-bytecode-isa.md) §2 记号 `G`)。命中 = globals 代次比对 + 直达槽。`SETGLOBAL` 对称,插入新全局键触发 globals rehash → bump globals gen → 失效旧全局 IC(§6.4)。
+`GETGLOBAL A Bx`:`R(A) := Gtable[K(Bx)]`,`K(Bx)` 是字符串常量键。走 §6.3 的 IC 流程,目标表恒为 globals。globals 在 Lua 5.1 是当前环境表(经 closure 的 `_ENV` upvalue / registry,[02](./02-bytecode-isa.md) §2 记号 `G`)。命中 = globals 代次比对 + 直达槽(实现里做 §6.3 的全部校验,见 §6.4)。`SETGLOBAL` 对称,插入新全局键触发 globals rehash → bump globals gen → 失效旧全局 IC(§6.4)。
 
 ---
 
