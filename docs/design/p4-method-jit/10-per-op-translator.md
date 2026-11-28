@@ -385,7 +385,7 @@ PJ10 接续 PJ0-PJ9 的所有不变式,新增本档独有:
 1. **fast path 不动**:PJ0-PJ9 字节级模板的 byte-equal P1 与 byte 序列**不能因 PJ10 通用路径接入而改变**(回归测试把关)
 2. **per-op 通用路径与 P1 解释器 byte-equal**:每个 emit 函数的产物执行结果与 P1 解释器对应 op 完全一致(逐字节,含 NaN bit pattern / 错误消息 / traceback pc)
 3. **OSR exit 仍生效**:通用路径里的 guard 失败(若有,主要在 fast path 内嵌投机时)走 OSR exit 协议,与 PJ0-PJ9 一样
-4. **safepoint 不漏**:back edge、call 前后、长直线段后(每 N 条指令)都插 safepoint check,纪律承 [05-system-pipeline §6](./05-system-pipeline.md)
+4. **safepoint 不漏**:back edge、call 前后、长直线段后(每 N 条指令)都插 safepoint check,纪律承 [05-system-pipeline §6](./05-system-pipeline.md)(实现里回跳处的检查只管步数预算和取消,不回收,见那一节开头的实现现状)
 5. **不引入 IR**:emit 函数直接发字节,不经 SSA / 中间值 / 任何抽象层
 
 ---

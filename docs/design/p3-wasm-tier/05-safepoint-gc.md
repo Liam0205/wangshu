@@ -69,7 +69,7 @@ P1 解释器 [05 §5.1](../p1-interpreter/05-interpreter-loop.md) 的 safepoint 
 | 类别 | 物理位置 | 介入机制 | 触发频率 | 对齐 P1 |
 |---|---|---|---|---|
 | **§1.1 分配点** | gibbous 代码**自身从不分配**;分配全在 imported 助手内 | 助手回 Go,助手末尾的 `safepoint` 按阈值同步 collect(同 [06 §7.1](../p1-interpreter/06-memory-gc.md) 分配 opcode 结束时的检查点) | 与 P1 同(分配频率) | [05 §5.2](../p1-interpreter/05-interpreter-loop.md) 分配点清单 |
-| **§1.2 层边界** | crescent↔gibbous 的 trampoline([04 §2/§3](./04-trampoline.md)) | trampoline 进出是天然检查点 | 跨层调用频率 | [05 §5.1](../p1-interpreter/05-interpreter-loop.md) 调用边界 safepoint |
+| **§1.2 层边界** | crescent↔gibbous 的 trampoline([04 §2/§3](./04-trampoline.md)) | trampoline 进出时两侧栈一致,可以放检查点;基线不在这里主动检查(§1.2.2),调 host function 的那一种在它返回后检查 | 跨层调用频率 | [05 §5.1](../p1-interpreter/05-interpreter-loop.md) 调用 host function 的边界 |
 | **§1.3 back edge** | 循环 back edge(FORLOOP/TFORLOOP/JMP 向后) | `(if (i32.load $gcPending) (call $h_safepoint))` | 每迭代一次(分支几乎恒不跳) | [05 §5.3](../p1-interpreter/05-interpreter-loop.md) opcode 末尾检查 |
 
 ### 1.1 分配点:gibbous 代码自身从不分配
@@ -147,11 +147,11 @@ gibbous 直线代码执行到上面的 (call $h_newtable ...):
 
 #### 1.2.1 trampoline 就是层边界
 
-crescent ↔ gibbous 的 trampoline([04 §2 crescent→gibbous](./04-trampoline.md) / [04 §3 gibbous→crescent/host](./04-trampoline.md))是 P3 的「层边界」——对应 [06 §7.1](../p1-interpreter/06-memory-gc.md) 第 2 条「层边界:解释器 ↔ 编译层」。与 [05 §5.1](../p1-interpreter/05-interpreter-loop.md) 的「调用边界 safepoint」同位:
+crescent ↔ gibbous 的 trampoline([04 §2 crescent→gibbous](./04-trampoline.md) / [04 §3 gibbous→crescent/host](./04-trampoline.md))是 P3 的「层边界」——对应 [06 §7.1](../p1-interpreter/06-memory-gc.md) 第 2 条「层边界:解释器 ↔ 编译层」。与 [05 §5.1](../p1-interpreter/05-interpreter-loop.md) 的调用边界同位(那一节现在只把调用 host function 的边界算作检查点,Lua 函数之间的调用和返回不检查;下表前两行同样不主动检查,见 §1.2.2):
 
 | trampoline 方向 | [04](./04-trampoline.md) 出处 | 层边界 safepoint 含义 |
 |---|---|---|
-| crescent → gibbous(升层函数入口) | [04 §2](./04-trampoline.md) | 进入 Wasm 前,crescent 侧栈一致(刚压完 CallInfo),是 GC 安全点 |
+| crescent → gibbous(升层函数入口) | [04 §2](./04-trampoline.md) | 进入 Wasm 前,crescent 侧栈一致(刚压完 CallInfo),可以安全地回收;实现在这里不检查,进入之后由第一个分配类助手末尾或回跳处的检查处理 |
 | gibbous → crescent(被调未编译 Proto) | [04 §3](./04-trampoline.md) | 出 Wasm 进解释器,经 `$h_call` 调度助手,Go 侧栈一致 |
 | gibbous → host(被调 host fn) | [04 §3](./04-trampoline.md) | 出 Wasm 进 host,经 `callHost`([05 §7.6](../p1-interpreter/05-interpreter-loop.md))原样,host 侧 shadow stack 纪律不变 |
 
@@ -337,7 +337,7 @@ P1 设计 06-memory-gc 在 §12「文档缺口 / 待决」里,**预设了 P3 接
 
 #### 子问题 ① 层边界 safepoint 形式 → §1.2
 
-- **答**:层边界 = crescent↔gibbous↔host 的 trampoline([04 §2/§3](./04-trampoline.md)),与 [05 §5.1](../p1-interpreter/05-interpreter-loop.md) 的调用边界 safepoint 同位。
+- **答**:层边界 = crescent↔gibbous↔host 的 trampoline([04 §2/§3](./04-trampoline.md)),与 [05 §5.1](../p1-interpreter/05-interpreter-loop.md) 的调用边界同位(那一节里只有调用 host function 的边界是检查点)。
 - **形式定稿**:**基线不主动调 safepoint**(助手路径已覆盖,§1.2.2),仅在 PW9 验收发现极端长函数形式时按实测加(§1.2.3)。宿主函数调用另有固定检查点(`callHost` 返回后，#297,[06 §7.1](../p1-interpreter/06-memory-gc.md)),gibbous 经 `doCall` 助手调宿主函数时同样经过。
 
 #### 子问题 ② 纯计算循环周期 GC → §1.4
