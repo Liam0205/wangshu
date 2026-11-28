@@ -519,6 +519,7 @@ func (vm *VM) doGetTable(f *frame, i Instruction) *LuaError {
 | 删除键（`rawSet` 写入 nil，节点从有值变成已删除） | 该表 | [01](./01-value-object-model.md) §5.2 节点的三种状态 |
 | 新键接管主位置上已删除的节点（节点换了键） | 该表 | 同上 |
 | 回收器清弱表条目、替换已删除节点里对象已死的键 | 该表 | [06](./06-memory-gc.md) §8.4 |
+| 公开 Go API 的 `Table.Preallocate` 扩大数组部分（换一块更大的数组，哈希部分不动） | 该表 | `internal/crescent/alloc.go` 的 `PreallocateArray` |
 | 已存在键改值(无 rehash) | **不递增** | 本文 |
 | 对已删除的键再赋 nil、同一个键写回它已删除的节点、新键放进空闲节点 | **不递增** | IC 只记录有值的节点，而表操作和回收器让节点离开「有值」状态时都递增 |
 
