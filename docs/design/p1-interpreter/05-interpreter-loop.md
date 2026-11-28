@@ -449,7 +449,7 @@ type ICSlot struct {
 }
 ```
 
-- `kind` 还需隐含**缓存的目标表身份**——但 IC slot 不存 GCRef(避免 IC 成为 GC 根 + 表被回收后悬垂)。**定稿:IC 命中校验「同表 + 同代次」**。「同表」怎么判而不存 GCRef?→ 在校验时拿**本次访问的实际表 GCRef** 与 **slot 缓存的代次** 比对:slot 额外存一个 `tableRef uint32`(arena 偏移低 32 位,arena <4GB 足够)用于「同表」判定,但**它不作为 GC 根**(只读比对,表若被回收则代次比对也会失败,自然 miss)。这要求扩展 ICSlot 加 `tableRef` 字段(见 §6.6 对 [02](./02-bytecode-isa.md) §7 的回填)。
+- `kind` 还需隐含**缓存的目标表身份**——但 IC slot 不存 GCRef(避免 IC 成为 GC 根 + 表被回收后悬垂)。**定稿:IC 命中校验「同表 + 同代次」**。「同表」怎么判而不存 GCRef?→ 在校验时拿**本次访问的实际表 GCRef** 与 **slot 缓存的代次** 比对:slot 额外存一个 `tableRef uint32`(arena 偏移低 32 位,arena <4GB 足够)用于「同表」判定,但**它不作为 GC 根**(只读比对)。表被回收之后,新表可以分配在同一个地址上、代次也相同,这两项比对都会通过,所以命中还要对着拿到的这张表校验下标和键(§6.3 的关键性质,[#364](https://github.com/Liam0205/wangshu/issues/364))。这要求扩展 ICSlot 加 `tableRef` 字段(见 §6.6 对 [02](./02-bytecode-isa.md) §7 的回填)。
 
 ### 6.3 命中流程(以 GETTABLE 为例)
 
@@ -505,7 +505,7 @@ func (vm *VM) doGetTable(f *frame, i Instruction) *LuaError {
 ### 6.4 各 IC 指令的差异
 
 - **GETGLOBAL/SETGLOBAL**(ABx,key 是 `K(Bx)` 字符串常量):目标表恒为 globals,`tableRef` 恒等,只需代次比对。命中直达槽位写/读。SETGLOBAL 插入**新**全局键 → globals rehash → globals 代次自增 → 自动失效旧 IC(正确)。
-- **GETTABLE/SETTABLE**:目标表是 `R(B)`/`R(A)`,运行期变,需「同表 + 同代次」双重校验。
+- **GETTABLE/SETTABLE**:目标表是 `R(B)`/`R(A)`,运行期变,需「同表 + 同代次」双重校验,之后再校验下标和键(§6.3)。
 - **SELF**(`R(A+1):=R(B); R(A):=R(B)[RK(C)]`,[02](./02-bytecode-isa.md) §4-11):IC 缓存的是 `R(B)[method]` 的查找(方法通常在 metatable 的 `__index` 表里,常驻不变 → IC 命中率极高,这正是 `obj:m()` 优化的意义)。先做 `R(A+1):=R(B)`(self 传递),再走与 GETTABLE 同构的 IC 取方法。
 - **算术 IC**(ADD 等,[02](./02-bytecode-isa.md) §4-12 仅 ADD 标 IC,但同族适用):**不参与取值快路径**(§4.1 已说明,P1 快路径靠现场 `IsNumber`)。算术 IC slot 记录操作数实际类型分布——承 [../p2-bridge/00-overview](../p2-bridge/00-overview.md) §3.6 回填,定为 **`numHits`/`metaHits` 双计数**(快路径 `numHits++`、元方法慢路径 `metaHits++`,挪用算术 IC 闲置的 shape/index/tableRef 字段,[02](./02-bytecode-isa.md) §7 已登记)——纯为 P2 类型 feedback 与 P4 f64 投机供料([../p4-method-jit](../p4-method-jit/00-overview.md))。P1 写它、不读它分支。
 

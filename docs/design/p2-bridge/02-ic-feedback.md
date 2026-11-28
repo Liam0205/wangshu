@@ -112,7 +112,7 @@ end
 P1 解释器执行期(M10 IC 实现后):
 
 1. **第 1 次循环**(`i=1`):GETTABLE 走 cold path,完整 hash 查找,把 `t.a` 的 node 槽位下标写进 `ICSlot.index`,`shape=t.gen()`,`tableRef=arenaOff(t)`,`kind=2 (node hit)`。
-2. **第 2 ~ 1000 次**:GETTABLE 走 IC 命中(同表 + 同代次双校验通过),直达 node 槽,跳过 hash。**ICSlot 不再被写**(命中无需更新)。
+2. **第 2 ~ 1000 次**:GETTABLE 走 IC 命中(同表 + 同代次双校验通过,下标在表内、节点里的键相同,[P1 05](../p1-interpreter/05-interpreter-loop.md) §6.3),直达 node 槽,跳过 hash。**ICSlot 不再被写**(命中无需更新)。
 3. P1 不在循环内写 P2 任何反馈对象——仅 ICSlot 这一处状态自然驻留。
 
 P2 在 considerPromotion 触发时(假设 1000 次 back edge 累积满阈值,01-profiling §5):
