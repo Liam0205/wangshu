@@ -535,9 +535,9 @@ func TestPreallocate_DuringForEachOnARemovedIntegerKey(t *testing.T) {
 
 // TestPreallocate_OtherKeysBeforeTheFill: other keys stored between Preallocate and the fill of
 // 1..n do not change what the table ends up holding, whether the hash part has room for them (0
-// or 5 keys) or they make the table rehash and give the reserved slots up (6 or 40 keys). Which of
-// the two happens is not visible through this API; internal/crescent's
-// TestGrowArray_SlotsAreKeptUntilTheNextRehash looks at the array part.
+// or 5 of the keys used here) or they make the table rehash and give the reserved slots up (6 or
+// 40 of them). Which of the two happens is not visible through this API; internal/crescent's
+// TestGrowArray_SlotsAreKeptUntilTheNextRehash looks at the array part, with the same keys.
 func TestPreallocate_OtherKeysBeforeTheFill(t *testing.T) {
 	for _, names := range []int{0, 5, 6, 40} {
 		st := wangshu.NewState(wangshu.Options{})
