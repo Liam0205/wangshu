@@ -335,9 +335,11 @@ func TestPW5a_GlobalIC(t *testing.T) {
 }
 
 // TestPW5b_TableIC PW5-b: GETTABLE/SETTABLE inline IC (key match).
-// const-key NodeHit (t.x) / register-key ArrayHit (t[1]) hits the inline path,
-// skipping the hash; before promotion the interpreter baseline is run to fill
-// the IC + byte-equal differential test.
+// const-key NodeHit (t.x) / register-key ArrayHit (t[1]) is meant to hit the
+// inline path, skipping the hash; before promotion the interpreter baseline is
+// run to fill the IC + byte-equal differential test. What is compared here is
+// the result; that the access does not go to the helper is asserted by
+// TestP3_InlineAccessStaysInlineOnItsOwnTable.
 func TestPW5b_TableIC(t *testing.T) {
 	run := func(t *testing.T, src string, setup func(*State) []value.Value, want float64) {
 		st, mainCl := loadFn(t, src)
