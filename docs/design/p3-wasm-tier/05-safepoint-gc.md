@@ -702,7 +702,7 @@ func (c *Collector) writeBarrier(parent value.GCRef, child value.Value) {
 
 回顾 [06 §9.4](../p1-interpreter/06-memory-gc.md) 的屏障插桩点(SETTABLE/SETLIST/SETUPVAL/SETGLOBAL/setmetatable——「把可回收 child 存入 arena 对象 parent」的写)。这些写在 gibbous 里**全部经助手**(§1.1:SETTABLE/SETLIST/SETGLOBAL 写新键经 `$h_settable` 等;SETUPVAL/upvalue 关闭经 helper)——**助手体就是 P1 的对应 opcode 实现**,P1 在那里 no-op 调 `writeBarrier`,gibbous 经助手走同一路径,**同样 no-op**。
 
-**关键**:**gibbous 直线代码本身不直接写表槽**(表写入是 `$h_settable` 助手的活,因为可能 rehash 分配,§1.1),所以「gibbous 写表槽需插屏障」这个问题在 P3 **根本不出现在 gibbous 代码里**——它出现在助手里,而助手 = P1 opcode 实现,P1 已 no-op。
+**关键**:**gibbous 直线代码本身不直接写表槽**(表写入是 `$h_settable` 助手的活,因为可能 rehash 分配,§1.1;实现里改已有键的值有内联写,见下面的澄清和 [02](./02-translation.md) §3.4.3),所以「gibbous 写表槽需插屏障」这个问题在 P3 **根本不出现在 gibbous 代码里**——它出现在助手里,而助手 = P1 opcode 实现,P1 已 no-op。
 
 > **澄清:即便 SETTABLE 不触发 rehash(写已有键,纯改槽值),P3 也经助手吗?** [02 §3.4](./02-translation.md) 给的 GETTABLE 是「IC 快照命中走直达槽 `$slot_load`」,SETTABLE 同理可有「IC 命中走直达槽 store」的快路径(写已有键不分配)。**若 SETTABLE 快路径在 gibbous 直线代码里直接 `i64.store` 写表槽**(不经助手),则这是「gibbous 直接写表槽」的情况——但 **STW 下仍 no-op**(无并发标记,无屏障需求,§5.1.1)。屏障只在增量 GC 才需要(§5.3),那时这条 SETTABLE 直达槽写就是一个屏障插桩点。**P3 STW 下无论 SETTABLE 走助手还是走直达槽,都 no-op。**
 
