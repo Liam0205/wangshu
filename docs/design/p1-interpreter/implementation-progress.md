@@ -1312,13 +1312,14 @@ arena 大小跟着比例变。`TestTiered_StdlibNames` 加一段
   这些写在 `Table.Preallocate` 的 godoc 里。不重建的代价是被搬走的键留下的节点在下一次 rehash 之前仍然占着哈希部分的位置
   （修改前这些键的节点有值，同样占着）。
 - **预留能保持到什么时候**（修改前后相同，这次写进了 godoc）：预留的格子保持到表的下一次 rehash。往表里写一个数组部分不覆盖的新键、哈希部分又没有空闲节点时发生 rehash，
-  rehash 按当时表里的整数键重新定数组部分的大小，还空着的格子可能被收回。`NewTable` 建出来的表哈希部分有 8 个节点，第几个新键引起 rehash 取决于这些键的哈希
+  rehash 按当时表里的整数键重新定数组部分的大小，与预留过多少无关：取最大的 2 的幂 m（不超过 2^24），使 1..m 里用掉的超过一半。m 之后的格子不管空不空都被收回，
+  里面的条目回到哈希部分（`Preallocate(1000)` 之后写入 1..10 和 600、再写字符串键引起 rehash，数组部分是 16 格，键 600 在哈希部分）。`NewTable` 建出来的表哈希部分有 8 个节点，第几个新键引起 rehash 取决于这些键的哈希
   （主位置被占时才去找空闲节点）：`Preallocate(1000)` 之后逐个写字符串键，`name0`、`name1`…… 这组键是第 6 个引起 rehash，`k0`…… 和 `col0`…… 是第 5 个，
   `field_0`…… 是第 4 个，`x0`…… 是第 9 个，rehash 之后数组部分都回到 0。用 `name` 这组键量耗时：`Preallocate(n)` 之后先写 5 个再填 1..n，
   每个元素约 19 纳秒，与不写字符串键相同；先写 6 个再填，N 为 1000、10000、100000 时每个元素 57、78、63 纳秒，与不预留（46、62、58 纳秒）差不多。
   官方 `lua_createtable(L, n, 0)` 建出来的表哈希部分是空的，写第一个哈希键就 rehash，预留同样被收回。
   `internal/crescent` 的 `TestGrowArray_SlotsAreKeptUntilTheNextRehash` 直接看数组部分的大小：写入字符串键而没有 rehash 时保持 1000，
-  rehash 之后是 0；先填满 1..1000 再写 40 个字符串键，数组部分不小于 1000。`test/api` 的 `TestPreallocate_OtherKeysBeforeTheFill` 检查的是另一件事：
+  rehash 之后是 0；只写了 1..10 和 600 时 rehash 之后是 16；先填满 1..1000 再写 40 个字符串键，数组部分不小于 1000。`test/api` 的 `TestPreallocate_OtherKeysBeforeTheFill` 检查的是另一件事：
   预留和填充之间写入 0、5、6、40 个别的键，表最后的内容都正确。
 - **分配失败**：新数组是唯一的一次分配，而且在改动表之前。arena 放不下时 panic（`Program.Run` 会把它转成 error，State 之后还能用），表保持原样。
 - **验证**：
@@ -1332,6 +1333,9 @@ arena 大小跟着比例变。`TestTiered_StdlibNames` 加一段
     `TestPreallocate_FailureLeavesTheTableAlone`（表有 4 格数组部分、哈希部分里的整数键 5 和 20 个字符串键；超出 `MaxArenaBytes` 的请求 panic 之后，
     数组部分的值、键 5、`Len` 和遍历到的 25 个条目都与之前相同，之后一次放得下的扩大照常工作）、
     `TestPreallocate_DuringForEachOnARemovedIntegerKey`（上面 12 个条目的例子：不报错、结束、每个条目都访问到）、
+    `TestPreallocate_DuringPairs`（脚本的 `pairs` 循环里经宿主函数扩大：只有字符串键的表每轮都扩大、以及先清掉当前条目再扩大，20 个条目各返回一次；
+    哈希部分里有整数键 5 和 500 的表，循环走到 5 时扩大、以及先清掉 5 再扩大，12 个键都走到、循环结束；三种构建都执行。
+    换回修改前的代码、不搬键、不清原节点和两种重建写法下这个测试失败）、
     `TestPreallocate_ScriptAccessAfterwards`（脚本对哈希部分里的键 5 读写 1000 次之后，脚本调用的宿主函数扩大数组部分，脚本接着读写同一个键，结果正确。
     这里的函数太短，P3、P4 构建里也不升层，检查的是解释器的内联缓存）、
     `TestPreallocate_CompiledAccessAfterwards`（只在 P3、P4 构建里：带循环的读函数和写函数升层之后扩大数组部分，再调用它们，结果正确；
