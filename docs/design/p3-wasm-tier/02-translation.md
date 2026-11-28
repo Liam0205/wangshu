@@ -588,7 +588,7 @@ P1 解释器的 IC slot 是运行期可变的(mono IC 重填,[../p1-interpreter/
 type ICSlot struct {
     Shape    uint32 // 表 IC:目标表 gen 代次
     Index    uint32 // 表 IC:命中槽位下标(array 下标 / node 槽号)
-    TableRef uint32 // 表 IC:目标表 arena 偏移低 32 位(身份比对)
+    TableRef uint32 // 表 IC:目标表 arena 偏移低 32 位(比对地址用;地址会被新表重用,命中还要校验下标和键)
     Kind     uint8  // 0 None / 1 ArrayHit / 2 NodeHit / 3 MonoMeta / 4 Megamorphic
     Refill   uint8  // 换表/换形重填计数(P2 megamorphic 主动识别)
 }

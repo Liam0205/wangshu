@@ -552,7 +552,7 @@ func (vm *VM) doGetTable(f *frame, i Instruction) *LuaError {
 本节定稿要求的两处上游布局增字段**均已回填完成**:
 
 1. **[01](./01-value-object-model.md) §5.2 Table 布局**:`gen uint32` 代次字段已放进 word5 高 32 位(与 lastfree 同字),`object.Table` 暴露 `Gen()` / `bumpGen()`。
-2. **[02](./02-bytecode-isa.md) §7 ICSlot**:`tableRef uint32` 已增补(目标表 arena 偏移低 32 位,仅作身份比对,非 GC 根);算术 IC 的字段挪用(双计数,P2 回填)也已一并登记。
+2. **[02](./02-bytecode-isa.md) §7 ICSlot**:`tableRef uint32` 已增补(目标表 arena 偏移低 32 位,比对地址用,非 GC 根;地址会被新表重用,命中还要校验下标和键,§6.3);算术 IC 的字段挪用(双计数,P2 回填)也已一并登记。
 
 这两处不改语义、只增字段,与 [01](./01-value-object-model.md)/[02](./02-bytecode-isa.md) 的 ABI 承诺兼容(只增不改)。
 
