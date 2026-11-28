@@ -61,7 +61,9 @@ GETGLOBAL」);P4 amd64/arm64 的 GETTABLE/SETTABLE NodeHit 有 NodeKey 比对(am
 #338 之后删除不再清键，同一个键删了再写会回到原节点，键→槽位的映射在删除时并没有变。删除仍然 bump，
 但它不是任何消费者的正确性所依赖的：gen 没有变说明不了节点仍然有值（P3 的 `emitSetGlobal` 内联写 nil
 不 bump），也说明不了拿到的还是原来那张表（不比对 TableRef 的消费者会遇到 gen 数值相同的另一张表，
-用同一个构造函数建出来的对象 gen 本来就相同）。所以每个内联消费者都自己检查节点的值，下表的守卫列
+用同一个构造函数建出来的对象 gen 本来就相同；比对 TableRef 的消费者也会遇到，原来那张表被回收之后，
+新建的表可以分配在同一个地址上，gen 也相同，这是修改前就有的问题，记在 [#362](https://github.com/Liam0205/wangshu/issues/362)
+和 [#364](https://github.com/Liam0205/wangshu/issues/364)）。所以每个内联消费者都自己检查节点的值，下表的守卫列
 每一行都有「slot != Nil」。删除时不 bump 可以让同一张表的内联路径在删除之后继续有效，要不要这样改
 记在 [[doc-gaps]]。
 
