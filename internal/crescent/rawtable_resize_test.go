@@ -185,8 +185,9 @@ func TestGrowArray_TraversalGoesOn(t *testing.T) {
 //
 //   - From a key of the old array part: every entry that followed, once.
 //   - From a hash key the growth does not cover: the entries that followed, without the moved ones.
-//   - From a moved key k: the moved entries with a key above k and every entry left in the hash
-//     part, whether it came before k or after it; no moved entry with a key below k.
+//   - From a key k of the hash part that the growth covers: the moved entries with a key above k
+//     and every entry left in the hash part, whether it came before k or after it; no moved entry
+//     with a key below k, and no entry of the old array part.
 func TestGrowArray_TraversalWhenKeysMove(t *testing.T) {
 	num := func(n int) value.Value { return value.NumberValue(float64(n)) }
 	const oldSize, newSize = 4, 64
@@ -224,13 +225,20 @@ func TestGrowArray_TraversalWhenKeysMove(t *testing.T) {
 		}
 		return st, tbl, keys
 	}
-	moves := func(k value.Value) bool {
+	covered := func(k value.Value) bool {
 		idx, in := arrayIndex(k, newSize)
 		return in && idx >= oldSize
 	}
-	for at := 0; at < 14; at++ {
+	for at := 0; at < 28; at++ {
 		st, tbl, keys := build()
+		// The second half removes the entry the traversal stands on before the growth, as a
+		// traversal may; what follows is the same.
+		remove := at >= 14
+		at := at % 14
 		here := keys[at]
+		if remove {
+			_ = st.rawSet(tbl, here, value.Nil)
+		}
 
 		st.growArray(tbl, newSize)
 
@@ -240,19 +248,19 @@ func TestGrowArray_TraversalWhenKeysMove(t *testing.T) {
 			case i == at:
 			case at < oldSize: // from a key of the old array part
 				want[k] = i > at
-			case !moves(here): // from a hash key that stays
-				want[k] = i > at && !moves(k)
-			default: // from a moved key
-				want[k] = i >= oldSize && (!moves(k) || value.AsNumber(k) > value.AsNumber(here))
+			case !covered(here): // from a hash key that stays
+				want[k] = i > at && !covered(k)
+			default: // from a hash key the growth covers
+				want[k] = i >= oldSize && (!covered(k) || value.AsNumber(k) > value.AsNumber(here))
 			}
 		}
 		got := traverse(t, st, tbl, here)
 		for k, wanted := range want {
 			switch n := got[k]; {
 			case wanted && n != 1:
-				t.Errorf("from %s: %s is returned %d times, want once", debugVal(st, here), debugVal(st, k), n)
+				t.Errorf("from %s (removed: %v): %s is returned %d times, want once", debugVal(st, here), remove, debugVal(st, k), n)
 			case !wanted && n != 0:
-				t.Errorf("from %s: %s is returned, which the rule leaves out", debugVal(st, here), debugVal(st, k))
+				t.Errorf("from %s (removed: %v): %s is returned, which the rule leaves out", debugVal(st, here), remove, debugVal(st, k))
 			}
 		}
 		if n := got[here]; n != 0 {

@@ -190,22 +190,26 @@ func (st *State) NewStringArrayTable(vals []string) Value {
 //
 // Calling it on a table that is being traversed (from a ForEach callback, or
 // from a host function a script calls inside a pairs loop) is safe: the
-// traversal raises no error and ends. It returns what it would have returned
-// without the call unless the hash segment holds integer keys in 1..n. With
-// such keys, what follows depends on the key the traversal stands on:
+// traversal raises no error and ends. What it returns from then on depends on
+// the key it stands on (the one the callback was given):
 //
-//   - a key of the array segment: every entry that had not been returned is
-//     returned once, the moved ones from the array segment;
-//   - a key of the hash segment that n does not cover: the entries that move
-//     and had not been returned are not returned;
-//   - a key of the hash segment that n covers, whether its entry moves or has
-//     just been removed: the traversal continues with the array slots behind
-//     that key and then goes through the hash segment from its start. An
-//     entry that moves to a slot below that key is not returned from then on.
-//     The other entries are all returned, those the traversal had returned
-//     from the hash segment before that key for a second time.
+//   - a key of the array segment: every entry that had not been returned,
+//     once, the moved ones from the array segment;
+//   - a key of the hash segment that is not an integer in 1..n: the entries
+//     that had not been returned, once, except the ones that move;
+//   - an integer key in 1..n of the hash segment, whether its entry moves or
+//     has just been removed: the traversal continues with the array slots
+//     behind that key and then goes through the hash segment from its start.
+//     It returns the entries that move to a slot behind that key and every
+//     entry that stays in the hash segment, also the ones it had returned
+//     before, and nothing else: not the entries that were in the array
+//     segment before the call, and not the ones that move to a slot before
+//     that key, whether it had returned them or not.
 //
-// A request the arena has no room for panics before the table is changed.
+// So the traversal returns what it would have returned without the call when
+// no entry moves and it does not stand on an integer key in 1..n of the hash
+// segment. A request the arena has no room for panics before the table is
+// changed.
 //
 //	tv := st.NewTable()
 //	tv.AsTable().Preallocate(1000)
