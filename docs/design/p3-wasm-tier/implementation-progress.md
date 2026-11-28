@@ -706,7 +706,7 @@ end
   常量键取自这个 State 自己的 `Proto.Consts`（`LoadProgram` 已经把字符串常量换成这个 State 的引用；§7「SETTABLE 值烧不出」一行和
   `emitLoadK` 等处「字符串常量在编译期是占位」的说法是旧的，连同由它而来的两处限制记在 [#365](https://github.com/Liam0205/wangshu/issues/365)）。
   表里的键 -0 存成 +0，所以常量是 -0 时按 +0 的位比对（`constKey`）；P4 取常量键的地方没有这一步，记在 [#366](https://github.com/Liam0205/wangshu/issues/366)。
-  GETGLOBAL / SETGLOBAL 没有改：全局表不会被回收，键换节点时它的 gen 一定推进。
+  GETGLOBAL / SETGLOBAL 没有改：全局表不会被回收，它的一个节点里的键只有在 gen 推进之后才会变（键被挪走，或者已删除的节点被别的键接管）。
 - **验证**：
   - `internal/gibbous/wasm` 的 `TestPW5_InlineSlotGuards`：在线性内存里手工摆出表，对七种内联写法（GETTABLE / SETTABLE 的常量键数组、寄存器键数组、哈希，SELF 的哈希）
     各给出命中和不该命中的表（哈希的三种写法各有一个常量是 -0、节点里是 +0 的命中用例），共 44 个子用例，逐个检查助手被调用的次数、每个寄存器和槽位的值。换回修改前的 `translate_table.go`，27 个不该命中的子用例全部失败。
