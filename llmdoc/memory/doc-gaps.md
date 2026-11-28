@@ -17,9 +17,9 @@
 - **【未修，产品缺陷】弱表模式在 `setmetatable` 时缓存** — `setmetatable` 读一次 `__mode` 写进表头，之后改元表的 `__mode` 不起作用；
   官方每次回收都重新读，07 §13.2 和 06 §8.4 第 1 点写的也是标记时读。见 [#367](https://github.com/Liam0205/wangshu/issues/367)。
 
-- **【已完成 2026-11-28，#363】`Table.Preallocate` 扩大数组部分时不迁移哈希部分里的整数键** — 扩大数组部分改走 `resizeArray`（`internal/crescent/rawtable.go`）：哈希部分按原大小重建，
-  每个有值的条目重新插入，落进新范围的整数键进数组部分。`test/api` 的 `TestPreallocate_KeepsIntegerKeysFromTheHashPart`、`TestPreallocate_KeepsEveryKindOfKey` 和
-  `internal/crescent` 的 `TestResizeArray_*` 固定。
+- **【已完成 2026-11-28，#363】`Table.Preallocate` 扩大数组部分时不迁移哈希部分里的整数键** — 扩大数组部分改走 `growArray`（`internal/crescent/rawtable.go`）：换一块更大的数组，
+  哈希部分里落进新范围的整数键把值搬进数组部分，原节点变成已删除，其余节点不动，所以没有键要搬时不影响正在进行的遍历。`test/api` 的 `TestPreallocate_*` 和
+  `internal/crescent` 的 `TestGrowArray_*` 固定。
 
 - **【已完成 2026-11-28，#362 / #364】表被回收、地址被新表重用之后，内联路径认错表** — P3 的 GETTABLE / SETTABLE / SELF 内联路径和解释器的内联缓存按「地址相同、gen 相同」认表，
   原来那张表被回收之后，新建的表可以落在同一个地址上、gen 也相同。P3 的三条内联路径现在检查固化的下标在拿到的这张表之内，哈希部分还比对节点里的键；
