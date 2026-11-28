@@ -1275,7 +1275,9 @@ arena 大小跟着比例变。`TestTiered_StdlibNames` 加一段
   - `internal/crescent` 的 `TestIC_NodeHitOnATableAtAReusedAddress`：A 的字段数 2 到 8、B 的 0 到 4、C 另外的 0 到 4，每一种都执行读和写并检查三个结果；
     同时用内部接口检查「缓存指着 B 的地址和 gen、下标在 B 之外、不看大小的读取在那里找到这个键」这个布局有没有出现，一种都没有出现时测试失败。
     现在有 2 种大小出现这个布局，去掉修复时这 2 种的读、写和 C 的值都错。
-  - `test/difftest` 的 `TestDiff_FieldOfATableAtAReusedAddress`：公开 API 上同样的脚本，336 种大小和读写的组合，出现布局的几种另外与 `lua5.1` 比较；去掉修复有 4 个失败。
+  - `test/difftest` 的 `TestDiff_FieldOfATableAtAReusedAddress`：公开 API 上的脚本（表和函数都是主代码块的局部变量，分配顺序与上一个测试的脚本不同），336 种大小和读写的组合，
+    每一种都断言 B 落在 A 原来的地址上，B 有 1 个字段、C 没有另外字段的几种还与 `lua5.1` 比较；去掉修复有 4 个失败。C 的节点是不是正好在缓存的下标指的位置，脚本看不到，
+    这一点由上一个测试用内部接口检查。
   - 变异 5 种（`NodeIfInside` 去掉节点块的检查、去掉 `hmask` 的检查、放宽一格；`icGetTable`、`icSetTable` 各自改回不检查）：每一种至少有一个测试失败，
     去掉节点块检查的那一种只有 `TestNodeIfInside` 能发现。
   - 耗时：只有字段读写的循环（2000 万轮，每轮两次读、一次写），五次里最短的一次，修改前 1.27 到 1.30 秒，修改后 1.21 秒。修改后键和值在一次调用里取出，
