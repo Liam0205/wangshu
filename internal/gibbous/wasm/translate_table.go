@@ -30,6 +30,7 @@ import (
 	"sync/atomic"
 
 	"github.com/Liam0205/wangshu/internal/bytecode"
+	"github.com/Liam0205/wangshu/internal/value"
 )
 
 // icSnapshot is the compile-time-frozen IC snapshot (read race-tolerantly from
@@ -337,13 +338,18 @@ func (c *Compiler) emitSlotInTable(em *emitter, snap icSnapshot, key uint64) {
 	em.brIf(0)
 }
 
-// constKey returns the constant an RK operand names, or 0 for a register
-// operand (an ArrayHit with a register key matches the key at run time).
+// constKey returns the constant an RK operand names, in the form a table
+// stores it as a key (-0 is stored as +0), or 0 for a register operand (an
+// ArrayHit with a register key matches the key at run time).
 func constKey(proto *bytecode.Proto, rk int) uint64 {
 	if !bytecode.IsK(rk) {
 		return 0
 	}
-	return uint64(proto.Consts[bytecode.KIdx(rk)])
+	k := proto.Consts[bytecode.KIdx(rk)]
+	if value.IsNumber(k) && value.AsNumber(k) == 0 {
+		return uint64(value.NumberValue(0))
+	}
+	return uint64(k)
 }
 
 // emitArrayKeyMatch emits the numeric match for a register-key ArrayHit:
@@ -485,8 +491,8 @@ func (c *Compiler) emitSetTable(em *emitter, proto *bytecode.Proto, ins bytecode
 // The self transfer R(A+1):=R(B) must precede the IC lookup (execute.go:136);
 // A+1≠B, so there is no conflict. The IC lookup is isomorphic to GETTABLE;
 // miss → h_self (the helper performs the self transfer, idempotent). The
-// method-name key is usually a string constant → NodeHit const-key (skips key
-// matching).
+// method-name key is usually a string constant → NodeHit, which compares the
+// key in the node with the constant.
 func (c *Compiler) emitSelf(em *emitter, proto *bytecode.Proto, ins bytecode.Instruction, pc int32) {
 	a := int32(bytecode.A(ins))
 	b := int32(bytecode.B(ins))
