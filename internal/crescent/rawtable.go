@@ -23,10 +23,13 @@
 //   - gen contract: BumpGen on every path that takes a LIVE node's value
 //     away or changes which key a node holds: rehash, Brent relocation and
 //     the takeover of a DEAD node in insertNewKey, key deletion in rawSet,
-//     and the collector clearing weak entries and replacing the keys of
-//     DEAD nodes. Storing a value into a DEAD node and placing a new key
-//     into a FREE node need no bump: ICs only snapshot LIVE nodes, and
-//     every path out of LIVE through this file or the collector bumps. The
+//     and the collector clearing weak entries of the hash part and
+//     replacing the keys of DEAD nodes. Storing a value into a DEAD node
+//     and placing a new key into a FREE node need no bump: ICs only
+//     snapshot LIVE nodes, and every path out of LIVE through this file or
+//     the collector bumps. An array slot set to nil, by rawSet or by the
+//     collector clearing a weak value, does not bump either: the slot keeps
+//     its key, and the array consumers check the slot's value. The
 //     interpreter's icGetTable re-verifies NodeKey on every hit, but the
 //     gen-only inline consumers bake the slot index and trust gen alone: P4
 //     native GETGLOBAL/SETGLOBAL NodeHit, P3 wasm GETGLOBAL/SETGLOBAL
