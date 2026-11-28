@@ -31,7 +31,11 @@
 //     gen-only inline consumers bake the slot index and trust gen alone: P4
 //     native GETGLOBAL/SETGLOBAL NodeHit, P3 wasm GETGLOBAL/SETGLOBAL
 //     NodeHit, and P3 wasm constant-key GETTABLE/SETTABLE/SELF NodeHit (wasm
-//     tableInlineable). A missing bump there reads another key's value.
+//     tableInlineable). A missing bump there reads another key's value. The
+//     P4 single-access templates for the array part (jit/amd64 and jit/arm64
+//     pj4_template.go, EmitGetTableArrayHit / EmitSetTableArrayHit /
+//     EmitSelfArrayHit) have no key to compare and compare no table identity
+//     either: gen is all that says the baked index lies in the array part.
 //     An unchanged gen does not say that a node still holds a value: P3
 //     wasm emitSetGlobal stores Nil inline, making a node DEAD with no bump,
 //     and a consumer that does not compare the table's identity can be
