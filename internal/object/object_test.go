@@ -310,8 +310,9 @@ func TestObjectSizeFormulas(t *testing.T) {
 func TestNodeIfInside(t *testing.T) {
 	a := arena.New(arena.Options{})
 	tbl := AllocTable(a, 0, 4)
-	// A second table's nodes follow tbl's in the arena, so an index past
-	// tbl's block finds a key there if nothing stops it.
+	// A second table follows tbl in the arena, its head and then its nodes,
+	// so an index far enough past tbl's block finds a key there if nothing
+	// stops it.
 	next := AllocTable(a, 0, 4)
 	key := value.NumberValue(7)
 	for i := uint32(0); i < 4; i++ {
