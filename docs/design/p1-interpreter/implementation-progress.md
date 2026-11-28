@@ -1326,6 +1326,9 @@ arena 大小跟着比例变。`TestTiered_StdlibNames` 加一段
     之后的读写结果正确。直接调用宿主函数的函数不会被编译，所以经元方法进宿主；用 `__add` 而不用 `__index`，是因为 linux/arm64 的 P4 构建里
     循环体访问带 `__index` 的表时这个函数不升层，用 `__add` 时 P3、P4 在两个架构上都升层）。
   - `internal/crescent` 的 `TestGrowArray_TraversalFromARemovedIntegerKey`：站在已清掉的整数键 5 上扩大数组部分，接下去的遍历把 11 个条目各返回一次。
+  - `internal/crescent` 的 `TestRawTable_ModelCheckWithGrowArray`：随机模型比对（40 个种子各 3000 步的写入、删除、回收、边遍历边清空）里随机插入 `growArray`，
+    每一步之后与 Go map 比对读取和遍历，并检查哈希部分的结构；`checkNodeInvariants` 新增一项「数组范围内的键在哈希部分没有有值的节点」。
+    不搬键、不清原节点、不复制旧数组三种变异下这个测试失败。
   - 变异 7 种，每一种都有测试失败：换回修改前的 `alloc.go`（默认构建里 5 个 API 测试失败，P3、P4 构建里 `TestPreallocate_CompiledAccessAfterwards`、`TestPreallocate_DuringCompiledLoop` 也失败）；
     换成重建哈希部分的写法（`TestGrowArray_MovesHashIntegerKeys`、`TestGrowArray_TraversalGoesOn`、`TestGrowArray_TraversalWhenKeysMove`、`TestPreallocate_DuringForEach` 失败）；
     不搬键；搬了值但不清原节点；不推进 gen；不复制旧数组；先改表头再分配。
