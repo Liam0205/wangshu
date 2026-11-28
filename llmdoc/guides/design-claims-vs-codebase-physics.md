@@ -66,7 +66,7 @@ NodeHit;有 NodeKey 比对的是 P4 amd64/arm64 的 GETTABLE/SETTABLE NodeHit(am
 每一行都有「slot != Nil」；固化了下标、访问的又不是全局表的消费者，还要检查下标在拿到的这张表之内。删除时不 bump 可以让同一张表的内联路径在删除之后继续有效，要不要这样改
 记在 [[doc-gaps]]。
 
-**gen-only consumer 清单**(与上面 producer 表配对,改任何一侧都要对照另一侧。SET 类消费者里,P4 的
+**内联 consumer 清单**(只靠 gen 的和另有校验的都列在这里;与上面 producer 表配对,改任何一侧都要对照另一侧。SET 类消费者里,P4 的
 SETGLOBAL / SETTABLE NodeHit 和 P3 wasm 常量键 SETTABLE NodeHit 还会检查要写入的新值 != Nil,P3 wasm
 `emitSetGlobal` **没有**这道检查——就是上表最后一行记的那个不对称;新值检查只与删除语义有关、与 gen 别名
 无关,所以守卫列一律不列它):
