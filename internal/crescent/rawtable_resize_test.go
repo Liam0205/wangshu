@@ -430,6 +430,23 @@ func TestGrowArray_SlotsAreKeptUntilTheNextRehash(t *testing.T) {
 		}
 	}
 
+	// The key whose store makes the table rehash counts: with 1, 2, 5 and 6 in a table without a
+	// hash part, storing 7 leaves 8 slots (five of 1..8 are in use), where the four keys alone
+	// would leave 2.
+	st = New()
+	tbl = st.allocTable(0, 0)
+	st.growArray(tbl, 6)
+	for _, i := range []int{1, 2, 5, 6} {
+		_ = st.rawSet(tbl, num(i), num(i))
+	}
+	if got := asize(st, tbl); got != 6 {
+		t.Fatalf("setup: the array part has %d slots after stores inside it, want 6", got)
+	}
+	_ = st.rawSet(tbl, num(7), num(7))
+	if got := asize(st, tbl); got != 8 {
+		t.Errorf("after 1, 2, 5, 6 and the store of 7 the array part has %d slots, want 8", got)
+	}
+
 	// Filled slots: a rehash keeps an array part that the integer keys fill more than half.
 	st = New()
 	tbl = st.NewLibTable(0)
