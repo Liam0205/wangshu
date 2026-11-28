@@ -17,6 +17,9 @@
 - **【未修，产品缺陷】弱表模式在 `setmetatable` 时缓存** — `setmetatable` 读一次 `__mode` 写进表头，之后改元表的 `__mode` 不起作用；
   官方每次回收都重新读，07 §13.2 和 06 §8.4 第 1 点写的也是标记时读。见 [#367](https://github.com/Liam0205/wangshu/issues/367)。
 
+- **【未修，过时的说明和测试】「逐个 `SetIndex` 建表是 O(N²)」** — `NewArrayTable` 的 godoc、`embedding-contract.md` 和 `test/api/table_preallocate_test.go` 里的这个说法与实测不符，
+  两个 `FixesQuadraticBuild` 测试在预留失效时也通过。见 [#374](https://github.com/Liam0205/wangshu/issues/374)。
+
 - **【已完成 2026-11-28，#363】`Table.Preallocate` 扩大数组部分时不迁移哈希部分里的整数键** — 扩大数组部分改走 `growArray`（`internal/crescent/rawtable.go`）：换一块更大的数组，
   哈希部分里落进新范围的整数键把值搬进数组部分，原节点变成已删除，其余节点不动，正在进行的遍历不报错、会结束（会看到什么写在 `Table.Preallocate` 的 godoc 里）。`test/api` 的 `TestPreallocate_*` 和
   `internal/crescent` 的 `TestGrowArray_*` 固定。
