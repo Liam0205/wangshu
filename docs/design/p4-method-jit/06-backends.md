@@ -391,6 +391,9 @@ mov  rax, [tableArrayBase + 8*SNAP_INDEX]  ; 命中:直达槽 load
 mov  [rbx + 8*A], rax
 ```
 
+> **实现现状**：上面是设计期的示意。单条表访问的模板不比对 tableRef，实际检查的是 gen、下标在这张表之内（哈希部分另外比对节点里的键）和槽位不是 nil，
+> 见 [03-speculation-ic](./03-speculation-ic.md) §2.3 末尾的「单条表访问的模板实际检查的内容」。
+
 `SETTABLE` 同理,但需多一步「写屏障」逻辑——望舒值世界全在 arena,无 Go GC 写屏障义务(承 [./05-system-pipeline.md](./05-system-pipeline.md) §1「白赚」),但**自管 GC 的 mark-sweep**仍可能要标记表为「脏」(承 [../p1-interpreter/06-memory-gc.md](../p1-interpreter/06-memory-gc.md) §7)。
 
 **通用模板**:`FBTableMega` / IC 失效 → `h_gettable` helper(与 P3 相同的慢路径)。`NEWTABLE` 走 helper(分配是慢路径);`SETLIST` 多值边界(`B=0`/`C=0`)需跨 opcode 维护 top,直接走 helper。沿用 P3 PW5 同样的保守裁决。
