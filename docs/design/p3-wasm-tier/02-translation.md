@@ -640,10 +640,11 @@ type ICSlot struct {
 
 - 实现现状：内联的范围和检查链以 [implementation-progress §7 的对账表和 §15](./implementation-progress.md) 为准。常量键和寄存器键的 ArrayHit、常量键的 NodeHit 走内联，
   检查链是「IsTable + 同表 + 同代次 + 下标在这张表之内 + 同键」：同表同代次不足以认定是原来那张表（地址会被新表重用，#362），所以下标和键都要对着拿到的这张表检查。
-- 关键设计:快路径检查链是「IsTable + 同表 + 同代次 + 同键」,与 ic.go `icGetTable` 的 IC 命中校验**完全一致**——这是**语义分发非投机**(承 ../p3-wasm-tier §3.1),失败走 `$h_gettable` 助手得到正确结果(完整查找 + 回填 IC + __index 链),零 deopt。
-- 三层校验对应 ic.go 的字段比对:
+- 关键设计:快路径检查链是「IsTable + 同表 + 同代次 + 下标在表内 + 同键」,与 ic.go `icGetTable` 的 IC 命中校验**完全一致**——这是**语义分发非投机**(承 ../p3-wasm-tier §3.1),失败走 `$h_gettable` 助手得到正确结果(完整查找 + 回填 IC + __index 链),零 deopt。
+- 各项校验对应 ic.go 的字段比对:
   - `slot.TableRef == uint32(t)` → Wasm `gcref_low32(vt) == SNAP_TABLEREF`。
   - `slot.Shape == object.TableGen(arena, t)` → Wasm `table_gen(vt) == SNAP_GEN`。
+  - 下标在表内：array hit 由 `arrayIndex(key, asize)` 按表当前的 `asize` 算出下标，node hit 是 `object.NodeIfInside`（`index <= hmask`，而且表有节点块）→ Wasm 的 `emitSlotInTable`。
   - array hit: `arrayIndex(key) == slot.Index`;node hit: `keyEqual(NodeKey(slot.Index), key)` → Wasm `$ic_key_match`。
 - 「槽值 nil 退慢路径」对应 ic.go `icGetTable` 两处命中的 `v != value.Nil` 守卫——槽位虽命中但值为 nil 时,Lua 语义要查 `__index`(可能 metatable 有此键),故退慢路径。Wasm 侧 `if (i64.ne vb nil)` 守卫与之相同。
 - `$h_gettable` 助手:`func(base int32, pc int32, a int32, b int32, c int32) int32`,内部 `tbl := reg(B); key := rk(C); v, e := st.icGetTable(...); setReg(A, v)`——完全复用 execute.go 98-108 行的 GETTABLE 段。助手内的 `icGetTable` 也会回填 IC slot(运行期 IC 持续更新),但 gibbous 固化的快照不变(失效后该点永久走助手 ≈ 解释器无 IC,正确但慢,[06-ic-feedback-consume](./06-ic-feedback-consume.md) §1)。
