@@ -2921,8 +2921,9 @@ P1 成功、P4 抬 `SETLIST: not a table`。**根因不在 JIT 里**,而在共�
 - **修法**（`internal/gibbous/jit/amd64/pj4_template.go`、`internal/gibbous/jit/arm64/pj4_template.go`，两个架构各七个模板）：
   - gen 检查之后加下标检查。数组部分的模板比较 `asize` 与固化的下标，`asize <= index` 时走 deopt；哈希部分的模板比较 `hmask`，
     `hmask < index` 时走 deopt，取到 `nodeRef` 之后它是 0 也走 deopt（没有哈希部分的表 `hmask` 也是 0，下标 0 能通过前一项）。
-    这与按指令翻译的快路径（`emitTableNodeHitPrelude`）用的是同一组条件。模板仍然不比对是不是原来那张表：同一个函数用在以同一种
-    方式构造出来的许多张表上是常见写法，比对身份会让它们全部走慢路径。
+    这与按指令翻译的快路径（`emitTableNodeHitPrelude`）用的是同一组条件。模板仍然不比对是不是原来那张表：函数在一张或少数几张表上
+    预热、之后用到以同一种方式构造出来的别的表，是常见写法，比对身份会让后面这些表全部走慢路径（预热时就轮流用在多张表上的函数，
+    解释器的内联缓存重填 3 次之后反馈变成 megamorphic，不会选用模板）。
   - arm64 取槽位改成先把字节偏移装进寄存器、与块的起始地址相加，再用偏移 0（节点的值是 8）访问，不再受立即数范围限制。
   - 分析阶段（`compiler.go` 七处）不接受超过 `maxTemplateSlotIndex` 的下标：amd64 的模板用 32 位有符号位移取槽位，节点的值是
     `index*24+8`。
