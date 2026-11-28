@@ -9,26 +9,36 @@ import (
 	"github.com/Liam0205/wangshu/internal/value"
 )
 
-// traverse walks tbl with rawNext from start (Nil for the beginning) and returns how often each
-// key was returned. It fails the test when the traversal raises or does not end.
-func traverse(t *testing.T, st *State, tbl arena.GCRef, start value.Value) map[value.Value]int {
+// follow returns the keys that rawNext returns from start on (Nil for the beginning), in order.
+// It fails the test when the traversal raises or does not end.
+func follow(t *testing.T, st *State, tbl arena.GCRef, start value.Value) []value.Value {
 	t.Helper()
-	seen := map[value.Value]int{}
+	var keys []value.Value
 	key := start
-	for steps := 0; ; steps++ {
+	for {
 		k, _, ok, e := st.rawNext(tbl, key)
 		if e != nil {
 			t.Fatalf("next: %s", e.Msg)
 		}
 		if !ok {
-			return seen
+			return keys
 		}
-		if steps > 1000 {
+		if len(keys) > 1000 {
 			t.Fatal("the traversal does not end")
 		}
-		seen[k]++
+		keys = append(keys, k)
 		key = k
 	}
+}
+
+// traverse walks tbl like follow and returns how often each key was returned.
+func traverse(t *testing.T, st *State, tbl arena.GCRef, start value.Value) map[value.Value]int {
+	t.Helper()
+	seen := map[value.Value]int{}
+	for _, k := range follow(t, st, tbl, start) {
+		seen[k]++
+	}
+	return seen
 }
 
 // TestGrowArray_MovesHashIntegerKeys: growing the array part moves the integer keys it now covers
@@ -179,18 +189,87 @@ func TestGrowArray_TraversalGoesOn(t *testing.T) {
 	}
 }
 
-// TestGrowArray_TraversalWhenKeysMove: what a traversal returns after a growth that moved integer
-// keys, from every key it can stand on. The table has an array part, integer keys of the hash part
-// that the growth covers (9, 20, 40) and one it does not (900), and string keys.
+// growUnderTraversal grows the array part of tbl to newSize while a traversal stands on here, and
+// checks what the traversal returns from there against what it would have returned without the
+// growth:
 //
-//   - From a key of the old array part: every entry that followed, once.
-//   - From a hash key the growth does not cover: the entries that followed, without the moved ones.
-//   - From a key k of the hash part that the growth covers: the moved entries with a key above k
-//     and every entry left in the hash part, whether it came before k or after it; no moved entry
-//     with a key below k, and no entry of the old array part.
+//   - here in the array part: the same entries, the moved ones from the array part;
+//   - here in the hash part and not covered by the growth: the same entries in the same order,
+//     without the moved ones;
+//   - here in the hash part and covered by the growth: the entries that moved to a slot behind
+//     here, then every entry left in the hash part, and nothing else.
+func growUnderTraversal(t *testing.T, st *State, tbl arena.GCRef, here value.Value, newSize uint32) {
+	t.Helper()
+	oldSize := object.TableASize(st.arena, tbl)
+	all := follow(t, st, tbl, value.Nil)
+	without := follow(t, st, tbl, here)
+	covered := func(k value.Value) bool {
+		_, in := arrayIndex(k, newSize)
+		return in
+	}
+	_, hereInArray := arrayIndex(here, oldSize)
+	hereIdx, hereCovered := arrayIndex(here, newSize)
+
+	st.growArray(tbl, newSize)
+
+	var want []value.Value
+	if hereCovered {
+		// The array slots behind here, in index order, then the hash part from its start.
+		for idx := hereIdx + 1; idx < newSize; idx++ {
+			k := value.NumberValue(float64(idx + 1))
+			for _, e := range all {
+				if e == k {
+					want = append(want, k)
+				}
+			}
+		}
+		for _, k := range all {
+			if !covered(k) {
+				want = append(want, k)
+			}
+		}
+	} else {
+		for _, k := range without {
+			if !covered(k) {
+				want = append(want, k)
+			}
+		}
+	}
+	got := follow(t, st, tbl, here)
+	name := func(keys []value.Value) string {
+		out := ""
+		for _, k := range keys {
+			out += debugVal(st, k) + " "
+		}
+		return out
+	}
+	if name(got) != name(want) {
+		t.Errorf("growing to %d under a traversal standing on %s returns\n  %s\nwant\n  %s\n(without the growth: %s)",
+			newSize, debugVal(st, here), name(got), name(want), name(without))
+	}
+	if hereInArray {
+		// Stated in terms of the traversal without the growth: the same entries, once each.
+		seen := map[value.Value]int{}
+		for _, k := range got {
+			seen[k]++
+		}
+		for _, k := range without {
+			if seen[k] != 1 {
+				t.Errorf("standing on %s in the array part: %s, which would have followed, is returned %d times", debugVal(st, here), debugVal(st, k), seen[k])
+			}
+		}
+		if len(got) != len(without) {
+			t.Errorf("standing on %s in the array part: %d entries follow, %d without the growth", debugVal(st, here), len(got), len(without))
+		}
+	}
+}
+
+// TestGrowArray_TraversalWhenKeysMove: what a traversal returns after a growth that moved integer
+// keys, from every key it can stand on (growUnderTraversal states the rule). The table has an
+// array part, integer keys of the hash part that the growth covers (9, 20, 40) and one it does
+// not (900), and string keys.
 func TestGrowArray_TraversalWhenKeysMove(t *testing.T) {
 	num := func(n int) value.Value { return value.NumberValue(float64(n)) }
-	const oldSize, newSize = 4, 64
 	// build returns the table and its keys in the order of a traversal. Every build lays the
 	// table out the same way, so position i names the same entry in each of them.
 	build := func() (*State, arena.GCRef, []value.Value) {
@@ -204,68 +283,42 @@ func TestGrowArray_TraversalWhenKeysMove(t *testing.T) {
 		for i := 0; i < 6; i++ {
 			_ = st.rawSet(tbl, st.makeStringValue(fmt.Sprintf("k%d", i)), num(i))
 		}
-		if got := object.TableASize(st.arena, tbl); got != oldSize {
-			t.Fatalf("setup: array part has %d slots, want %d", got, oldSize)
+		if got := object.TableASize(st.arena, tbl); got != 4 {
+			t.Fatalf("setup: array part has %d slots, want 4", got)
 		}
-		var keys []value.Value
-		key := value.Nil
-		for {
-			k, _, ok, e := st.rawNext(tbl, key)
-			if e != nil {
-				t.Fatal(e.Msg)
-			}
-			if !ok {
-				break
-			}
-			keys = append(keys, k)
-			key = k
-		}
+		keys := follow(t, st, tbl, value.Nil)
 		if len(keys) != 14 {
 			t.Fatalf("setup: the traversal returns %d entries, want 14", len(keys))
 		}
 		return st, tbl, keys
 	}
-	covered := func(k value.Value) bool {
-		idx, in := arrayIndex(k, newSize)
-		return in && idx >= oldSize
-	}
+
+	// One growth, standing on each key; the second pass removes that key's entry first, as a
+	// traversal may.
 	for at := 0; at < 28; at++ {
 		st, tbl, keys := build()
-		// The second half removes the entry the traversal stands on before the growth, as a
-		// traversal may; what follows is the same.
-		remove := at >= 14
-		at := at % 14
-		here := keys[at]
-		if remove {
+		here := keys[at%14]
+		if at >= 14 {
 			_ = st.rawSet(tbl, here, value.Nil)
 		}
+		growUnderTraversal(t, st, tbl, here, 64)
+	}
 
-		st.growArray(tbl, newSize)
-
-		want := map[value.Value]bool{}
-		for i, k := range keys {
-			switch {
-			case i == at:
-			case at < oldSize: // from a key of the old array part
-				want[k] = i > at
-			case !covered(here): // from a hash key that stays
-				want[k] = i > at && !covered(k)
-			default: // from a hash key the growth covers
-				want[k] = i >= oldSize && (!covered(k) || value.AsNumber(k) > value.AsNumber(here))
-			}
-		}
-		got := traverse(t, st, tbl, here)
-		for k, wanted := range want {
-			switch n := got[k]; {
-			case wanted && n != 1:
-				t.Errorf("from %s (removed: %v): %s is returned %d times, want once", debugVal(st, here), remove, debugVal(st, k), n)
-			case !wanted && n != 0:
-				t.Errorf("from %s (removed: %v): %s is returned, which the rule leaves out", debugVal(st, here), remove, debugVal(st, k))
-			}
-		}
-		if n := got[here]; n != 0 {
-			t.Errorf("from %s: the key itself is returned again", debugVal(st, here))
-		}
+	// A second growth later in the same traversal. The first one, to 16 slots while standing on
+	// key 9, sends the traversal through the hash part again, so entries it has returned are
+	// among those that follow; the rule holds from wherever it then stands.
+	first := func() (*State, arena.GCRef, []value.Value) {
+		st, tbl, _ := build()
+		growUnderTraversal(t, st, tbl, num(9), 16)
+		return st, tbl, follow(t, st, tbl, num(9))
+	}
+	_, _, rest := first()
+	if len(rest) != 9 {
+		t.Fatalf("setup: %d entries follow the first growth, want the 9 left in the hash part", len(rest))
+	}
+	for j := range rest {
+		st, tbl, rest := first()
+		growUnderTraversal(t, st, tbl, rest[j], 64)
 	}
 }
 
