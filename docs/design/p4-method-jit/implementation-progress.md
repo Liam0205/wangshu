@@ -2946,7 +2946,8 @@ P1 成功、P4 抬 `SETLIST: not a table`。**根因不在 JIT 里**,而在共�
   - `internal/gibbous/jit` 的 `TestPJ4Templates_Execute` 把七个模板编成机器码，在手工搭的 arena 上执行：每个模板 10 种表
     （下标在表内、正好等于大小、大于大小、表没有这一部分，以及 arm64 立即数编码不了的几个下标），共 70 个子用例，检查返回值、
     寄存器和 arena 里的每一个字。linux/amd64 直接执行，linux/arm64 用 qemu-aarch64 执行，都通过。换回修改前的模板，amd64 上 28 个
-    子用例失败，arm64 上 49 个失败。
+    子用例失败，arm64 上 49 个失败。只有 `archMmapCode` 是桩实现的构建（darwin/amd64、不带 cgo 的 darwin/arm64）跳过这个测试，
+    其余构建拿不到可执行页算失败。
   - `test/difftest` 的 `TestTiered_TemplateOnShorterTable`（6 段脚本：从更短的表、空表读，往更短的表写，表分别用定长构造式、
     `{...}`、`{f()}` 建出来）和 `TestTiered_TemplateFarSlot`（4 段脚本：读、写数组部分第 5000 和第 8193 个元素；对一张 1500 个字段
     的表，每个字段各编译一个读函数和一个写函数，不管哪个键落在 1365 号节点附近都在其中）按「只用解释器／预热后强制升层／一开始就
