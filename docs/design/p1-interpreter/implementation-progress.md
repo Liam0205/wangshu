@@ -1283,6 +1283,21 @@ arena 大小跟着比例变。`TestTiered_StdlibNames` 加一段
   - 耗时：只有字段读写的循环（2000 万轮，每轮两次读、一次写），五次里最短的一次，修改前 1.27 到 1.30 秒，修改后 1.21 秒。修改后键和值在一次调用里取出，
     读表头的次数与原来相同。
 
+## 2026-11-28：`Table.Preallocate` 扩大数组部分时把落进新范围的整数键搬过去（#363）
+
+- **现象**（只影响 Go 嵌入方，脚本碰不到这个入口）：`t.SetIndex(5, v)` 时键 5 在哈希部分，接着 `t.Preallocate(10)`，之后 `t.GetIndex(5)` 读到 nil，
+  `t.ForEach` 反复产出键 5，回调不返回 false 就不结束。
+- **原因**：`internal/crescent/alloc.go` 的 `PreallocateArray` 只换一块更大的数组、把旧数组复制过去，哈希部分不动。按整数键查找时，落在数组范围内的键只看数组部分；
+  `rawNext` 把键 5 当成数组下标，从数组的第 6 格继续，走完数组进哈希部分又遇到键 5。
+- **修法**：`internal/crescent/rawtable.go` 新增 `resizeArray`，做法与官方的 `luaH_resizearray` 相同：数组部分换成新大小、旧内容保留，哈希部分按原来的大小重建，
+  每个有值的条目重新插入，落进新范围的整数键进数组部分；已删除的节点不带过去。只扩大不缩小，没有扩大时直接返回、不推进 gen。`PreallocateArray` 改成调用它。
+- **验证**：
+  - `internal/crescent` 的 `TestResizeArray_MovesHashIntegerKeys`（整数键搬进数组部分，字符串键和非整数键留在哈希部分，哈希部分里不再有属于数组部分的键，遍历正好 5 个条目）、
+    `TestResizeArray_KeepsArrayAndNeverShrinks`、`TestResizeArray_DropsRemovedKeys`（已删除的节点不带过去，之后同一个键写回去能读到）。
+  - `test/api` 的 `TestPreallocate_KeepsIntegerKeysFromTheHashPart`、`TestPreallocate_KeepsEveryKindOfKey`（数组范围内外的整数键、字符串键、非整数键，读取、`Len` 和 `ForEach`）。
+    在修改前的代码上两个测试都失败：范围内的键读到 0，`ForEach` 到回调设的上限 100 才停。
+  - 原有的 `TestPreallocate_FixesQuadraticBuild` 仍然通过：先 `Preallocate` 再逐个 `SetIndex` 的用法里哈希部分是空的，重建没有代价。
+
 ## 相关
 
 [00-overview](./00-overview.md) · [../engineering](../engineering.md) ·
