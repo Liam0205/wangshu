@@ -1193,7 +1193,7 @@ arena 大小跟着比例变。`TestTiered_StdlibNames` 加一段
   不同的那一种情况（见下）。`TestDiff_NextFromKeysOfClearedEntries`、`TestRemovedStringKeysOfWeakValuedTable` 固定弱表上两种已删除节点
   各自的结果，`TestDiff_InsertionsAfterClearedEntries` 固定「回收器清掉过条目的表里再插入新键，结果随回收时机变化」（弱表上两边相同；
   变成强表之后望舒仍随回收变化），`TestDiff_NextFromRuntimeHeldKeysOfClearedEntries`、`TestDiff_NextFromDebugNamesOfClearedEntries` 固定键是官方另有引用的字符串
-  （库表和注册表里的名字、函数原型里的源名和局部变量名）时两边各自的结果，`TestDiff_NextFromConstantsOfDroppedChunks` 固定键是已经丢掉的
+  （库表和注册表里的名字、函数原型里的源名和局部变量名、只被另一张弱表引用的字符串，最后一种是 `TestDiff_NextFromKeysHeldByWeakTables`）时两边各自的结果，`TestDiff_NextFromConstantsOfDroppedChunks` 固定键是已经丢掉的
   代码块的字符串常量（望舒一直让它存活，[#359](https://github.com/Liam0205/wangshu/issues/359)）时望舒一侧的结果，
   `TestDiff_NextFromKeysRemovedFromAnotherTable` 固定键在别的表里被赋 nil 删过（望舒由那张表的节点保活）时望舒一侧的结果。
 - `test/api`：`TestTableForEach_ClearingEntries`；`TestTableForeach_PanicInCallbackReleasesTheValue`（`table.foreach` 的回调里 arena 用尽，
@@ -1219,7 +1219,7 @@ arena 大小跟着比例变。`TestTiered_StdlibNames` 加一段
   `TestDiff_NextFromKeysOfClearedEntries` 固定望舒一侧的结果。键是官方永远不回收的字符串（保留字、`ltm.c` 列的元方法名、`"not enough memory"`）时，官方的 `next` 总是成功，
   望舒里这个字符串没有别的引用时报错（`__index` 这样另有引用的两边都成功），这一种修改前就有，`TestDiff_NextFromFixedKeysOfClearedEntries` 固定两边各自的结果。
   更一般地，一个字符串在两边是否另有引用不一定相同，被清掉的条目上 `next` 的结果随之不同，两个方向都有：官方的库表、`package` 表、注册表
-  和函数原型的调试信息（源名、局部变量名、upvalue 名）引用着望舒没有引用的字符串，这时官方成功、望舒报错；望舒让加载过的每个代码块的字符串常量
+  和函数原型的调试信息（源名、局部变量名、upvalue 名）引用着望舒没有引用的字符串，官方的弱表也从不清字符串（[#348](https://github.com/Liam0205/wangshu/issues/348)），这时官方成功、望舒报错；望舒让加载过的每个代码块的字符串常量
   一直存活（[#359](https://github.com/Liam0205/wangshu/issues/359)），别的表里赋 nil 删掉的键也由那张表的节点保活（本条开头的保活对每张表都生效，
   官方的已删除节点不算引用），这两种情况望舒成功。
 - 上面第 6 条。`TestDiff_NextOnRemovedKeyAfterStores` 固定十段脚本两边各自的结果：前三段的原因是布局，#349 解决之后应当变成两边
