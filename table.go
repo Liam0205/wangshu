@@ -198,7 +198,8 @@ func (st *State) NewStringArrayTable(vals []string) Value {
 // power of two m, 2^24 at most, such that more than half of 1..m is in use,
 // and to nothing when there is no such m. Slots beyond m are given up, empty
 // or not; the entries in them go to the hash segment. Fill 1..n before adding
-// other keys.
+// other keys: a reservation that is given up before it is used makes the
+// build slower than no reservation.
 //
 // Calling it on a table that is being traversed (from a ForEach callback, or
 // from a host function a script calls inside a pairs loop) is safe: the
