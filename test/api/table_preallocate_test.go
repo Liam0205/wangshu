@@ -1,6 +1,7 @@
 package api_test
 
 import (
+	"strconv"
 	"testing"
 	"time"
 
@@ -253,6 +254,123 @@ func TestPreallocate_KeepsIntegerKeysFromTheHashPart(t *testing.T) {
 	}
 }
 
+// stringKeyed returns a table with n string keys k0..k(n-1), each holding its index.
+func stringKeyed(st *wangshu.State, n int) wangshu.Value {
+	tv := st.NewTable()
+	for i := 0; i < n; i++ {
+		_ = tv.AsTable().Set(wangshu.String("k"+strconv.Itoa(i)), wangshu.Number(float64(i)))
+	}
+	return tv
+}
+
+// TestPreallocate_DuringForEach: growing the array part from inside a ForEach callback does not
+// disturb the traversal when no integer key has to move. Every entry is visited once, whether the
+// callback only grows the table or also clears the entry it was given, as ForEach allows.
+func TestPreallocate_DuringForEach(t *testing.T) {
+	for _, clear := range []bool{false, true} {
+		st := wangshu.NewState(wangshu.Options{})
+		tv := stringKeyed(st, 20)
+		tt := tv.AsTable()
+		seen := map[string]int{}
+		n := uint32(16)
+		err := tt.ForEach(func(k, _ wangshu.Value) bool {
+			seen[k.Str()]++
+			if clear {
+				_ = tt.Set(k, wangshu.Nil())
+			}
+			n += 8
+			if e := tt.Preallocate(n); e != nil {
+				t.Errorf("Preallocate: %v", e)
+			}
+			return len(seen) < 100
+		})
+		if err != nil {
+			t.Errorf("clearing %v: ForEach: %v", clear, err)
+		}
+		if len(seen) != 20 {
+			t.Errorf("clearing %v: ForEach visited %d distinct keys, want 20", clear, len(seen))
+		}
+		for k, c := range seen {
+			if c != 1 {
+				t.Errorf("clearing %v: key %s was visited %d times", clear, k, c)
+			}
+		}
+		left := 0
+		_ = tt.ForEach(func(_, _ wangshu.Value) bool { left++; return left < 100 })
+		if want := map[bool]int{false: 20, true: 0}[clear]; left != want {
+			t.Errorf("clearing %v: %d entries are left, want %d", clear, left, want)
+		}
+		tv.Release()
+	}
+}
+
+// TestPreallocate_DuringForEachWithIntegerKeys: when the growth has integer keys to move, a
+// traversal in progress still ends, and afterwards the table holds what it held.
+func TestPreallocate_DuringForEachWithIntegerKeys(t *testing.T) {
+	st := wangshu.NewState(wangshu.Options{})
+	tv := stringKeyed(st, 20)
+	defer tv.Release()
+	tt := tv.AsTable()
+	for _, i := range []int{5, 9, 300} {
+		_ = tt.SetIndex(i, wangshu.Number(float64(i)))
+	}
+	calls, grown := 0, false
+	err := tt.ForEach(func(_, _ wangshu.Value) bool {
+		calls++
+		if !grown {
+			grown = true
+			_ = tt.Preallocate(16)
+		}
+		return calls < 1000
+	})
+	if err != nil {
+		t.Errorf("ForEach: %v", err)
+	}
+	if calls >= 1000 {
+		t.Errorf("the traversal did not end after the table grew under it")
+	}
+	n, sum := 0, 0.0
+	_ = tt.ForEach(func(_, v wangshu.Value) bool { n++; sum += v.Number(); return n < 1000 })
+	if n != 23 || sum != 190+5+9+300 {
+		t.Errorf("after the growth the table has %d entries adding up to %v, want 23 and 504", n, sum)
+	}
+}
+
+// TestPreallocate_FailureLeavesTheTableAlone: a growth the arena has no room for panics before
+// anything about the table has changed, so a caller that recovers still has every entry.
+func TestPreallocate_FailureLeavesTheTableAlone(t *testing.T) {
+	st := wangshu.NewState(wangshu.Options{MaxArenaBytes: 256 * 1024})
+	tv := stringKeyed(st, 20)
+	defer tv.Release()
+	tt := tv.AsTable()
+	_ = tt.SetIndex(5, wangshu.Number(55))
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Error("expected a panic from a Preallocate beyond MaxArenaBytes")
+			}
+		}()
+		_ = tt.Preallocate(100_000)
+	}()
+	if got := tt.GetIndex(5).Number(); got != 55 {
+		t.Errorf("t[5] = %v after the failed Preallocate, want 55", got)
+	}
+	n := 0
+	if e := tt.ForEach(func(_, _ wangshu.Value) bool { n++; return n < 1000 }); e != nil {
+		t.Errorf("ForEach: %v", e)
+	}
+	if n != 21 {
+		t.Errorf("ForEach visited %d entries after the failed Preallocate, want 21", n)
+	}
+	// A growth that fits still works afterwards.
+	if e := tt.Preallocate(16); e != nil {
+		t.Fatalf("Preallocate(16): %v", e)
+	}
+	if got := tt.GetIndex(5).Number(); got != 55 {
+		t.Errorf("t[5] = %v after Preallocate(16), want 55", got)
+	}
+}
+
 // TestPreallocate_KeepsEveryKindOfKey: growing the array part over a table that already has
 // integer keys on both sides of the new size, a string key and a non-integer key leaves every
 // entry readable, the length right, and the traversal complete.
@@ -291,5 +409,63 @@ func TestPreallocate_KeepsEveryKindOfKey(t *testing.T) {
 	}
 	if n != 10 || sum != 843 {
 		t.Errorf("ForEach visited %d entries with values adding up to %v, want 10 and 843", n, sum)
+	}
+}
+
+// TestPreallocate_ScriptAccessAfterwards: script code that has read and written an integer key of
+// the hash part many times reads and writes the same key correctly after a host function grew the
+// array part over it. (The accesses are cached by node; the cache has to stop matching once the
+// key's value has moved into the array part.)
+func TestPreallocate_ScriptAccessAfterwards(t *testing.T) {
+	st := wangshu.NewState(wangshu.Options{})
+	tv := st.NewTable()
+	defer tv.Release()
+	tt := tv.AsTable()
+	_ = tt.SetIndex(5, wangshu.Number(50))
+	_ = tt.Set(wangshu.String("x"), wangshu.Number(8))
+	st.SetGlobal("T", tv)
+	st.Register("grow", func(*wangshu.State, []wangshu.Value) ([]wangshu.Value, error) {
+		return nil, tt.Preallocate(10)
+	})
+	prog, err := wangshu.Compile([]byte(`
+		local t = T
+		local function get() return t[5] end
+		local function set(v) t[5] = v end
+		local a
+		for i = 1, 1000 do set(50) a = get() end
+		grow()
+		local b = get()
+		set(77)
+		local c = get()
+		return a, b, c
+	`), "preallocate")
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	r, err := prog.Run(st)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(r) != 3 || r[0].Number() != 50 || r[1].Number() != 50 || r[2].Number() != 77 {
+		t.Fatalf("the script returned %v, want 50 50 77", r)
+	}
+	if got := tt.GetIndex(5).Number(); got != 77 {
+		t.Errorf("t[5] = %v after the script, want 77", got)
+	}
+	seen := map[string]int{}
+	n := 0
+	if e := tt.ForEach(func(k, _ wangshu.Value) bool {
+		if k.IsNumber() {
+			seen[strconv.Itoa(int(k.Number()))]++
+		} else {
+			seen[k.Str()]++
+		}
+		n++
+		return n < 100
+	}); e != nil {
+		t.Fatalf("ForEach: %v", e)
+	}
+	if len(seen) != 2 || seen["5"] != 1 || seen["x"] != 1 {
+		t.Errorf("ForEach visited %v, want 5 and x once each", seen)
 	}
 }
