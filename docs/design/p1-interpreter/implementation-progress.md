@@ -1254,7 +1254,7 @@ arena 大小跟着比例变。`TestTiered_StdlibNames` 加一段
 `loadstring` 得到的函数丢掉之后它的字符串常量不回收（[#359](https://github.com/Liam0205/wangshu/issues/359)）；
 哈希部分的遍历顺序与官方不同（[#349](https://github.com/Liam0205/wangshu/issues/349)）。同时登记的另外两项随后修了：P4 单条表访问的
 模板不检查下标是否在表内（[#350](https://github.com/Liam0205/wangshu/issues/350)）；P4 arm64 的同一组模板在数组下标 4096 以上、
-哈希部分节点下标正好是 1365 时访问到错误的槽位（[#351](https://github.com/Liam0205/wangshu/issues/351)）。两项的记录在
+哈希部分节点下标从 1365 起的若干段上访问到错误的槽位（逐段的情况在 issue 里，[#351](https://github.com/Liam0205/wangshu/issues/351)）。两项的记录在
 [P4 implementation-progress §30](../p4-method-jit/implementation-progress.md)。
 
 过程记录见 [#338 复盘](../../../llmdoc/memory/reflections/2026-11-27-issue338-deleted-key-stays-in-node.md)。
