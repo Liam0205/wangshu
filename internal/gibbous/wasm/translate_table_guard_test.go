@@ -70,6 +70,7 @@ func guardForms() []guardForm {
 type guardCase struct {
 	index, size uint32
 	key         uint64
+	negZero     bool // the instruction names the constant -0; a table stores that key as +0
 	hit         bool
 }
 
@@ -85,6 +86,7 @@ var guardNodeCases = []guardCase{
 	{index: 0, size: 1, key: guardKey, hit: true},
 	{index: 3, size: 4, key: guardKey, hit: true},
 	{index: 3, size: 4, key: guardOtherKey},
+	{index: 3, size: 4, key: math.Float64bits(0), negZero: true, hit: true},
 	{index: 2, size: 2, key: guardKey}, // the first index past the node block
 	{index: 3, size: 2, key: guardKey},
 	{index: 3, size: 1, key: guardKey},
@@ -151,6 +153,9 @@ func TestPW5_InlineSlotGuards(t *testing.T) {
 				if f.node {
 					kind = bytecode.ICKindNodeHit
 					k0 = value.Value(guardKey)
+					if cs.negZero {
+						k0 = value.Value(math.Float64bits(math.Copysign(0, -1)))
+					}
 				}
 				proto := &bytecode.Proto{
 					Code: []bytecode.Instruction{
