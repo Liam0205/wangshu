@@ -1345,7 +1345,7 @@ arena 大小跟着比例变。`TestTiered_StdlibNames` 加一段
     - 换回修改前的 `alloc.go`：默认构建里 5 个 API 测试失败，P3、P4 构建里 `TestPreallocate_CompiledAccessAfterwards`、`TestPreallocate_DuringCompiledLoop` 也失败。
     - 换成重建哈希部分的写法（从最后一个节点往前重新插入）：`TestGrowArray_MovesHashIntegerKeys`、`TestGrowArray_TraversalGoesOn`、`TestGrowArray_TraversalWhenKeysMove`、`TestPreallocate_DuringForEach` 失败。
     - `growArray` 什么都不做：5 个 `TestGrowArray_*` 和 3 个 API 测试失败。`TestPreallocate_FixesQuadraticBuild` 这时仍然通过，它比较的是两个规模下每个元素耗时的比值，
-      不预留时比值也在限内，所以它不能说明预留生效；说明预留生效的是直接看数组部分大小的测试。
+      不预留时比值也在限内，所以它不能说明预留生效（[#374](https://github.com/Liam0205/wangshu/issues/374)）；说明预留生效的是直接看数组部分大小的测试。
     - 不搬键、搬了值但不清原节点：`TestRawTable_ModelCheckWithGrowArray`、两个 `TestGrowArray_*`、5 个 API 测试失败，P3、P4 构建里两个编译代码测试也失败。
     - 不推进 gen：只有 `TestGrowArray_MovesHashIntegerKeys` 发现，脚本层面看不出来，因为内联缓存命中时都检查节点的值，被搬走的键的节点没有值，本来就不会命中。
       推进 gen 是按 `rawtable.go` 文件头的约定做的（拿走一个有值节点的值的路径都推进）。
