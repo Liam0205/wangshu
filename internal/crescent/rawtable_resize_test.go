@@ -151,6 +151,11 @@ func TestGrowArray_KeepsArrayAndNeverShrinks(t *testing.T) {
 	if object.TableGen(st.arena, tbl) != gen || object.TableArrayRef(st.arena, tbl) != arr {
 		t.Error("a growth that changed nothing bumped gen or replaced the array block")
 	}
+	// The block a growth replaces goes back to the allocator: the next block of its size is it.
+	st.growArray(tbl, 40)
+	if got := object.AllocTableArray(st.arena, 10); got != arr {
+		t.Errorf("the replaced array block %#x was not freed: a new block of its size is at %#x", arr, got)
+	}
 }
 
 // TestGrowArray_TraversalGoesOn: a traversal in progress goes on after the array part grows. The
@@ -353,6 +358,72 @@ func TestGrowArray_TraversalFromARemovedIntegerKey(t *testing.T) {
 	for k, n := range got {
 		if n != 1 {
 			t.Errorf("key %x is returned %d times", uint64(k), n)
+		}
+	}
+}
+
+// TestGrowArray_SlotsAreKeptUntilTheNextRehash: the slots growArray adds stay while new keys find
+// room in the hash part, and a rehash sizes the array part anew from the integer keys the table
+// holds. The table is the one the public NewTable makes: 8 hash nodes, no array part.
+func TestGrowArray_SlotsAreKeptUntilTheNextRehash(t *testing.T) {
+	num := func(n int) value.Value { return value.NumberValue(float64(n)) }
+	asize := func(st *State, tbl arena.GCRef) uint32 { return object.TableASize(st.arena, tbl) }
+	addStrings := func(st *State, tbl arena.GCRef, from, to int) {
+		for i := from; i < to; i++ {
+			if e := st.rawSet(tbl, st.makeStringValue(fmt.Sprintf("name%d", i)), num(i)); e != nil {
+				t.Fatal(e)
+			}
+		}
+	}
+
+	// Empty slots: kept while the hash part has room, given up by the rehash.
+	st := New()
+	tbl := st.NewLibTable(0)
+	st.growArray(tbl, 1000)
+	rehashes := 0
+	for i := 0; i < 40; i++ {
+		before := object.TableNodeRef(st.arena, tbl)
+		addStrings(st, tbl, i, i+1)
+		if object.TableNodeRef(st.arena, tbl) == before {
+			if got := asize(st, tbl); rehashes == 0 && got != 1000 {
+				t.Fatalf("after %d string keys and no rehash the array part has %d slots, want 1000", i+1, got)
+			}
+			continue
+		}
+		rehashes++
+		if got := asize(st, tbl); got != 0 {
+			t.Fatalf("the rehash at string key %d left %d array slots for a table with no integer key", i+1, got)
+		}
+	}
+	if rehashes == 0 {
+		t.Fatal("setup: 40 string keys did not make the table rehash")
+	}
+	if object.TableHSize(st.arena, st.NewLibTable(0)) != 8 {
+		t.Fatal("setup: NewLibTable(0) no longer makes 8 hash nodes")
+	}
+	// The first five of them fit without a rehash.
+	st = New()
+	tbl = st.NewLibTable(0)
+	st.growArray(tbl, 1000)
+	addStrings(st, tbl, 0, 5)
+	if got := asize(st, tbl); got != 1000 {
+		t.Errorf("after 5 string keys the array part has %d slots, want 1000", got)
+	}
+
+	// Filled slots: a rehash keeps an array part that the integer keys fill more than half.
+	st = New()
+	tbl = st.NewLibTable(0)
+	st.growArray(tbl, 1000)
+	for i := 1; i <= 1000; i++ {
+		_ = st.rawSet(tbl, num(i), num(i))
+	}
+	addStrings(st, tbl, 0, 40)
+	if got := asize(st, tbl); got < 1000 {
+		t.Errorf("after the fill and 40 string keys the array part has %d slots, want at least 1000", got)
+	}
+	for _, i := range []int{1, 500, 1000} {
+		if v := st.rawGet(tbl, num(i)); v != num(i) {
+			t.Errorf("t[%d] reads %x after the fill and 40 string keys", i, uint64(v))
 		}
 	}
 }

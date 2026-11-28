@@ -337,13 +337,42 @@ func TestPreallocate_DuringForEachWithIntegerKeys(t *testing.T) {
 }
 
 // TestPreallocate_FailureLeavesTheTableAlone: a growth the arena has no room for panics before
-// anything about the table has changed, so a caller that recovers still has every entry.
+// anything about the table has changed, so a caller that recovers still has every entry: those of
+// the array part, the integer key of the hash part that the growth would have moved, and the rest.
 func TestPreallocate_FailureLeavesTheTableAlone(t *testing.T) {
 	st := wangshu.NewState(wangshu.Options{MaxArenaBytes: 256 * 1024})
 	tv := stringKeyed(st, 20)
 	defer tv.Release()
 	tt := tv.AsTable()
+	if e := tt.Preallocate(4); e != nil {
+		t.Fatalf("Preallocate(4): %v", e)
+	}
+	for i := 1; i <= 4; i++ {
+		_ = tt.SetIndex(i, wangshu.Number(float64(i*11)))
+	}
 	_ = tt.SetIndex(5, wangshu.Number(55))
+	check := func(when string) {
+		t.Helper()
+		for i := 1; i <= 4; i++ {
+			if got := tt.GetIndex(i).Number(); got != float64(i*11) {
+				t.Errorf("t[%d] = %v %s, want %d", i, got, when, i*11)
+			}
+		}
+		if got := tt.GetIndex(5).Number(); got != 55 {
+			t.Errorf("t[5] = %v %s, want 55", got, when)
+		}
+		if got := tt.Len(); got != 5 {
+			t.Errorf("Len = %d %s, want 5", got, when)
+		}
+		n := 0
+		if e := tt.ForEach(func(_, _ wangshu.Value) bool { n++; return n < 1000 }); e != nil {
+			t.Errorf("ForEach %s: %v", when, e)
+		}
+		if n != 25 {
+			t.Errorf("ForEach visited %d entries %s, want 25", n, when)
+		}
+	}
+	check("before the failed Preallocate")
 	func() {
 		defer func() {
 			if recover() == nil {
@@ -352,23 +381,12 @@ func TestPreallocate_FailureLeavesTheTableAlone(t *testing.T) {
 		}()
 		_ = tt.Preallocate(100_000)
 	}()
-	if got := tt.GetIndex(5).Number(); got != 55 {
-		t.Errorf("t[5] = %v after the failed Preallocate, want 55", got)
-	}
-	n := 0
-	if e := tt.ForEach(func(_, _ wangshu.Value) bool { n++; return n < 1000 }); e != nil {
-		t.Errorf("ForEach: %v", e)
-	}
-	if n != 21 {
-		t.Errorf("ForEach visited %d entries after the failed Preallocate, want 21", n)
-	}
+	check("after the failed Preallocate")
 	// A growth that fits still works afterwards.
 	if e := tt.Preallocate(16); e != nil {
 		t.Fatalf("Preallocate(16): %v", e)
 	}
-	if got := tt.GetIndex(5).Number(); got != 55 {
-		t.Errorf("t[5] = %v after Preallocate(16), want 55", got)
-	}
+	check("after Preallocate(16)")
 }
 
 // TestPreallocate_KeepsEveryKindOfKey: growing the array part over a table that already has
@@ -515,11 +533,12 @@ func TestPreallocate_DuringForEachOnARemovedIntegerKey(t *testing.T) {
 	}
 }
 
-// TestPreallocate_ReservationEndsAtTheNextRehash: the reserved slots survive stores of other keys
-// while the hash part has room for them, and filling 1..n afterwards keeps every entry; once a
-// store of another key makes the table rehash with the reserved slots still empty, the table
-// still holds what was stored (the slots are given up, which only costs time).
-func TestPreallocate_ReservationEndsAtTheNextRehash(t *testing.T) {
+// TestPreallocate_OtherKeysBeforeTheFill: other keys stored between Preallocate and the fill of
+// 1..n do not change what the table ends up holding, whether the hash part has room for them (0
+// or 5 keys) or they make the table rehash and give the reserved slots up (6 or 40 keys). Which of
+// the two happens is not visible through this API; internal/crescent's
+// TestGrowArray_SlotsAreKeptUntilTheNextRehash looks at the array part.
+func TestPreallocate_OtherKeysBeforeTheFill(t *testing.T) {
 	for _, names := range []int{0, 5, 6, 40} {
 		st := wangshu.NewState(wangshu.Options{})
 		tv := st.NewTable()
